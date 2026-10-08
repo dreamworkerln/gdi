@@ -1,0 +1,10 @@
+include Install.md
+include ARCHITECTURE.md
+include TODO.md
+include gdi.prompt
+include gdi.project
+include GOOGLE_DRIVE_CI_PUBLISHING_WORKFLOW.md
+recursive-include docs *.md
+recursive-include tests *.py
+include QUICKSTART.md
+recursive-include examples *.json

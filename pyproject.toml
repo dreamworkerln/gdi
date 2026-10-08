@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gdi"
+version = "0.3.0"
+description = "Verified Git exchange and autonomous host CI over rclone"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "GPL-3.0-only"}
+dependencies = []
+
+[project.scripts]
+gdi = "gdi.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["gdi*"]

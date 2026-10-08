@@ -1,0 +1,27 @@
+{
+  "config_version": 1,
+  "worker_id": "user-host",
+  "poll_active_seconds": 5,
+  "poll_idle_max_seconds": 60,
+  "repositories": [
+    {
+      "repository_id": "0123456789abcdef0123456789abcdef",
+      "remote_url": "gdrive:gdi/my-project",
+      "profiles": {
+        "full": {
+          "timeout_seconds": 3600,
+          "stages": [
+            {
+              "name": "tests",
+              "argv": ["/usr/bin/python3", "-m", "unittest", "discover", "-s", "tests", "-v"],
+              "cwd": ".",
+              "blocking": true,
+              "timeout_seconds": 1800
+            }
+          ],
+          "artifacts": []
+        }
+      }
+    }
+  ]
+}
