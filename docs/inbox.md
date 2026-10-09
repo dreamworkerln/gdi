@@ -13,7 +13,7 @@ gdrive:gdi/
     my-project/
         repository.json
         bundles/
-        updates/
+        branches/
         ci/jobs/<job-id>/...
     another-project/...
 ```
@@ -33,7 +33,8 @@ gdi remote add drive gdrive:gdi/my-project --init
 
 ```json
 {
-  "config_version": 1,
+  "config_version": 2,
+  "default_remote": "drive",
   "remotes": {
     "drive": {
       "url": "gdrive:gdi/my-project",
@@ -50,15 +51,15 @@ gdi remote add drive gdrive:gdi/my-project --init
 в commits; добавьте `.gdi/` в `.gitignore`. Push отвергает commit с tracked `.gdi`.
 Установка подключения не изменяет `.git/config`, `.gitignore` или другие файлы проекта.
 
-Старые секции `gdi.remote.*` читаются из Git config и копируются в собственный config
-при первом обращении. Git config при этом не редактируется. Новый config имеет
-приоритет, включая удалённые локальные remotes. Кеш создаётся заново в `.gdi/cache`;
-старый CI outbox/results копируются из `<git-common-dir>/gdi-ci` при первом CI-вызове,
-чтобы повтор отправки сохранил job ID. Старые каталоги автоматически не удаляются.
-Миграция использует atomic copy/fsync каждого файла и completion marker последним.
-После crash она повторяется, даже если новая папка уже существует. Совпадающие файлы
-не копируются заново; конфликтующие bytes дают ошибку с сохранением обеих копий.
-На время миграции остановите старые клиенты, записывающие legacy state.
+Первое подключение выбирается по умолчанию для `gdi push`, `gdi fetch` и `gdi pull`.
+Сменить его можно через `gdi remote default NAME`. `gdi status` проверяет все
+подключения; `gdi status NAME` — одно. Старый local config v1 и Git exchange v1/v2
+не поддерживаются: сохраните старый config отдельно и пересоздайте подключения.
+Git config `gdi.remote.*` больше не импортируется.
+
+Старый CI outbox/results при необходимости копируется из `<git-common-dir>/gdi-ci`
+с atomic copy/fsync и completion marker последним. Конфликтующие bytes сохраняются
+и дают ошибку. Перед переносом CI state остановите записывающие его старые клиенты.
 
 Клиент читает общие capabilities и переходит на legacy путь только при доказанном
 отсутствии файла (для rclone — stat exit 3/4). Повреждённый JSON, ошибка прав или
@@ -84,8 +85,9 @@ branch ref и соответствие publication/request. Уведомлени
 Обычный push публикует `repository_updated` после проверенной Git publication.
 Worker проверяет ссылку, сохраняет durable receipt и удаляет уведомление. Это
 подтверждение доставки публикации; рабочие ветки пользователя не обновляются и
-CI автоматически не запускается. Повтор push того же HEAD может повторно разместить
-ту же запись; receipt позволяет безопасно подтвердить её снова.
+CI автоматически не запускается. После успешной доставки клиент сохраняет durable receipt и не создаёт уведомление
+заново при обычном unchanged push. При сбое до receipt доставка повторяется с тем
+же immutable event; worker receipt позволяет безопасно подтвердить его снова.
 
 CI submit: durable local outbox → request upload → request.ready → inbox **последней**.
 CI event ID равен job ID; event содержит hash request. Разные агенты создают разные

@@ -117,7 +117,7 @@ class ExchangeTestCase(unittest.TestCase):
 
     def published(self):
         self.ea.push("drive")
-        return next(path for path in self.store.data if path.startswith("updates/"))
+        return next(path for path in self.store.data if path.startswith("branches/"))
 
     def replace_publication(self, path, **fields):
         value = decode(self.store.data.pop(path))
@@ -135,7 +135,7 @@ class ExchangeTests(ExchangeTestCase):
         self.assertTrue(created)
         self.assertEqual(head, second)
         self.assertTrue(self.store.uploads[-2].startswith("bundles/"))
-        self.assertTrue(self.store.uploads[-1].startswith("updates/"))
+        self.assertTrue(self.store.uploads[-1].startswith("branches/"))
         self.eb.fetch("drive")
         self.assertEqual(self.b.oid("HEAD"), self.first)
         self.assertEqual((self.b.path / "file.txt").read_text(), "first\n")
@@ -151,7 +151,7 @@ class ExchangeTests(ExchangeTestCase):
         self.assertEqual(len(self.store.uploads), count)
         self.commit(self.a, "second")
         second = self.ea.push("drive")
-        manifests = [decode(value) for path, value in self.store.data.items() if path.startswith("updates/")]
+        manifests = [decode(value) for path, value in self.store.data.items() if path.startswith("branches/")]
         self.assertEqual(len(manifests), 2)
         self.assertIn(first[1], [value["previous"] for value in manifests])
         self.assertNotEqual(first[1], second[1])
@@ -193,7 +193,7 @@ class ExchangeTests(ExchangeTestCase):
             self.ea.push("drive")
             self.eb.fetch("drive", branch)
             self.assertEqual(self.b.oid("refs/remotes/drive/" + branch), head)
-        directories = {path.split("/")[1] for path in self.store.data if path.startswith("updates/")}
+        directories = {path.split("/")[1] for path in self.store.data if path.startswith("branches/")}
         self.assertEqual(len(directories), 3)
 
     def test_wrong_bundle_checksum_does_not_import_or_change_tracking(self):
@@ -257,7 +257,7 @@ class ExchangeTests(ExchangeTestCase):
 
         with patch.object(self.a, "call", side_effect=call), self.assertRaisesRegex(GdiError, "branch changed"):
             self.ea.push("drive")
-        self.assertFalse(any(path.startswith("updates/") for path in self.store.data))
+        self.assertFalse(any(path.startswith("branches/") for path in self.store.data))
 
     def test_remote_change_before_upload_refuses_publication(self):
         original = self.ea.publications
@@ -277,7 +277,7 @@ class ExchangeTests(ExchangeTestCase):
 
         def upload(source, path):
             original(source, path)
-            if path.startswith("updates/"):
+            if path.startswith("branches/"):
                 value = decode(self.store.data[path])
                 value["nonce"] = "f" * 32
                 raw = encode(value)
@@ -301,7 +301,7 @@ class ExchangeTests(ExchangeTestCase):
             self.eb.fetch("drive")
 
     def test_unfinished_publication_and_retry(self):
-        self.store.fail = "updates/"
+        self.store.fail = "branches/"
         with self.assertRaisesRegex(GdiError, "network"):
             self.ea.push("drive")
         self.assertTrue(any(path.startswith("bundles/") for path in self.store.data))
@@ -677,7 +677,7 @@ class ExchangeTests(ExchangeTestCase):
                      bundle_kind="full", base_publication=None, base_head=None, prerequisites=[],
                      previous=chain[-1][0], nonce="f" * 32)
         manifest = encode(value)
-        self.store.data["updates/" + digest(b"refs/heads/main") + "/" + digest(manifest) + ".json"] = manifest
+        self.store.data["branches/" + "main" + "/" + digest(manifest) + ".json"] = manifest
         with self.assertRaises(GdiError):
             self.eb.fetch("drive")
         self.assertEqual(self.b.oid("HEAD"), forged_head)
@@ -698,7 +698,7 @@ class ExchangeTests(ExchangeTestCase):
         value = decode(self.store.data["repository.json"])
         value["version"] = 1
         self.store.data["repository.json"] = encode(value)
-        with self.assertRaisesRegex(GdiError, "protocol v2"):
+        with self.assertRaisesRegex(GdiError, "protocol v3"):
             self.eb.fetch("drive")
 
     def test_checkpoint_interval_one_always_creates_full_bundles(self):
@@ -814,7 +814,7 @@ class LocalTransportTests(unittest.TestCase):
                 a.call("add", "hello.txt")
                 a.call("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", f"update {number}")
                 self.assertIn("Bundle: incremental", cli(source, "push", "drive"))
-            manifests = [decode(path.read_bytes()) for path in (root / "transport/updates").rglob("*.json")]
+            manifests = [decode(path.read_bytes()) for path in (root / "transport/branches").rglob("*.json")]
             self.assertEqual(sorted(value["bundle_kind"] for value in manifests), ["full", "incremental", "incremental"])
             identity = Exchange(a).remote("drive")["repository_id"]
             cli(target, "remote", "add", "drive", url, "--repository-id", identity)

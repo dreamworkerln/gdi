@@ -1,4 +1,4 @@
-"""Protocol v2: verified full checkpoints and incremental publication chains."""
+"""Protocol v3: verified full checkpoints and incremental publication chains."""
 
 from contextlib import contextmanager
 import hashlib
@@ -9,11 +9,13 @@ import tempfile
 import uuid
 
 from .git import GdiError, Git
+from .branches import branch_directory
 from .cache import VerifiedCache
 from .transport import Rclone, validate_url
+from .diagnostics import note, phase, timed
 
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 CHECKPOINT_EVERY = 20
 
 
@@ -66,7 +68,7 @@ def validate_repository(data):
     if (set(data) != {"version", "repository_id", "object_format"} or
             type(data.get("version")) is not int or data["version"] != PROTOCOL_VERSION or
             not hex_value(data.get("repository_id"), 32) or data.get("object_format") != "sha1"):
-        raise GdiError("unsupported repository metadata: expected protocol v2, SHA-1; use a new empty remote folder for v1 data")
+        raise GdiError("unsupported repository metadata: expected protocol v3, SHA-1; recreate the remote in an empty folder")
     return data
 
 
@@ -115,6 +117,7 @@ class Exchange:
         from .local_config import get
         return get(self.git, name)
 
+    @timed('initialize/join remote')
     def add(self, name, url, *, initialize=False, expected_id=None, inbox_root=None):
         from .local_config import load, save, inferred_root, repository_path
         remote_name(name)
@@ -138,7 +141,7 @@ class Exchange:
                 raise GdiError("--init requires an empty dedicated folder; initialize it once only")
             repository = {"version": PROTOCOL_VERSION, "repository_id": uuid.uuid4().hex, "object_format": "sha1"}
             transport.mkdir("bundles")
-            transport.mkdir("updates")
+            transport.mkdir("branches")
             with tempfile.TemporaryDirectory(prefix="gdi-init-") as tmp:
                 path = Path(tmp) / "repository.json"
                 path.write_bytes(encode(repository))
@@ -150,6 +153,8 @@ class Exchange:
         if expected_id is not None and repository["repository_id"] != expected_id:
             raise GdiError("repository ID mismatch")
         settings["remotes"][name] = {"url": url, "repository_id": repository["repository_id"], "inbox_root": inbox_root}
+        if settings['default_remote'] is None and len(settings['remotes']) == 1:
+            settings['default_remote'] = name
         save(self.git, settings)
         return repository["repository_id"]
 
@@ -160,11 +165,14 @@ class Exchange:
         if name not in settings["remotes"]:
             raise GdiError(f"unknown gdi remote: {name}")
         del settings["remotes"][name]
+        if settings["default_remote"] == name:
+            settings["default_remote"] = next(iter(settings["remotes"])) if len(settings["remotes"]) == 1 else None
         save(self.git, settings)
 
     def clear_cache(self, name):
         VerifiedCache(self.git, self.remote(name)["repository_id"]).clear()
 
+    @timed('verify remote identity')
     def connect(self, name):
         settings = self.remote(name)
         repository_id = settings["repository_id"]
@@ -176,21 +184,43 @@ class Exchange:
             raise GdiError("repository ID mismatch; remote was replaced or configuration points to another project")
         return transport, repository_id
 
+    @timed('publish inbox notification')
     def notify_publication(self, name, publication_id):
         from .inbox import notification, publish
         from .local_config import repository_path
+        from .ci_protocol import atomic_write
         settings = self.remote(name)
         if settings["inbox_root"] is not None:
             root = self.transport_factory(settings["inbox_root"])
             value = notification(settings["repository_id"], repository_path(settings["inbox_root"], settings["url"]),
                                  self.last_publication, publication_id)
+            raw = encode({'root': settings['inbox_root'], 'notification': value})
+            receipt = self.git.gdi_dir() / 'notifications' / (digest(raw) + '.json')
+            # Successful remote delivery precedes the durable receipt. Missing
+            # receipts retry the same immutable event; consumed events need not
+            # be recreated on every unchanged push. The root is part of the key.
+            if receipt.exists() and receipt.read_bytes() == raw:
+                note('publication notification already delivered', publication_id=publication_id)
+                return
             publish(root, value)
+            atomic_write(receipt, raw)
 
+    @timed('read/verify publication chain')
     def publications(self, transport, repository_id, ref, *, listing=None, metadata=None):
-        prefix = digest(ref.encode("utf-8")) + "/"
+        prefix = branch_directory(ref) + "/"
         records = {}
         if listing is None:
-            listing = transport.list("updates", recursive=True)
+            listing = transport.list("branches", recursive=True)
+        if metadata is None and callable(getattr(transport, 'read_many', None)):
+            selected = [item['Path'] for item in listing if not item['IsDir'] and
+                        item['Path'].startswith(prefix) and item['Path'].endswith('.json')]
+            for path in selected:
+                if not hex_value(path[len(prefix):-len('.json')], 64):
+                    raise GdiError('invalid publication filename')
+            downloaded = transport.read_many('branches/' + path for path in selected)
+            if set(downloaded) != {'branches/' + path for path in selected}:
+                raise GdiError('incomplete batch publication metadata')
+            metadata = {path: downloaded['branches/' + path] for path in selected}
         for item in listing:
             path = item["Path"]
             if item["IsDir"] or not path.startswith(prefix) or not path.endswith(".json"):
@@ -198,7 +228,7 @@ class Exchange:
             publication_id = path[len(prefix):-len(".json")]
             if not hex_value(publication_id, 64):
                 raise GdiError("invalid publication filename")
-            raw = transport.read("updates/" + path) if metadata is None else metadata[path]
+            raw = transport.read("branches/" + path) if metadata is None else metadata[path]
             if digest(raw) != publication_id:
                 raise GdiError("publication metadata checksum mismatch")
             data = decode(raw)
@@ -291,6 +321,7 @@ class Exchange:
             git.check_payload(publication["head"])
             yield quarantine
 
+    @timed('restore verified Git objects')
     def restore(self, transport, repository_id, chain):
         """Find a verified local base or the latest full checkpoint, then replay."""
         cache = VerifiedCache(self.git, repository_id)
@@ -314,6 +345,7 @@ class Exchange:
                     cache.accept(publication_id, data["head"], quarantine)
         return cache
 
+    @timed('push')
     def push(self, name, branch=None, *, full=False, checkpoint_every=CHECKPOINT_EVERY):
         if type(checkpoint_every) is not int or checkpoint_every < 1:
             raise GdiError("checkpoint interval must be a positive integer")
@@ -352,10 +384,11 @@ class Exchange:
         with tempfile.TemporaryDirectory(prefix="gdi-push-") as tmp:
             bundle = Path(tmp) / "source.bundle"
             exclusions = [] if is_full else ["^" + tip[1]["head"]]
-            self.git.call("bundle", "create", str(bundle), ref, *exclusions)
-            if self.git.call("bundle", "list-heads", str(bundle)).stdout.splitlines() != [head + " " + ref]:
-                raise GdiError("branch changed while creating bundle; retry push")
-            self.git.call("bundle", "verify", str(bundle))
+            with phase('create/check Git bundle'):
+                self.git.call("bundle", "create", str(bundle), ref, *exclusions)
+                if self.git.call("bundle", "list-heads", str(bundle)).stdout.splitlines() != [head + " " + ref]:
+                    raise GdiError("branch changed while creating bundle; retry push")
+                self.git.call("bundle", "verify", str(bundle))
             data = {"version": PROTOCOL_VERSION, "repository_id": repository_id, "ref": ref, "head": head,
                     "bundle_sha256": file_digest(bundle), "previous": tip[0] if tip else None,
                     "nonce": uuid.uuid4().hex, "bundle_bytes": bundle.stat().st_size,
@@ -372,10 +405,13 @@ class Exchange:
             if self.publications(transport, repository_id, ref) != chain:
                 raise GdiError("remote changed during push; retry after the other publisher finishes")
             with self.verified(bundle, data, ref, cache, tip[1] if tip else None) as quarantine:
-                transport.upload(bundle, "bundles/" + data["bundle_sha256"] + ".bundle")
-                directory = "updates/" + digest(ref.encode("utf-8"))
-                transport.mkdir(directory)
-                transport.upload(manifest, directory + "/" + publication_id + ".json")
+                with phase('upload Git bundle'):
+                    transport.upload(bundle, "bundles/" + data["bundle_sha256"] + ".bundle")
+                directory = "branches/" + branch_directory(ref)
+                with phase('publish manifest'):
+                    if not getattr(transport, 'creates_parents', False):
+                        transport.mkdir(directory)
+                    transport.upload(manifest, directory + "/" + publication_id + ".json")
                 latest = self.publications(transport, repository_id, ref)
                 if not latest or latest[-1][0] != publication_id:
                     raise GdiError("publication uploaded, but remote advanced concurrently; inspect with fetch")
@@ -384,6 +420,7 @@ class Exchange:
         self.notify_publication(name, publication_id)
         return head, publication_id, True
 
+    @timed('fetch')
     def fetch(self, name, branch=None):
         branch = branch if branch is not None else self.git.branch()
         ref = self.git.ref(branch)
@@ -399,6 +436,7 @@ class Exchange:
         self.git.call("update-ref", "-m", "gdi fetch", tracking, tip[1]["head"], old or "0" * 40)
         return tip[1]["head"], tip[0], tracking
 
+    @timed('pull')
     def pull(self, name):
         before = self.git.snapshot()
         self.git.require_clean(before)

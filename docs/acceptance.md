@@ -1,14 +1,17 @@
 # Эксплуатационная проверка v2 в отдельных fixtures
 
-Эти проверки не используют `lora-sack/chatter`. У каждого запуска собственные Git
+У каждого запуска собственные временные Git
 репозитории, worker ID/state/cache, общий root и проект. Обычный unittest не обращается
 к Google Drive и не запускает Docker; интеграции включаются явными environment flags.
+В начале каждого блока задайте `INSTALL_DIR` — абсолютный путь к исходникам gdi.
 
 ## Локальный CLI и настоящий act
 
 Укажите абсолютный путь к act **v0.2.89**; rclone должен находиться в PATH:
 
 ```bash
+INSTALL_DIR="/путь/к/gdi"
+cd "$INSTALL_DIR"
 GDI_TEST_ACT=/absolute/path/act PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_v2_cli.LocalV2CliTests -v
 ```
 
@@ -25,6 +28,8 @@ Docker должен быть установлен и доступен польз
 совместимый с act, затем включите только Docker fixtures:
 
 ```bash
+INSTALL_DIR="/путь/к/gdi"
+cd "$INSTALL_DIR"
 docker pull catthehacker/ubuntu:act-latest
 GDI_TEST_ACT=/absolute/path/act GDI_TEST_DOCKER=catthehacker/ubuntu:act-latest PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_v2_cli.DockerV2CliTests -v
 ```
@@ -44,6 +49,8 @@ external actions не обрывала проверку. CLI wait допуска
 Только в разрешённой отдельной папке Drive. Пример для локального remote `rclone:`:
 
 ```bash
+INSTALL_DIR="/путь/к/gdi"
+cd "$INSTALL_DIR"
 GDI_TEST_ACT=/absolute/path/act GDI_TEST_DRIVE_ROOT=rclone:gdi-acceptance PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_v2_cli.LocalV2CliTests.test_fail_fix_pass_and_pull_via_cli -v
 ```
 
@@ -81,6 +88,8 @@ proxy/PATH/rclone настройки. Служба должна быть акт�
 изменения групп в текущей сессии можно запускать тесты через `sg docker`.
 
 ```bash
+INSTALL_DIR="/путь/к/gdi"
+cd "$INSTALL_DIR"
 GDI_TEST_ACT=/absolute/path/act GDI_TEST_SERVICE_CONFIG=/absolute/path/acceptance-worker.json PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_v2_cli.ServiceV2CliTests -v
 ```
 

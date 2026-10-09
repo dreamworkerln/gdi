@@ -2,35 +2,42 @@
 QUICKSTART.md и docs/worker.md. Ниже сохранены исходные требования/обсуждение;
 точные действующие команды см. в справке gdi -h и документации, а не в эскизах CLI.
 
-Согласованная текущая схема: `.gdi/config.json`, общая immutable inbox и global
+Согласованная текущая схема: Git exchange v3, читаемые branches,
+короткие push/fetch/pull, status и `.gdi/config.json` v2 с default remote, общая immutable inbox и global
 worker без per-repository команд. CI использует workflows точного commit через
 act/Docker; request v2 закрепляет selector и GitHub namespace. Runtime revision
 включает act/Docker/base image identities. Legacy stages/queue сохранены для v1.
 Сквозные и эксплуатационные fixtures: docs/acceptance.md; состояние — TODO.md.
-Chatter не изменять. Далее — исторический разбор и исходные предложения.
+gdi — самостоятельный проект. Далее — исторический разбор и исходные предложения.
 
 **Я бы выделил `gdi` в отдельную утилиту: обмен Git-данными через Drive, необязательный запуск CI и постоянно работающий runner.** Завершение задачи тогда больше не требует останавливать worker, удалять STOP и вручную запускать его заново.
 
-Прочитал workflow, `ci/gdrive_worker.py`, CI entrypoint, связанные тесты и shell-скрипты. Ниже — предлагаемая архитектура, без изменения файлов.
+Ниже — исходные архитектурные предложения для универсального обмена Git-данными
+и автономного CI. Примеры используют абстрактный репозиторий `my-project`.
 
 **Что уже есть и что мешает**
 
 Основа хорошая: Git bundles, проверка точного HEAD и SHA256, отдельный clone для CI, неизменяемые задания, публикация `request.ready` и `result.json` последними. Эти свойства стоит сохранить.
 
-Привязка к конкретной ветке преимущественно находится в workflow-документе. Сами `gdrive_publish.sh` и `gdrive_receive.sh` уже определяют текущую ветку через Git, а worker принимает ветку из запроса.
+При проектировании нужно учитывать следующие требования:
 
-Реальные ограничения сейчас такие:
-
-| Место | Ограничение |
+| Место | Требование |
 |---|---|
-| [Drive transport](/home/dream/coding/c++/lora-sack/chatter/ci/gdrive_worker.py:205) | Вшит `chatgpt-git/lora-sack/ci`; `--remote` меняет только имя remote |
-| [Запуск CI](/home/dream/coding/c++/lora-sack/chatter/ci/gdrive_worker.py:403) | Вшит `chatter/ci/run_local_ci.sh` |
-| [Подготовка окружения](/home/dream/coding/c++/lora-sack/chatter/ci/gdrive_worker.py:174) | Worker сам знает про PlatformIO и структуру Chatter |
-| [Discovery loop](/home/dream/coding/c++/lora-sack/chatter/ci/gdrive_worker.py:293) | Каждый цикл просматривает все задания, включая завершённые |
-| [Имена веток](/home/dream/coding/c++/lora-sack/chatter/gdrive_publish.sh:27) | `feature/a` и `feature_a` превращаются в одинаковый каталог |
-| [Получение результата](/home/dream/coding/c++/lora-sack/chatter/gdrive_receive.sh:5) | Все результаты импортируются в один `refs/remotes/chatgpt/result` |
+| Drive transport | Root и repository ID задаются настройками подключения |
+| Запуск CI | Workflows берутся из точного commit проверяемого проекта |
+| Подготовка окружения | Универсальное ядро не содержит настройки конкретного проекта |
+| Discovery loop | Активная очередь обрабатывается отдельно от архива завершённых заданий |
+| Имена веток | `feature/a` и `feature_a` сохраняют разные цепочки публикаций |
+| Получение результата | Результат связан с repository, ref и точным commit |
 
-Также `gdrive_clear.sh` не учитывает `GDRIVE_CHATGPT_ROOT`, хотя publish/receive учитывают. А `gdrive_listen.sh` зависит от текущего каталога запуска.
+Пути к исходникам в командах задаются переменной `INSTALL_DIR`:
+
+```bash
+INSTALL_DIR="/путь/к/gdi"
+cd "$INSTALL_DIR"
+```
+
+Замените `/путь/к/gdi` абсолютным путём на текущей машине.
 
 **Google Drive действительно присылает push**
 
@@ -84,13 +91,14 @@ flowchart LR
 - **Очередь CI:** связывает запрос и результат с конкретным опубликованным commit.
 - **Runner проекта:** знает, какую команду запускать и какое окружение подготовить.
 
-Тогда Chatter остаётся одним из поддерживаемых проектов. Знание о PlatformIO находится в его настройке runner, а универсальная часть `gdi` работает с Git и заданиями.
+Настройки сборки пользовательского проекта находятся в его workflows,
+а универсальная часть `gdi` работает с Git и заданиями.
 
 Предлагаемый интерфейс — эти команды пока не реализованы:
 
 ```bash
 # Один раз подключить Drive remote в текущем Git-репозитории
-gdi remote add drive gdrive:chatgpt-git/lora-sack
+gdi remote add drive gdrive:gdi/my-project
 
 # Опубликовать текущую ветку
 gdi push drive
@@ -135,7 +143,7 @@ gdi pull drive --passed
 <remote>/<repository>/
     repository.json
     bundles/<bundle-sha256>.bundle
-    updates/<publication-id>.json
+    branches/<encoded-branch>/<publication-id>.json
     jobs/<job-id>/
         request.json
         request.ready
@@ -170,7 +178,10 @@ gdi pull drive --passed
 
 **Что потребуется от runner**
 
-На development PC регистрируются разрешённые репозитории и CI-профили. Для Chatter профиль задаёт текущий `run_local_ci.sh` и подготовку PlatformIO. Другой проект может запускать одну команду и определять результат по exit code; поддержка стадий остаётся дополнительной возможностью.
+В текущей схеме v2 worker использует общий Drive root, а CI берёт из workflows
+точного commit. Настройка сборки абстрактного `my-project` хранится в его
+`.github/workflows`, например запуск тестов командой `python3 -m unittest`.
+Регистрация репозиториев и локальных профилей относится к legacy config v1.
 
 Удалённый request выбирает зарегистрированный профиль. Команды и настройки host берутся из локальной конфигурации runner.
 

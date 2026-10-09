@@ -7,6 +7,8 @@ Git 2.34.1 и rclone 1.75.1. Другие версии rclone отдельно �
 Реализован автономный CI: job queue, постоянный worker, live progress/console,
 проверенные результаты и `pull --passed`. Короткий справочник:
 [QUICKSTART.md](QUICKSTART.md). Архитектура: [ARCHITECTURE.md](ARCHITECTURE.md).
+Для замеров подключения и обмена включите журнал rclone перед командами:
+[docs/profiling.md](docs/profiling.md).
 
 ## 1. Что устанавливать
 
@@ -68,12 +70,14 @@ rclone version
 
 ## 2. Установка Python-пакета
 
-Исходники должны находиться в постоянной папке. В примерах используется
-`/home/$USER/coding/python/gdi`; замените его своим путём к проекту. Скопируйте
-проект или клонируйте его из своего Git remote и выберите ветку `dev`.
+Исходники должны находиться в постоянной папке. Скопируйте проект или клонируйте
+его из своего Git remote и выберите ветку `dev`. В начале каждого блока,
+обращающегося к исходникам, задайте `INSTALL_DIR` — абсолютный путь к папке gdi.
+Замените `/путь/к/gdi` своим путём; кавычки позволяют использовать пробелы в имени.
 
 ```bash
-cd "/home/$USER/coding/python/gdi"
+INSTALL_DIR="/путь/к/gdi"
+cd "$INSTALL_DIR"
 python3 -m venv "$HOME/.venvs/gdi"
 "$HOME/.venvs/gdi/bin/python" -m pip install --upgrade pip setuptools wheel
 "$HOME/.venvs/gdi/bin/python" -m pip install -e .
@@ -87,7 +91,7 @@ python3 -m venv "$HOME/.venvs/gdi"
 исходников повторите установку. Оба варианта имеют пустой список runtime dependencies.
 Build tools при первой установке скачиваются из Python package index.
 
-Не используйте `sudo pip` и не устанавливайте gdi в окружение PlatformIO.
+Не используйте `sudo pip`; устанавливайте gdi в отдельное окружение.
 Активировать venv ежедневно не требуется.
 
 ### Команда `gdi` в Bash и `.bashrc`
@@ -133,7 +137,7 @@ command -v gdi
 gdi --version
 ```
 
-Ожидается путь `/home/$USER/.local/bin/gdi`, затем `gdi 0.3.0` и ASCII-эмблема.
+Ожидается путь `$HOME/.local/bin/gdi`, затем `gdi 0.3.0` и ASCII-эмблема.
 `gdi -v` и `gdi --version` показывают одинаковые версию и эмблему без подписей;
 в терминале используется золотой ANSI color. Справка и примеры находятся в
 `gdi -h`/`gdi --help`, эти команды тоже эквивалентны.
@@ -496,11 +500,11 @@ GC показывает размер удаляемых из рабочей па
 На host должен работать rclone с доступом к той же папке. Сверьте:
 
 ```bash
+INSTALL_DIR="/путь/к/gdi"
 gdi remote list
 rclone lsf gdrive:gdi/my-project
 mkdir -p "$HOME/.config/gdi"
-cd "/home/$USER/coding/python/gdi"
-cp examples/worker.json "$HOME/.config/gdi/worker.json"
+cp "$INSTALL_DIR/examples/worker.json" "$HOME/.config/gdi/worker.json"
 ```
 
 Откройте `~/.config/gdi/worker.json` в редакторе. Пример использует config version 2:
@@ -532,8 +536,8 @@ Worker закрепляет фактический image ID и SHA256 act в exe
 Локальное подключение создаёт `gdi remote add drive gdrive:gdi/my-project`;
 общий inbox root по умолчанию — `gdrive:gdi`. Для вложенного URL укажите
 `--inbox-root gdrive:gdi`. Добавьте `.gdi/` в `.gitignore`; настройки хранятся в
-`.gdi/config.json`, Git config не изменяется. Старые подключения читаются и мигрируют
-без удаления старых Git sections. Полный протокол: [docs/inbox.md](docs/inbox.md).
+`.gdi/config.json` v2, Git config не изменяется. Старые подключения из Git config
+не импортируются; local config v1 требует пересоздания. Полный протокол: [docs/inbox.md](docs/inbox.md).
 
 Workflow path/event/job/inputs выбираются аргументами CI; окружение runner и
 secrets настраиваются на host. Полное описание: [docs/worker.md](docs/worker.md).
@@ -640,7 +644,8 @@ git log -1 --oneline
 каталоге `/tmp/gdi-demo.*` для изучения. Для запуска автоматических проверок из исходников:
 
 ```bash
-cd "/home/$USER/coding/python/gdi"
+INSTALL_DIR="/путь/к/gdi"
+cd "$INSTALL_DIR"
 "$HOME/.venvs/gdi/bin/python" -m unittest discover -s tests -v
 ```
 
@@ -665,7 +670,7 @@ cd "/home/$USER/coding/python/gdi"
 | `not a fast-forward` | Изучите `git log --graph --all` и fetched ref; согласуйте историю обычным Git |
 | `concurrent push detected` | Сохраните обе истории, согласуйте commit и создайте новый remote; автоматического выбора победителя нет |
 | Network timeout | Проверьте сеть и доступность rclone, затем повторите команду |
-| `expected protocol v2` | Remote создан старой gdi 0.1; используйте новую пустую папку и новый repository ID |
+| `expected protocol v3` | Remote использует старый формат v1/v2; используйте новую пустую папку и новый repository ID |
 | Missing bundle / prerequisite mismatch | Проверьте полноту цепочки на Drive; после исправления повторите fetch, при необходимости создайте `push --full` из клиента с проверенной историей |
 | Ошибка локального кеша | Выполните `gdi cache clear drive`, затем fetch/pull; remote bundles должны оставаться доступны |
 
@@ -682,41 +687,48 @@ Worker/CI диагностика и recovery: [docs/worker.md](docs/worker.md).
 или для обычной установки повторите:
 
 ```bash
-cd "/home/$USER/coding/python/gdi"
+INSTALL_DIR="/путь/к/gdi"
+cd "$INSTALL_DIR"
 "$HOME/.venvs/gdi/bin/python" -m pip install -e .
 gdi --version
 ```
 
-### Переход с gdi 0.1 / протокола v1
+### Переход на Git protocol v3
 
-Формат pre-alpha изменён без обратной совместимости. Не редактируйте `version` в
-старом `repository.json`: прежние manifests не имеют обязательных полей v2.
-Сначала убедитесь, что полная нужная история сохранена в локальном Git-репозитории.
-На первом компьютере подключите **новую пустую** папку под новым именем:
-
-```bash
-gdi remote add drive2 gdrive:gdi/my-project-v2 --init
-gdi push drive2
-```
-
-На остальных компьютерах:
+Обратная совместимость с Git exchange v1/v2 и local config v1 отсутствует.
+Сохраните полную нужную историю локально; изменение `version` в старой metadata
+не преобразует структуру публикаций. На каждом клиенте сохраните старый config
+отдельно (если файл есть):
 
 ```bash
-gdi remote add drive2 gdrive:gdi/my-project-v2 --repository-id НОВЫЙ_ID_С_ПЕРВОГО_КОМПЬЮТЕРА
-gdi fetch drive2
-gdi pull drive2
+mv .gdi/config.json .gdi/config.pre-v3.json
 ```
 
-Повторите публикацию для остальных нужных веток. Старую папку и настройки можно
-сохранить до проверки перехода. `remote remove drive` удаляет только локальную
-конфигурацию; старые Drive files и fetched refs остаются. Все клиенты нового remote
-должны использовать gdi 0.3. Старый apply-GC из gdi 0.2.1 нельзя запускать
-на remote с CI jobs: он не знает защиту незавершённых заданий.
+На первом компьютере выберите новую пустую папку либо прежний URL, если вы уже
+удалили старый remote, и создайте новый Repository ID:
+
+```bash
+gdi remote add drive gdrive:gdi/my-project-v3 --init
+gdi push
+gdi status
+```
+
+На остальных компьютерах подключитесь к тому же URL без `--init`:
+
+```bash
+gdi remote add drive gdrive:gdi/my-project-v3 --repository-id НОВЫЙ_ID_С_ПЕРВОГО_КОМПЬЮТЕРА
+gdi fetch
+gdi pull
+```
+
+Повторите публикацию остальных нужных веток: `gdi push drive BRANCH`.
+Старые cache/CI state не удаляются автоматически. Старые версии клиентов не должны
+работать с новым remote. Все клиенты и worker должны понимать Git protocol v3.
 
 Перед обновлением worker дождитесь доставки текущих jobs и выполните `gdi worker stop`.
 Обновите пакет на всех клиентах, затем `gdi worker start`. После переноса venv или
 config повторите `worker install --config ...`, чтобы обновить абсолютные пути unit.
-Существующий Git protocol v2 remote переинициализировать не нужно.
+Git protocol v1/v2 remote требует пересоздания по инструкции выше.
 
 Перед удалением worker остановите службу и отключите её автозапуск:
 

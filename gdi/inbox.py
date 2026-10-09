@@ -57,7 +57,8 @@ def filename(value):
 def publish(transport, value):
     from .ci_protocol import upload_json
     validate(value)
-    transport.mkdir("inbox")
+    if not getattr(transport, 'creates_parents', False):
+        transport.mkdir("inbox")
     upload_json(transport, "inbox/" + filename(value), value)
 
 

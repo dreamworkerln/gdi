@@ -1,4 +1,4 @@
-"""Repository-local settings owned by gdi; Git config is read only for migration."""
+"""Repository-local settings and explicit default connection owned by gdi."""
 
 from .exchange import decode, encode, hex_value, remote_name
 from .git import GdiError
@@ -21,19 +21,12 @@ def repository_path(root, url):
 
 def load(git):
     path = git.gdi_dir() / "config.json"
-    migrated = False
     if path.exists():
         data = decode(path.read_bytes())
-        if set(data) != {"config_version", "remotes"} or type(data["config_version"]) is not int or data["config_version"] != 1 or not isinstance(data["remotes"], dict):
-            raise GdiError("invalid .gdi/config.json")
+        if set(data) != {"config_version", "default_remote", "remotes"} or type(data["config_version"]) is not int or data["config_version"] != 2 or not isinstance(data["remotes"], dict):
+            raise GdiError("unsupported .gdi/config.json: recreate local connections with config version 2 (preserve the old file separately)")
     else:
-        data = {"config_version": 1, "remotes": {}}
-        output = git.call("config", "--local", "--get-regexp", r"^gdi\.remote\..*\.url$", allowed=(0, 1)).stdout
-        for line in output.splitlines():
-            key, url = line.split(" ", 1)
-            name = key[len("gdi.remote."):-len(".url")]
-            data["remotes"][name] = {"url": url, "repository_id": git.config(key[:-3] + "repositoryid"), "inbox_root": inferred_root(url)}
-            migrated = True
+        data = {"config_version": 2, "default_remote": None, "remotes": {}}
     for name, value in data["remotes"].items():
         remote_name(name)
         if not isinstance(value, dict) or set(value) != {"url", "repository_id", "inbox_root"} or not hex_value(value["repository_id"], 32):
@@ -41,9 +34,31 @@ def load(git):
         validate_url(value["url"])
         if value["inbox_root"] is not None:
             repository_path(value["inbox_root"], value["url"])
-    if migrated:
-        save(git, data)
+    default = data['default_remote']
+    if default is not None and (not isinstance(default, str) or default not in data['remotes']):
+        raise GdiError('invalid default remote in .gdi/config.json')
     return data
+
+
+def select(git, name=None):
+    data = load(git)
+    if name is not None:
+        get(git, name)
+        return name
+    if data['default_remote'] is not None:
+        return data['default_remote']
+    if len(data['remotes']) == 1:
+        return next(iter(data['remotes']))
+    if not data['remotes']:
+        raise GdiError('no gdi connections: gdi remote add drive <rclone:path> --init')
+    raise GdiError('multiple connections: specify a remote or run gdi remote default <name>')
+
+
+def set_default(git, name):
+    get(git, name)
+    data = load(git)
+    data['default_remote'] = name
+    save(git, data)
 
 
 def save(git, data):

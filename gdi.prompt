@@ -2,17 +2,18 @@
 QUICKSTART.md и docs/worker.md. Ниже сохранены исходные требования/обсуждение;
 точные действующие команды см. в справке gdi -h и документации, а не в эскизах CLI.
 
-Действующая схема v2: собственная `.gdi/config.json`, общая immutable inbox,
+Действующая схема: Git exchange v3 с читаемыми `branches/<encoded-branch>/`,
+собственная `.gdi/config.json` v2 с default remote, короткие push/fetch/pull и status, общая immutable inbox,
 global worker без списка репозиториев и CI из `.github/workflows` точного commit
 через act/Docker. Legacy registered stages относятся только к config/request v1.
 Runtime execution revision включает фактический act/Docker/base images; host workflow
 checkout и container workspace имеют разные гарантии (docs/ci-protocol.md).
 Текущие задачи и фактически выполненные проверки перечислены в TODO.md;
-эксплуатационные fixtures — docs/acceptance.md. Chatter не изменять.
+эксплуатационные fixtures — docs/acceptance.md. gdi — самостоятельный проект.
 
 # Стартовый промпт для разработки gdi
 
-Мы перенесли работу в отдельный Git-репозиторий для создания утилиты `gdi`.
+Работа ведётся в отдельном Git-репозитории утилиты `gdi`.
 Помоги спроектировать и реализовать её поэтапно, начиная с рабочего обмена Git-данными
 через Google Drive. Ниже — контекст предыдущего обсуждения и исходные требования.
 
@@ -27,7 +28,7 @@ checkout и container workspace имеют разные гарантии (docs/c
 - После задачи worker останавливают файлом `stop.request`, а для следующей задачи
   приходится удалять marker и вручную запускать worker заново.
 - Есть постоянный циклический опрос Drive.
-- Workflow и часть реализации привязаны к одному репозиторию и Chatter CI.
+- Workflow и часть реализации привязаны к одному пользовательскому репозиторию.
 - При получении результата нужно вручную указывать имя bundle с commit SHA.
 
 Нужна самостоятельная утилита `gdi`, немного похожая по использованию на Git:
@@ -36,29 +37,25 @@ checkout и container workspace имеют разные гарантии (docs/c
 
 ## Контекст и материалы
 
-Если в новом репозитории есть `gdi.project`, прочитай его: это сохранённый предыдущий
+Прочитай `gdi.project`: это сохранённый предыдущий
 архитектурный разбор. Он содержит предложения, а не окончательно утверждённую
 спецификацию всех деталей. Этот промпт достаточен для восстановления общего контекста.
 
-Исходная реализация находится здесь, если этот путь доступен:
+Все материалы для работы находятся в репозитории gdi:
 
-`/home/dream/coding/c++/lora-sack/chatter`
+- `README.md`, `ARCHITECTURE.md`, `TODO.md`;
+- `INSTALL.md`, `QUICKSTART.md`, `GOOGLE_DRIVE_CI_PUBLISHING_WORKFLOW.md`;
+- `docs/`, `examples/worker.json`, модули `gdi/` и проверки `tests/`.
 
-Для изучения и возможного переноса относящейся к задаче логики разрешено прочитать:
+В командах, обращающихся к исходникам, задавай путь через переменную:
 
-- `GOOGLE_DRIVE_CI_PUBLISHING_WORKFLOW.md`;
-- `gdrive_publish.sh`, `gdrive_receive.sh`, `gdrive_clear.sh`, `gdrive_listen.sh`;
-- `ci/gdrive_worker.py`, `ci/run_local_ci.sh`, `ci/README.md`;
-- `ci/test_gdrive_worker.py`, `ci/test_ci_contract.py`;
-- `todos/TODO_018_GDRIVE_PREPUSH_CI_WORKER.md`.
+```bash
+INSTALL_DIR="/путь/к/gdi"
+cd "$INSTALL_DIR"
+```
 
-Исходный Chatter-репозиторий не изменяй. Не нужно читать весь firmware или соседний
-serialterminal: они не нужны для создания универсальной утилиты. Не переноси
-Chatter-specific проверки в универсальное ядро.
-
-В исходниках ветка уже определяется динамически или приходит в request. Главные
-жёсткие привязки — Drive root `chatgpt-git/lora-sack/ci`, путь
-`chatter/ci/run_local_ci.sh` и подготовка PlatformIO environment.
+`INSTALL_DIR` — абсолютный путь к папке gdi на текущей машине. Для примеров обмена
+используй абстрактный Git-репозиторий `my-project` и отдельные временные fixtures.
 
 ## Технологический выбор
 
@@ -88,7 +85,7 @@ Chatter-specific проверки в универсальное ядро.
 согласованных семантик и объясни существенные изменения.
 
 ```bash
-gdi remote add drive gdrive:chatgpt-git/lora-sack
+gdi remote add drive gdrive:gdi/my-project
 gdi push drive
 gdi fetch drive
 gdi pull drive
@@ -141,7 +138,7 @@ gdi worker stop
 <remote>/<repository>/
     repository.json
     bundles/<bundle-sha256>.bundle
-    updates/<publication-id>.json
+    branches/<encoded-branch>/<publication-id>.json
     jobs/<job-id>/
         request.json
         request.ready

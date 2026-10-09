@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import tempfile
 
+from .branches import branch_directory, directory_ref
 from .cache import VerifiedCache
 from .exchange import decode, digest
 from .git import GdiError, Git
@@ -53,28 +54,27 @@ class Snapshot:
 
 def snapshot(exchange, transport, repository_id):
     """Read every branch from one listing, rejecting unknown metadata/bundle paths."""
-    listing = transport.list("updates", recursive=True)
+    listing = transport.list("branches", recursive=True)
     metadata = {}
     directories = []
     refs = set()
     for item in listing:
         path = item["Path"]
         if item["IsDir"]:
-            if not re.fullmatch(r"[0-9a-f]{64}", path):
-                raise GdiError("GC found an unexpected metadata directory: " + path)
+            exchange.git.ref(directory_ref(path)[len("refs/heads/"):])
             directories.append(path)
             continue
-        if not re.fullmatch(r"[0-9a-f]{64}/[0-9a-f]{64}\.json", path):
+        if not re.fullmatch(r"[^/]+/[0-9a-f]{64}\.json", path):
             raise GdiError("GC found an unexpected metadata file: " + path)
         if path in metadata:
             raise GdiError("GC found duplicate metadata paths")
-        raw = transport.read("updates/" + path)
+        raw = transport.read("branches/" + path)
         data = decode(raw)
         ref = data.get("ref")
         if not isinstance(ref, str) or not ref.startswith("refs/heads/"):
             raise GdiError("GC found an invalid branch ref")
         exchange.git.ref(ref[len("refs/heads/"):])
-        if path.split("/", 1)[0] != digest(ref.encode("utf-8")):
+        if path.split("/", 1)[0] != branch_directory(ref):
             raise GdiError("GC metadata directory does not match its branch ref")
         refs.add(ref)
         metadata[path] = raw
@@ -113,7 +113,7 @@ def plan_collection(state, repository_id, keep_checkpoints):
             raise GdiError("GC requires a full checkpoint for every branch")
         start = full_positions[-keep_checkpoints] if len(full_positions) >= keep_checkpoints else full_positions[0]
         retained = {publication for publication, _ in chain[start:]}
-        # v2 permits bases older than the immediately previous publication. Keep
+        # v3 permits bases older than the immediately previous publication. Keep
         # the entire dependency closure, including any older full checkpoint.
         pending = list(retained)
         while pending:

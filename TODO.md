@@ -1,12 +1,152 @@
 # TODO и состояние gdi 0.3
 
-## Завершение текущих 12 шагов — 2026-10-09
+Путь к исходникам в этом документе обозначается `$INSTALL_DIR`, домашняя папка —
+`$HOME`. Для команд из исходников задайте свой абсолютный путь:
+
+```bash
+INSTALL_DIR="/путь/к/gdi"
+cd "$INSTALL_DIR"
+```
+
+## Текущие изменения и проверки — 2026-10-09
+
+Работа ведётся в `$INSTALL_DIR`, ветка `dev`, HEAD
+`91e7e801ad74bf9e643cbd12825f7f326b7b5de6`. Перечисленные ниже изменения находятся
+в рабочем дереве; отдельный Git commit/push этих исправлений не выполнялся.
+Публикации через gdi на настоящем Drive выполнены и проверены.
+
+### Сделано
+
+- [x] Документация очищена от абсолютных путей к checkout на конкретной машине
+  и привязок к стороннему проекту. В блоках команд с исходниками задан
+  `INSTALL_DIR="/путь/к/gdi"`, домашняя папка обозначается `$HOME`;
+  примеры используют абстрактный `my-project`.
+- [x] Добавлен базовый прогресс CLI: этапы операции автоматически в терминале,
+  подробные вызовы rclone и время ожидания каждые 2 секунды — при профилировании.
+  Поддержаны `--progress`, `--no-progress`, `GDI_PROGRESS`, вывод на stderr.
+- [x] Обычный `gdi push` в новом терминале больше не печатает тайминги и счётчики.
+  Подробности и итог замера включаются только через --profile-log/GDI_PROFILE_LOG;
+  обычный прогресс показывает этапы, --no-progress полностью убирает их.
+- [x] Добавлены `--profile-log PATH` и `GDI_PROFILE_LOG`: журнал JSONL с ID запуска,
+  общим временем команды, длительностью этапов, всеми запусками rclone, аргументами,
+  exit codes, ошибками и итоговыми счётчиками. Git subprocess также измеряются;
+  содержимое stdout/stderr в журнал не записывается. Начало вызова сохраняется
+  до запуска процесса; JSON stdout CLI остаётся пригодным для автоматизации.
+- [x] Создана инструкция [docs/profiling.md](docs/profiling.md), добавлены ссылки
+  из README, INSTALL и QUICKSTART.
+- [x] Текущий Git-репозиторий подключён как `drive` к `gdrive:gdi/gdi`;
+  Общий inbox root: `gdrive:gdi`. Первоначальный ID `d5619450692e445f9efcfb08bb45018b`
+  относится к удалённому пользователем v2 remote. Новый v3 ID —
+  `89b39ff8382347d5b49f7af2f6903836`; remote пересоздан через `--init`.
+- [x] Убраны отдельные rclone mkdir перед upload manifest и inbox notification:
+  транспорт сам создаёт родительские папки при загрузке.
+- [x] Добавлены локальные записи успешной доставки обычного notification в
+  `.gdi/notifications/` через atomic write/fsync. Повторный push той же публикации
+  пропускает уже выполненный upload; ошибка upload или crash до записи оставляют
+  возможность повторить доставку того же immutable event. CI outbox/retry сохраняются.
+- [x] Несколько manifests выбранной ветки читаются одним процессом rclone через
+  `copy --files-from-raw`. Каждый снимок загружается в новую временную папку;
+  проверки SHA256, схемы, цепочки и конкурирующих публикаций сохранены.
+- [x] Исправлены immutable uploads: single-file `copyto --immutable` на проверенном
+  rclone 1.75.1 local backend перезаписывал изменённый файл. Загрузка переведена
+  на directory copy с одним файлом и `--immutable --checksum --no-traverse`;
+  отличающиеся bytes отвергаются даже при одинаковых размере и mtime.
+- [x] Добавлены 9 проверок в `tests/test_performance.py`: повтор после потребления
+  notification, failed upload, crash до receipt, corruption при повторном чтении,
+  batch freshness, missing/oversized metadata, immutable overwrite,
+  профилирование ошибок и KeyboardInterrupt.
+
+### Короткие команды и новый формат веток
+
+- [x] `gdi push`, `gdi fetch`, `gdi pull` без обязательного имени подключения;
+  текущая ветка используется по умолчанию. Первое подключение выбирается default,
+  смена — `gdi remote default NAME`. Явные `REMOTE [BRANCH]` сохранены; при нескольких
+  подключениях без default команда просит выбрать подключение.
+- [x] `gdi status [REMOTE] [--json]`: текущая ветка, HEAD, dirty worktree,
+  подключения с URL/Repository ID/default и свежий статус committed HEAD.
+  Состояния: unpublished/published/ahead/behind/diverged/unknown/detached/error.
+  Для определения ancestry неизвестного remote commit предлагается fetch;
+  status сам не скачивает bundles и не обновляет Git refs.
+- [x] `changes present` в human status выделяется красным в терминале;
+  поддержаны NO_COLOR/FORCE_COLOR, обычный pipe и JSON остаются без ANSI.
+- [x] Push/fetch/pull показывают выбранные подключение, URL и ветку, включая
+  unchanged push. JSON push содержит remote/url/branch без текстовых примесей.
+- [x] Git exchange protocol v3: авторитетные immutable manifests находятся в
+  `branches/<encoded-branch>/<publication-id>.json`. `dev` читается как `dev`,
+  `feature/login` как `feature%2Flogin`; `%` кодируется `%25`, Unicode сохраняется.
+  Отдельные цепочки и строгие проверки сохранены в exchange, CI reader, batch и GC.
+- [x] Обратная совместимость с Git exchange v1/v2 и local config v1 удалена
+  по явному указанию пользователя. Local config v2 содержит default_remote;
+  legacy Git config не импортируется. Инструкция пересоздания — INSTALL.md.
+  Для будущих breaking changes необходимость совместимости спрашивать заранее;
+  предпочтение закреплено в AGENTS.md.
+- [x] Добавлены 7 проверок коротких команд, default/ambiguity, состояний status,
+  отсутствия загрузок/изменений refs при status, старых форматов, имён веток и GC.
+  Новый формат: exchange/GC/performance — 90 tests, 61.540 с, OK;
+  short CLI — 7 tests, 1.864 с, OK. Настоящий rclone local batch отдельно проверен
+  с Unicode, `%2F` и `%252F`: имена различаются и читаются без потерь.
+- [x] После удаления папок пользователем `gdrive:gdi/gdi` пересоздан в v3:
+  init — 31.865 с / 6 вызовов; короткий push ветки dev — 51.376 с / 8 вызовов,
+  опубликован committed HEAD `91e7e801ad74bf9e643cbd12825f7f326b7b5de6`.
+  Publication: `087f65d2d51597c9dba418f5117f60113d545131ef8ef3f3a090d9167162d95c`.
+  Профиль нового remote — `/tmp/gdi-v3-live.jsonl`. Рабочие изменения ещё не закоммичены.
+
+- [x] Финальный regression нового формата: **158 tests, 181.109 с, OK (skipped=10)**.
+- [x] Настоящий v3 Drive smoke — **PASS**: short fetch в пустом Git repo сохраняет
+  unborn HEAD и ставит точный tracking ref; short pull получает опубликованный commit;
+  свежий status меняется behind → published. Fetch — 23.037 с / 4 вызова,
+  pull с cache — 14.297 с / 3 вызова. Исходный worktree не менялся.
+- [x] Новый unchanged `gdi push --json` — 16.874 с / 3 вызова; created=false,
+  remote=drive, branch=dev, тот же Publication ID, без повторной доставки notification.
+  Новый source status — 17.949 с / 3 вызова: HEAD опубликован, worktree dirty.
+  Evidence: `/tmp/gdi-v3-regression.log`, `/tmp/gdi-v3-live.jsonl`,
+  `/tmp/gdi-v3-repeat.jsonl`, `/tmp/gdi-v3-status.jsonl`, `/tmp/gdi-v3-receiver-*`.
+
+### Подтверждённые результаты
+
+| Операция | До оптимизации | После оптимизации |
+| --- | --- | --- |
+| Создание remote | 26.146 с / 6 вызовов rclone | Повторного замера создания нет |
+| Full push | 67.473 с / 10 вызовов | 44.861 с / 8 вызовов |
+| Unchanged push | 29.630 с / 5 вызовов | 15.261 с / 3 вызова |
+| Incremental push | Сравнимого исходного замера нет | 55.331 с / 10 вызовов |
+
+Full push после изменений проверен в отдельной acceptance-ветке с тем же исходным
+commit; имя ref и размер bundle немного отличаются (266 295 → 266 319 bytes).
+Времена относятся к отдельным прогонам при изменчивых сетевых задержках.
+
+- [x] Полный regression: **151 tests, 167.106 с, OK (skipped=10)**.
+  Пропущены opt-in act/Docker/Drive/service tests без environment flags.
+- [x] Отдельный настоящий Drive full → incremental → unchanged → fetch → pull:
+  **PASS**. Проверены JSON stdout, publication ID, точный HEAD и bytes файла;
+  fetch оставляет HEAD пустого checkout нетронутым, pull применяет нужный commit.
+  С двумя manifests unchanged push занял 13.534 с / 3 вызова;
+  fetch — 24.295 с / 5 вызовов, pull с verified cache — 11.601 с / 3 вызова.
+- [x] Bash-блоки с INSTALL_DIR и запуск CLI из checkout с пробелами проверены
+  при чистке документации; `git diff --check` проходит.
+
+Evidence: `/tmp/gdi-regression-after-optimization.log`,
+`/tmp/gdi-drive-after-optimization.jsonl`,
+`/tmp/gdi-drive-smoke/gdi-acceptance-9749373b2510/`.
+Acceptance-ветка `gdi-acceptance-9749373b2510` была сохранена в старом v2 remote;
+позднее пользователь удалил эти папки перед пересозданием v3. Локальный evidence остался.
+Подробности и границы замеров: [docs/profiling.md](docs/profiling.md).
+
+### Ещё не сделано
+
+Открытые задачи перечислены в разделе «Дальнейшее развитие»: полный прогресс
+передачи с объёмом/процентом/скоростью, `gdi log`, дальнейшая оптимизация metadata/API
+и backlog CI. Короткие push/fetch/pull, status и читаемые ветки уже сделаны.
+Базовый вывод операций и времени ожидания не закрывает задачу прогресса передачи.
+
+## История завершения 12 шагов — 2026-10-09
 
 По запросу пользователя возобновлены текущие 12 шагов. Раздел «Дальнейшее развитие»
-остаётся backlog. Репозиторий: `/home/hatuncevk/coding/python/gdi`, ветка `dev`,
+остаётся backlog. Репозиторий: `$INSTALL_DIR`, ветка `dev`,
 исходный HEAD `4cbd6ac` (`refactored`). Прежний handoff про незакоммиченную схему на
 `29f4baa` устарел: схема v2 уже находится в `4cbd6ac`.
-Новые исправления пока в рабочем дереве; commit и публикация проекта не выполнялись.
+На момент этой исторической сессии исправления были в рабочем дереве;
+commit и публикация проекта не выполнялись. Текущий статус приведён выше.
 
 ### Продолжение эксплуатационных проверок — 2026-10-09
 
@@ -20,7 +160,7 @@ Drive root `rclone:gdi-acceptance`, установка/start user service и lin
   checkout, upload-artifact v3/v4, FAIL → fix → PASS/exact pull и SIGKILL/restart.
   Первый прогон упёрся в 60-секундный лимит загрузки external actions; Docker
   fixtures теперь используют 600 секунд для CI и 720 для CLI wait.
-- act v0.2.89 установлен в `/home/hatuncevk/.local/bin/act`; SHA256
+- act v0.2.89 установлен в `$HOME/.local/bin/act`; SHA256
   `6be37b104430efc210d5130495bedcff2dc7cd6780a38d88f3d205e7f1185cc1`.
 - Образ закреплён в постоянном worker config как
   `catthehacker/ubuntu@sha256:c58e2b364da03b0c804c7d660f2ecbedf2f221a382b9baa0b344b0144780ff43`.
@@ -97,7 +237,7 @@ Docker, Drive и службы приведён в этом продолжени�
   Ready/result подтверждают точные bytes/identity; upload/recovery не повторяют CI.
 - Обычный push уведомляет об истории без автоматического CI/fetch в пользовательские
   ветки. CI запускается явным запросом, pull выбранного PASS остаётся ff-only.
-- **Не трогать `lora-sack/chatter`**; проверки нового runner только в отдельных fixtures.
+- Проверки runner выполняются только в отдельных fixtures.
 - Drive Changes API, push notifications/PubSub, retention и multi-worker — backlog.
 
 ### Результат текущих 12 шагов
@@ -159,7 +299,7 @@ Docker, Drive и службы приведён в этом продолжени�
    SIGKILL/restart и очистку принадлежащих job контейнеров — закрыть пункты 6 и 9.
    Образ загружен, обе проверки прошли, пункты 6 и 9 закрыты. Daemon proxy настроен,
    hello-world скачан и запущен. Host DNS без серверов не блокирует pull через proxy.
-3. [x] act v0.2.89 установлен в `/home/hatuncevk/.local/bin/act`.
+3. [x] act v0.2.89 установлен в `$HOME/.local/bin/act`.
    Проверенный образ закреплён по digest, `worker check --runtime` прошёл.
 4. [x] В разрешённой отдельной папке `rclone:gdi-acceptance`
    выполнен реальный Drive цикл FAIL → console → fix → PASS → exact pull.
@@ -201,7 +341,7 @@ Docker, Drive и службы приведён в этом продолжени�
   `hello-world`/Docker fixtures блокирует DNS при загрузке image; daemon proxy пуст,
   через proxy окружения CLI Docker Hub доступен. Реальные workflows ещё не проверены.
 - `~/.config/gdi/worker.json` и установленной gdi user service не создавалось;
-  logout/reboot/linger не изменялись. Chatter не изменялся.
+  logout/reboot/linger не изменялись.
 
 Команды и границы реальных проверок: [docs/acceptance.md](docs/acceptance.md).
 Docker установлен пользователем. В продолжении по разрешению владельца установлена
@@ -283,12 +423,17 @@ Inbox listing не гарантирует FIFO; notifications не решают 
 
 ## Дальнейшее развитие
 
-- [ ] Первым этапом, до оптимизации, добавить видимый прогресс длительных CLI команд: текущая операция и время ожидания, включая обращения к rclone/Drive.
-- [ ] Добавить профилирование таймингов команд: общее время и длительность отдельных этапов/вызовов rclone; по замерам определить узкие места перед оптимизацией. При подключении `lora-sack-protocol` команда `remote add --init` заняла около 40 секунд без промежуточного вывода (наблюдение пользователя).
-- [ ] После добавления прогресса и профилирования уменьшить число обращений к Drive и передач служебных данных в workflow обмена/CI, особенно при повторном `push` без новых commits; сохранить проверки целостности, обнаружение конфликтов и восстановление после прерывания. Наблюдения пользователя на `lora-sack-protocol`: первый push полного bundle 1 349 293 bytes — около минуты; повторный `Already published` — около 30 секунд, отдельная передача файла сопоставимого размера — около 7 секунд. Сравнить число вызовов rclone и тайминги до/после оптимизации.
-- [ ] Явно показывать подключение и выбранную ветку в выводе `push`, `fetch` и `pull`, включая `Already published`; при отсутствии аргумента ветки показывать фактически выбранную текущую ветку (например, `dev_chat_binary`).
-- [ ] Добавить команду `gdi status`: показывать текущую Git-ветку и HEAD, подключения GDI с URL/Repository ID и состояние публикации текущей ветки.
-- [ ] Сделать ветки на Drive понятными человеку: показывать читаемые имена/указатели веток внутри общей папки репозитория, а не только хеши каталогов публикаций. Сохранить один URL и Repository ID на репозиторий, отдельные цепочки публикаций веток и продумать совместимость с существующей структурой remote.
+- [x] Первым этапом, до оптимизации, добавить видимый прогресс длительных CLI команд: текущая операция и время ожидания, включая обращения к rclone/Drive. Добавлены `--progress`/`--no-progress`, автоматический вывод этапов в терминале; подробности и время ожидания rclone каждые 2 секунды включаются при профилировании.
+- [x] Добавить профилирование таймингов команд: общее время и длительность отдельных этапов/вызовов rclone. Добавлены `--profile-log PATH`/`GDI_PROFILE_LOG`: JSONL с каждым вызовом rclone, аргументами, этапом, длительностью, exit code и итоговыми счётчиками; инструкция — [docs/profiling.md](docs/profiling.md). При подключении пользовательского репозитория команда `remote add --init` заняла около 40 секунд без промежуточного вывода (наблюдение пользователя).
+- [x] По журналу профилирования подключения и push самого gdi через настоящий Google Drive определить узкие места. Замеры пользователя: init 26.146 с / 6 вызовов rclone; первый push 67.473 с / 10 вызовов (bundle 266 295 bytes, его upload 6.507 с); повторный push 29.630 с / 5 вызовов. Практически всё время уходит на rclone, включая повторную доставку notification и последовательные чтения metadata. Подробности — [docs/profiling.md](docs/profiling.md).
+- [x] Проверить первый этап оптимизации на том же Drive: убраны отдельные mkdir перед upload manifest/notification, добавлена durable запись доставки обычного notification и пакетное чтение manifests выбранной ветки. Первый повтор после обновления: 19.599 с / 4 вызова (создание записи доставки), следующий: 15.261 с / 3 вызова вместо 29.630 с / 5. Полный push в отдельной acceptance-ветке: 44.861 с / 8 вызовов вместо исходных 67.473 с / 10. Identity/свежие chain checks сохранены. Сквозной Drive full/incremental/unchanged/fetch/pull — PASS; regression — 151 tests, 167.106 с, OK (skipped=10). Immutable uploads переведены на directory copy с --immutable --checksum: подтверждён отказ перезаписи при совпадающих размере/mtime. Подробности и границы замеров — [docs/profiling.md](docs/profiling.md).
+- [ ] Добавить понятное отображение прогресса обычных `gdi push` и `gdi pull`: текущий этап, переданные bytes/общий размер и процент, когда объём известен, скорость и время ожидания. Показывать прогресс в терминале без включения профилирования; сохранять чистый JSON stdout. Уже реализованный вывод операций rclone и времени ожидания — базовый этап, прогресс самой передачи ещё требуется.
+- [x] Добавить краткие `gdi push`, `gdi fetch`, `gdi pull`: default connection, текущая ветка, явный REMOTE/BRANCH, `gdi remote default NAME`.
+- [ ] Добавить `gdi log` с краткой историей текущей ветки и выбором подключения по тем же правилам.
+- [ ] Продолжить сокращение metadata/API операций на основе новых профилей: обычный unchanged push всё ещё читает identity, listing и manifests; incremental push в acceptance занял 55.331 с / 10 вызовов (сравнимого исходного Drive-замера нет). Проверить дальнейшее переиспользование соединений/metadata и влияние длины цепочки без ослабления SHA256, обнаружения конфликтов и recovery. Исторические наблюдения пользователя: bundle 1 349 293 bytes — около минуты, `Already published` — около 30 секунд, отдельная передача файла — около 7 секунд.
+- [x] Показывать подключение, URL и выбранную ветку в push/fetch/pull, включая Already published; JSON push содержит remote/url/branch.
+- [x] `gdi status [REMOTE] [--json]`: ветка, HEAD, worktree, URL/Repository ID/default и свежие состояния публикации без bundle download.
+- [x] Читаемые ветки на Drive через `branches/<encoded-branch>/` в Git protocol v3; один URL/Repository ID и отдельные цепочки. Обратная совместимость удалена по указанию пользователя; remote пересоздан.
 - [ ] Шире fault matrix: crash на каждой границе ledger/exec/fsync/upload и сбой каждого artifact.
 - [ ] Сохранённый cursor логов между CLI вызовами; сейчас новый follow повторяет историю с начала.
 - [ ] Явное выделение stale heartbeat и подробные environment/tool version reports.

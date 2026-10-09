@@ -294,7 +294,7 @@ sys.exit(0 if source in ('fixed', 'skip') else 1)
             with other.lock():
                 pass
 
-    def test_git_configuration_is_unchanged_and_old_settings_can_be_migrated(self):
+    def test_git_configuration_is_unchanged_and_legacy_settings_are_ignored(self):
         git_config = self.a.path / '.git/config'
         before = git_config.read_bytes()
         self.ea.add('second', 'memory:hub/repos/a', inbox_root='memory:hub')
@@ -305,9 +305,9 @@ sys.exit(0 if source in ('fixed', 'skip') else 1)
         self.a.call('config', 'gdi.remote.old.repositoryid', self.identity)
         before = git_config.read_bytes()
         (self.a.path / '.gdi/config.json').unlink()
-        self.assertEqual(self.ea.remote('old')['repository_id'], self.identity)
+        with self.assertRaisesRegex(GdiError, 'missing remote configuration'):
+            self.ea.remote('old')
         self.ea.add('new', 'memory:hub/repos/a', inbox_root='memory:hub')
-        self.ea.remove('old')
         self.assertEqual(self.ea.remotes(), [('new', 'memory:hub/repos/a')])
         self.assertEqual(git_config.read_bytes(), before)
 

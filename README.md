@@ -15,17 +15,18 @@ workflows из точного commit через act + Docker; агент
 Общая очередь и подключения `.gdi`: [docs/inbox.md](docs/inbox.md).
 Worker/systemd: [docs/worker.md](docs/worker.md). Архитектура: [ARCHITECTURE.md](ARCHITECTURE.md),
 состояние проверок и дальнейшие задачи: [TODO.md](TODO.md).
+Профилирование времени команд и журнал всех вызовов rclone: [docs/profiling.md](docs/profiling.md).
 
 ```bash
 # В первом локальном Git-репозитории; отдельная пустая папка на Drive.
 gdi remote add drive gdrive:gdi/my-project --init
-gdi push drive
+gdi push
 
 # В другом clone того же проекта; --init здесь уже не нужен.
 gdi remote add drive gdrive:gdi/my-project
-gdi fetch drive
+gdi fetch
 git log --oneline HEAD..refs/remotes/drive/main
-gdi pull drive
+gdi pull
 ```
 
 `drive` — локальное имя подключения gdi; `gdrive` — имя remote в rclone.
@@ -38,25 +39,30 @@ gdi pull drive
 | --- | --- |
 | `gdi remote add NAME URL --init` | Один раз создаёт протокол в пустой папке, сохраняет repository ID локально |
 | `gdi remote add NAME URL [--repository-id ID]` | Подключает существующий remote; без ID доверяет идентичности при первом подключении |
+| `gdi remote default NAME` | Выбирает подключение для коротких команд |
+| `gdi status [NAME] [--json]` | Ветка, HEAD, worktree, подключения и свежий статус публикации без скачивания bundles |
 | `gdi remote list` | Показывает имена, адреса и закреплённые repository IDs |
 | `gdi remote remove NAME` | Удаляет локальные настройки, оставляет удалённые данные и fetched refs |
-| `gdi push NAME [BRANCH]` | Первый bundle полный, следующие инкрементальные; повтор того же HEAD ничего не публикует |
-| `gdi push NAME [BRANCH] --full` | Создаёт полный контрольный bundle, в том числе для уже опубликованного HEAD дельты |
-| `gdi push NAME [BRANCH] --checkpoint-every N` | Полный bundle после каждых N обновлений от предыдущего полного (по умолчанию 20) |
-| `gdi push NAME --ci --worker ID [--profile full] [--json]` | Публикует commit и запрос CI в общую inbox |
+| `gdi push [NAME] [BRANCH]` | Первый bundle полный, следующие инкрементальные; повтор того же HEAD ничего не публикует |
+| `gdi push [NAME] [BRANCH] --full` | Создаёт полный контрольный bundle, в том числе для уже опубликованного HEAD дельты |
+| `gdi push [NAME] [BRANCH] --checkpoint-every N` | Полный bundle после каждых N обновлений от предыдущего полного (по умолчанию 20) |
+| `gdi push [NAME] --ci --worker ID [--profile full] [--json]` | Публикует commit и запрос CI в общую inbox |
 | `gdi ci status/wait/logs NAME JOB_ID` | Прогресс, streaming console и проверенный terminal result |
 | `gdi ci retry NAME JOB_ID [--json]` | Явный повтор завершённой проверки, новый job ID |
-| `gdi pull NAME --passed --job ID --profile full` | Fast-forward именно на SHA выбранного проверенного PASS |
+| `gdi pull [NAME] --passed --job ID --profile full` | Fast-forward именно на SHA выбранного проверенного PASS |
 | `gdi worker check/run/install --config PATH` | Проверка config, foreground worker, явная установка user service |
 | `gdi worker start/status/stop` | Управление постоянной systemd user service |
-| `gdi fetch NAME [BRANCH]` | Восстанавливает недостающую историю, обновляет `refs/remotes/NAME/BRANCH` |
-| `gdi pull NAME` | Получает текущую ветку и применяет только fast-forward |
+| `gdi fetch [NAME] [BRANCH]` | Восстанавливает недостающую историю, обновляет `refs/remotes/NAME/BRANCH` |
+| `gdi pull [NAME]` | Получает текущую ветку и применяет только fast-forward |
 | `gdi cache clear NAME` | Удаляет только локальный кеш проверенных объектов этого repository ID |
 | `gdi gc NAME [--keep-checkpoints N]` | Показывает план очистки bundles всех веток; по умолчанию сохраняет два полных checkpoint и дельты после них |
 | `gdi gc NAME --apply --quiescent` | Проверяет сохраняемую историю с нуля, повторно сверяет remote и удаляет устаревшие bundles; требует остановки обмена на всех машинах |
 | `gdi -v`, `gdi --version` | Одинаковый вывод: версия и золотая ASCII-эмблема из C&C без надписей |
 | `gdi -h`, `gdi --help` | Одинаковая справка с примерами использования |
 
+Первое подключение выбирается по умолчанию; смена — `gdi remote default NAME`.
+`gdi push`, `gdi fetch`, `gdi pull` показывают подключение и выбранную ветку.
+Каталоги на Drive читаемы: `branches/dev/`, `branches/feature%2Flogin/`.
 По умолчанию push/fetch работают с текущей веткой; pull всегда работает с текущей.
 Справка и версия работают вне repo. Цвет эмблемы включается в терминале,
 `FORCE_COLOR=1` включает его в pipe, `NO_COLOR` отключает. В выводе версии нет справки;
@@ -130,8 +136,9 @@ publication ID и фактические prerequisites из bundle. Пропущ
 Неполное восстановление можно продолжить после перезапуска. Потерянный или обнаруженный
 повреждённый кеш восстанавливается из remote; ручная очистка — `gdi cache clear NAME`.
 
-**Протокол v2 несовместим с v1.** Для remote от gdi 0.1 заведите новую пустую папку и
+**Протокол v3 несовместим с v1/v2.** Для старого remote заведите новую пустую папку и
 один раз выполните `remote add --init`, затем подключите остальные клиенты к новому ID.
+Local config v1 тоже требует пересоздания; новый config v2 содержит `default_remote`.
 Старый remote автоматически не переписывается. Порядок перехода есть в INSTALL.md.
 
 ## Очистка bundles на Drive
@@ -147,7 +154,7 @@ bundles и все дополнительные базы дельт. Вся metad
 Применение отказывает при legacy CI queue markers или незавершённых jobs v1/v2. CI logs/results
 остаются; старым gdi 0.2.1 нельзя применять GC на CI remote.
 Перед удалением все сохраняемые публикации проверяются в отдельных временных Git
-репозиториях без локального кеша. Формат protocol v2 не меняется.
+репозиториях без локального кеша. Формат protocol v3 не меняется.
 
 `--quiescent` — подтверждение остановки остальных клиентов, а не удалённая блокировка.
 GC не запускается автоматически. Он удаляет лишние упаковки, сохраняя commits;
@@ -180,7 +187,11 @@ GC не запускается автоматически. Он удаляет �
 
 ## Разработка и проверки
 
+Задайте `INSTALL_DIR` — абсолютный путь к папке с исходниками gdi.
+
 ```bash
+INSTALL_DIR="/путь/к/gdi"
+cd "$INSTALL_DIR"
 python3 -m gdi --help
 python3 -m unittest discover -s tests -v
 ```

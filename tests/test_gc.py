@@ -125,8 +125,8 @@ class GcTests(ExchangeTestCase):
         self.populate()
         self.a.call("switch", "-c", "feature/broken")
         _, publication, _ = self.ea.push("drive")
-        path = "updates/" + digest(b"refs/heads/feature/broken") + "/" + publication + ".json"
-        self.store.data[path] = self.store.data[path].replace(b'"version":2', b'"version":9')
+        path = "branches/" + "feature%2Fbroken" + "/" + publication + ".json"
+        self.store.data[path] = self.store.data[path].replace(b'"version":3', b'"version":9')
         with self.assertRaises(GdiError):
             self.apply_gc()
         self.assertEqual(self.store.deletions, [])
@@ -141,7 +141,7 @@ class GcTests(ExchangeTestCase):
 
     def test_unknown_paths_abort_without_deleting(self):
         self.populate()
-        for path in ("bundles/README.txt", "bundles/nested/a.bundle", "updates/unknown.json"):
+        for path in ("bundles/README.txt", "bundles/nested/a.bundle", "branches/unknown.json"):
             with self.subTest(path=path):
                 self.store.data[path] = b"unknown"
                 try:
@@ -153,8 +153,8 @@ class GcTests(ExchangeTestCase):
 
     def test_metadata_under_wrong_branch_directory_is_rejected(self):
         self.populate()
-        path = next(path for path in self.store.data if path.startswith("updates/"))
-        self.store.data["updates/" + "0" * 64 + "/" + path.rsplit("/", 1)[1]] = self.store.data.pop(path)
+        path = next(path for path in self.store.data if path.startswith("branches/"))
+        self.store.data["branches/" + "0" * 64 + "/" + path.rsplit("/", 1)[1]] = self.store.data.pop(path)
         with self.assertRaisesRegex(GdiError, "directory does not match"):
             self.apply_gc()
         self.assertEqual(self.store.deletions, [])
@@ -164,7 +164,7 @@ class GcTests(ExchangeTestCase):
         data = copy.deepcopy(chain[0][1])
         data["nonce"] = "0" * 32
         raw = encode(data)
-        path = "updates/" + digest(b"refs/heads/main") + "/" + digest(raw) + ".json"
+        path = "branches/" + "main" + "/" + digest(raw) + ".json"
         self.store.data[path] = raw
         with self.assertRaisesRegex(GdiError, "conflicting"):
             self.apply_gc()
@@ -191,7 +191,7 @@ class GcTests(ExchangeTestCase):
         raw = bundle.read_bytes()
         bundle_path = "bundles/" + digest(raw) + ".bundle"
         self.store.data[bundle_path] = raw
-        path = "updates/" + digest(b"refs/heads/main") + "/" + chain[-1][0] + ".json"
+        path = "branches/" + "main" + "/" + chain[-1][0] + ".json"
         self.replace_publication(path, base_publication=chain[1][0], base_head=chain[1][1]["head"],
                                  bundle_sha256=digest(raw), bundle_bytes=len(raw),
                                  prerequisites=bundle_prerequisites(bundle))
@@ -276,7 +276,7 @@ class GcTests(ExchangeTestCase):
     def test_rclone_deletion_is_restricted_to_one_bundle(self):
         transport = Rclone("remote:project")
         with patch.object(transport, "call") as call:
-            for path in ("", "bundles", "bundles/../repository.json", "repository.json", "updates/x.json"):
+            for path in ("", "bundles", "bundles/../repository.json", "repository.json", "branches/x.json"):
                 with self.subTest(path=path), self.assertRaises(GdiError):
                     transport.delete_bundle(path)
             call.assert_not_called()
@@ -301,7 +301,7 @@ class LocalGcTests(ExchangeTestCase):
         for number in range(1, 6):
             self.commit(self.a, f"real update {number}")
             cli(self.a.path, "push", "localdrive", "--checkpoint-every", "2")
-        manifests = {str(path.relative_to(remote)): path.read_bytes() for path in (remote / "updates").rglob("*.json")}
+        manifests = {str(path.relative_to(remote)): path.read_bytes() for path in (remote / "branches").rglob("*.json")}
         before = list((remote / "bundles").glob("*.bundle"))
         self.assertEqual(len(before), 6)
         self.assertIn("Candidates: 2 bundles", cli(self.a.path, "gc", "localdrive"))
@@ -312,7 +312,7 @@ class LocalGcTests(ExchangeTestCase):
         self.assertIn("GC complete: deleted 2 bundles", result)
         self.assertEqual(len(list((remote / "bundles").glob("*.bundle"))), 4)
         self.assertEqual(manifests, {str(path.relative_to(remote)): path.read_bytes()
-                                    for path in (remote / "updates").rglob("*.json")})
+                                    for path in (remote / "branches").rglob("*.json")})
         identity = Exchange(self.a).remote("localdrive")["repository_id"]
         cli(self.b.path, "remote", "add", "localdrive", "gditest:" + str(remote), "--repository-id", identity)
         cli(self.b.path, "pull", "localdrive")

@@ -1,6 +1,6 @@
 # CI protocol v1/v2 — gdi 0.3
 
-Отдельный от [Git protocol v2](protocol.md) namespace `ci/`. Один назначенный
+Отдельный от [Git protocol v3](protocol.md) namespace `ci/`. Один назначенный
 worker на общий root; legacy v1 — на repository remote. Все job IDs/run IDs — 32 lowercase hex, Git SHA — 40,
 publication IDs/profile revisions/SHA256 — 64. Worker/profile IDs: ASCII letters,
 digits, `_`, `-`, до 64 символов. JSON UTF-8, canonical encoding как у Git metadata;

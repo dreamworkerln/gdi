@@ -38,16 +38,27 @@ def selected_workflow(args):
                                "job": args.job if args.job is not None else "", "inputs": inputs})
 
 
+def diagnostics_arguments(command):
+    command.add_argument('--profile-log', metavar='PATH', default=argparse.SUPPRESS,
+                         help='append command/stage timings and every rclone call to JSONL (or GDI_PROFILE_LOG)')
+    progress = command.add_mutually_exclusive_group()
+    progress.add_argument('--progress', action='store_true', default=argparse.SUPPRESS,
+                          help='show operation stages on stderr (default: terminal); rclone timings require profiling')
+    progress.add_argument('--no-progress', action='store_false', dest='progress', default=argparse.SUPPRESS,
+                          help='disable progress messages')
+
+
 def parser():
     cli = argparse.ArgumentParser(
         prog="gdi", description="Verified Git bundle exchange through rclone.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Quick start (run exchange commands inside a Git worktree):
   gdi remote add drive gdrive:gdi/my-project --init   # empty Drive folder, once
-  gdi push drive                                      # publish committed branch HEAD
+  gdi push                                            # publish committed branch HEAD
   gdi remote add drive gdrive:gdi/my-project          # join from another clone
-  gdi fetch drive                                     # import without changing files
-  gdi pull drive                                      # clean worktree, fast-forward
+  gdi fetch                                           # import without changing files
+  gdi pull                                            # clean worktree, fast-forward
+  gdi status                                          # branch, HEAD, connections and publication
   gdi cache clear drive                               # clear local verified cache
   gdi push drive --ci --worker user-host --profile full
   gdi ci wait drive JOB_ID --follow                    # watch CI and console
@@ -60,23 +71,35 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
                                  if line.startswith("  gdi ") and "#" in line else line
                                  for line in cli.epilog.split("\n"))
     cli.add_argument("-v", "--version", action=VersionAction, nargs=0, help="show version and the GDI emblem")
+    diagnostics_arguments(cli)
     commands = cli.add_subparsers(dest="command", required=True)
     remote = commands.add_parser("remote", help="configure a dedicated rclone folder for this repository")
     operations = remote.add_subparsers(dest="operation", required=True)
     add = operations.add_parser("add", help="join an existing remote, or initialize an empty folder")
+    diagnostics_arguments(add)
     add.add_argument("name")
     add.add_argument("url", help="e.g. gdrive:gdi/my-project")
     add.add_argument("--init", action="store_true", help="initialize a new empty remote folder once")
     add.add_argument("--inbox-root", help="shared exchange root (default: parent of repository URL)")
     add.add_argument("--repository-id", help="require this known identity when joining an existing remote")
-    operations.add_parser("list", help="list local gdi remotes")
+    diagnostics_arguments(operations.add_parser("list", help="list local gdi remotes"))
     remove = operations.add_parser("remove", help="remove local config; retain remote files and fetched refs")
+    diagnostics_arguments(remove)
     remove.add_argument("name")
+    default = operations.add_parser("default", help="choose the connection for short commands")
+    diagnostics_arguments(default)
+    default.add_argument("name")
+    status = commands.add_parser("status", help="show branch, HEAD, connections and fresh publication state")
+    diagnostics_arguments(status)
+    status.add_argument("remote", nargs="?", help="inspect this connection (default: all)")
+    status.add_argument("--json", action="store_true", help="write one machine-readable response")
     cache = commands.add_parser("cache", help="manage the disposable local verified-object cache")
     cache_operations = cache.add_subparsers(dest="operation", required=True)
     clear = cache_operations.add_parser("clear", help="clear a remote's local cache without changing Git refs or remote files")
+    diagnostics_arguments(clear)
     clear.add_argument("remote")
     gc = commands.add_parser("gc", help="plan removal of obsolete remote bundles (dry run by default)")
+    diagnostics_arguments(gc)
     gc.add_argument("remote", help="local gdi remote name; inspect every published branch")
     gc.add_argument("--keep-checkpoints", type=int, default=2,
                     help="keep this many latest full checkpoints and following bundles per branch (default: 2)")
@@ -86,7 +109,8 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
     for name in ("push", "fetch", "pull"):
         command = commands.add_parser(name, help={"push": "publish committed branch history",
             "fetch": "verify and update a remote-tracking ref", "pull": "fetch current branch and fast-forward only"}[name])
-        command.add_argument("remote", help="local gdi remote name")
+        diagnostics_arguments(command)
+        command.add_argument("remote", nargs="?", help="local gdi remote name (default: selected connection)")
         if name != "pull":
             command.add_argument("branch", nargs="?", help="branch name (default: current branch)")
         if name == "push":
@@ -106,6 +130,7 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
     ci_ops = ci.add_subparsers(dest="operation", required=True)
     for operation in ("submit", "status", "wait", "logs", "retry"):
         sub = ci_ops.add_parser(operation)
+        diagnostics_arguments(sub)
         sub.add_argument("remote")
         if operation == "submit":
             sub.add_argument("--publication", required=True)
@@ -126,6 +151,7 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
     worker_ops = worker.add_subparsers(dest="operation", required=True)
     for operation in ("check", "run", "install", "start", "status", "stop"):
         sub = worker_ops.add_parser(operation)
+        diagnostics_arguments(sub)
         if operation in ("check", "run", "install"):
             sub.add_argument("--config", default="~/.config/gdi/worker.json")
         if operation == "run":
@@ -155,6 +181,25 @@ def main(argv=None):
         command_parser.error("--passed requires --job and --profile; these options are used together")
     if args.command == "ci" and args.operation == "logs" and args.output and args.follow:
         command_parser.error("choose logs --output or --follow")
+    try:
+        from .diagnostics import command_session
+        with command_session(args.command + (' ' + args.operation if hasattr(args, 'operation') else ''),
+                             path=getattr(args, 'profile_log', None), progress=getattr(args, 'progress', None)) as diagnostics:
+            code = execute(args)
+            if diagnostics is not None:
+                diagnostics.exit_code = code
+            return code
+    except KeyboardInterrupt:
+        print("gdi: interrupted; the remote job is not cancelled", file=sys.stderr)
+        return 130
+    except (GdiError, OSError, UnicodeError) as exc:
+        if getattr(args, "json", False):
+            emit({"error": str(exc), "kind": "GDI_ERROR"}, True)
+        print(f"gdi: {exc}", file=sys.stderr)
+        return 1
+
+
+def execute(args):
     try:
         selector = None
         if args.command == "push" and args.ci or args.command == "ci" and args.operation == "submit":
@@ -216,6 +261,16 @@ def main(argv=None):
             emit(value, args.json)
             return 0
         with git.lock():
+            if args.command in ('push', 'fetch', 'pull'):
+                from .local_config import select
+                args.remote = select(git, args.remote)
+                branch = getattr(args, 'branch', None) or git.branch()
+                git.ref(branch)
+                if args.command != 'pull':
+                    args.branch = branch
+                settings = exchange.remote(args.remote)
+                if not getattr(args, 'json', False):
+                    print(f"Connection: {args.remote} — {settings['url']}\nBranch: {branch}", flush=True)
             if args.command == "remote":
                 if args.operation == "add":
                     identity = exchange.add(args.name, args.url, initialize=args.init, expected_id=args.repository_id, inbox_root=args.inbox_root)
@@ -223,9 +278,23 @@ def main(argv=None):
                 elif args.operation == "remove":
                     exchange.remove(args.name)
                     print(f"Removed local configuration for {args.name}; files and fetched refs retained")
+                elif args.operation == 'default':
+                    from .local_config import set_default
+                    set_default(git, args.name)
+                    print('Default connection: ' + args.name)
                 else:
+                    from .local_config import load
+                    default_name = load(git)['default_remote']
                     for name, url in exchange.remotes():
-                        print(f"{name}\t{url}\t{exchange.remote(name)['repository_id']}")
+                        print(f"{name}\t{url}\t{exchange.remote(name)['repository_id']}" + ('\t(default)' if name == default_name else ''))
+            elif args.command == 'status':
+                from .status import inspect, display
+                value = inspect(exchange, args.remote)
+                if args.json:
+                    emit(value, True)
+                else:
+                    display(value)
+                return int(any(remote['state'] == 'error' for remote in value['connections']))
             elif args.command == "cache":
                 exchange.clear_cache(args.remote)
                 print(f"Cleared local verified-object cache for {args.remote}")
@@ -244,7 +313,8 @@ def main(argv=None):
                         validate_selection(git, head, selector)
                 head, pub, created = exchange.push(args.remote, args.branch, full=args.full, checkpoint_every=args.checkpoint_every)
                 data = exchange.last_publication
-                value = {"head": head, "publication_id": pub, "created": created,
+                value = {"remote": args.remote, "url": settings['url'], "branch": branch,
+                         "head": head, "publication_id": pub, "created": created,
                          "bundle_kind": data["bundle_kind"], "bundle_bytes": data["bundle_bytes"]}
                 if args.ci:
                     from .ci import CiClient

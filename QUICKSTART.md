@@ -10,6 +10,10 @@ commit. Ваш рабочий каталог при этом не меняетс
 `full` — общее имя исполнения workflows; команды берутся из `.github/workflows`
 проверяемого commit. Замените имена и пути в примерах своими.
 
+Для измерения задержек: `gdi push drive --profile-log PATH --progress`.
+Журнал содержит каждый вызов rclone, этапы и итоговое время;
+подробности — [docs/profiling.md](docs/profiling.md).
+
 ## Один раз для проекта
 
 На первой машине, из Git-репозитория:
@@ -75,15 +79,15 @@ worker и автоматического failover пока нет. Общая in
 На отправителе, после обычного Git commit:
 
 ```bash
-gdi push drive
+gdi push
 ```
 
 На получателе, в clone проекта на той же ветке:
 
 ```bash
-gdi fetch drive
+gdi fetch
 git log --oneline HEAD..refs/remotes/drive/main
-gdi pull drive
+gdi pull
 ```
 
 Замените `main` именем своей ветки. Push/fetch по умолчанию используют текущую ветку;
@@ -91,6 +95,30 @@ gdi pull drive
 Fetch обновляет отдельный remote ref, pull делает fast-forward текущей ветки и требует
 чистого рабочего дерева. Обычный push уведомляет worker об истории, CI запускается
 через `--ci`.
+
+## Подключение по умолчанию и статус
+
+Первое подключение автоматически выбирается для коротких команд `gdi push`,
+`gdi fetch`, `gdi pull`. Каждая команда показывает подключение, URL и выбранную ветку.
+При нескольких подключениях используйте сохранённое default либо укажите имя явно:
+
+```bash
+gdi remote default drive
+gdi status
+gdi status drive --json
+gdi push drive feature/login
+```
+
+`status` показывает текущую ветку, HEAD, изменения рабочего дерева и все подключения
+с URL, Repository ID и состоянием публикации: не опубликована, опубликована,
+локальная ветка впереди/позади, истории разошлись. Если remote commit ещё отсутствует
+локально, статус предлагает `fetch` для сравнения; bundles сам не загружает.
+Dirty worktree не меняет состояние публикации committed HEAD.
+
+На Drive имена каталогов читаемы: `branches/main/`, `branches/dev/`.
+Для `feature/login` используется `branches/feature%2Flogin/`, а `%` кодируется `%25`.
+Git exchange protocol v3 и local config v2 требуют пересоздания старых подключений;
+инструкция перехода — [INSTALL.md](INSTALL.md).
 
 ## Обычная работа агента
 

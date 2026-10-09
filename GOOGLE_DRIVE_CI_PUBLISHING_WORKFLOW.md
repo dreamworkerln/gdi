@@ -1,6 +1,6 @@
 # Инструкция агенту: автономный CI через gdi
 
-Актуально для gdi 0.3.0: Git protocol v2, CI protocol v1/v2. Агент публикует точный
+Актуально для gdi 0.3.0: Git protocol v3, CI protocol v1/v2. Агент публикует точный
 commit, постоянный worker пользователя запускает выбранные `.github/workflows` через act,
 агент получает проверенный результат и весь консольный вывод. Ручная передача логов
 между пользователем и агентом не требуется.
@@ -202,10 +202,11 @@ profile `full`. `gdrive:`/`rclone:` — локальные имена remotes н
 
 ### Получить уже опубликованный commit
 
-1. Скачайте `PROJECT_PATH/repository.json`; проверьте protocol `version:2`,
+1. Скачайте `PROJECT_PATH/repository.json`; проверьте protocol `version:3`,
    `object_format:"sha1"` и известный Repository ID.
-2. Вычислите SHA256 полного ref, например `refs/heads/dev`, как UTF-8 bytes без LF.
-   Скачайте `PROJECT_PATH/updates/<ref-sha256>/<publication-id>.json`.
+2. Возьмите имя ветки из ref: для `refs/heads/dev` это `dev`.
+   Закодируйте сначала `%` как `%25`, затем `/` как `%2F`; Unicode сохраните.
+   Скачайте `PROJECT_PATH/branches/<encoded-branch>/<publication-id>.json`.
    SHA256 исходных bytes manifest должен совпасть с Publication ID; сверяйте
    `repository_id`, `ref` и `head` с выбранной публикацией.
 3. Для полного bundle проверьте `bundle_kind:"full"`, `base_publication:null`,
@@ -222,12 +223,12 @@ profile `full`. `gdrive:`/`rclone:` — локальные имена remotes н
    репозитория, включая `AGENTS.md`, из этого commit. Не подменяйте выбранный
    commit более новым tip. Проверка отдельного bundle не заменяет проверку всей
    metadata-цепочки: учитывайте `previous`, отсутствующих предков и конкурирующие
-   продолжения по [Git protocol v2](docs/protocol.md).
+   продолжения по [Git protocol v3](docs/protocol.md).
 
 ### Отправить существующую публикацию на локальный CI
 
 Для этой операции новый bundle не нужен. Новый commit сначала должен стать
-проверенной Git-публикацией по protocol v2; отправка произвольного SHA в CI request
+проверенной Git-публикацией по protocol v3; отправка произвольного SHA в CI request
 не заменяет публикацию. Не используйте legacy scripts или `ci/queue` для global
 worker v2. Ниже полностью описана отправка уже существующей публикации.
 

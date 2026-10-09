@@ -1,8 +1,8 @@
-# Протокол gdi v2 (gdi 0.3, pre-alpha)
+# Протокол gdi v3 (gdi 0.3, pre-alpha)
 
 ## Совместимость и идентичность
 
-Протокол v2 несовместим с v1. Автоматической миграции и изменения существующих remote
+Протокол v3 несовместим с v1/v2. Автоматической миграции и изменения существующих remote
 нет: используйте новую пустую папку, `remote add --init` и повторную публикацию из
 полного локального repo. Нельзя просто изменить version в старом repository.json.
 
@@ -14,15 +14,13 @@
 `repository.json`:
 
 ```json
-{"version":2,"repository_id":"0123456789abcdef0123456789abcdef","object_format":"sha1"}
+{"version":3,"repository_id":"0123456789abcdef0123456789abcdef","object_format":"sha1"}
 ```
 
 Repository ID закрепляется в локальной конфигурации:
 
-```ini
-[gdi "remote.drive"]
-    url = gdrive:gdi/my-project
-    repositoryid = 0123456789abcdef0123456789abcdef
+```json
+{"config_version":2,"default_remote":"drive","remotes":{"drive":{"url":"gdrive:gdi/my-project","repository_id":"0123456789abcdef0123456789abcdef","inbox_root":"gdrive:gdi"}}}
 ```
 
 Конфигурация общая для linked worktrees, не коммитится и не переносится обычным clone.
@@ -36,14 +34,14 @@ Repository ID закрепляется в локальной конфигура�
 <rclone-url>/
     repository.json
     bundles/<sha256-of-bundle>.bundle
-    updates/<sha256-of-full-ref>/<sha256-of-manifest>.json
+    branches/<encoded-branch>/<sha256-of-manifest>.json
 ```
 
 Manifest полного bundle:
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "repository_id": "0123456789abcdef0123456789abcdef",
   "ref": "refs/heads/feature/a",
   "head": "0123456789abcdef0123456789abcdef01234567",
@@ -70,7 +68,10 @@ Reader допускает более раннюю базу, но не другу
 
 Сериализация: UTF-8 JSON, sort_keys=True, separators=(",", ":"), trailing LF. ID
 публикации — SHA256 точных bytes manifest, включая LF. Nonce — случайный UUID hex.
-SHA256 полного ref используется для пути, сам ref сохраняется без потерь. Все поля
+Каталог ветки сохраняет её имя: `dev` → `branches/dev/`,
+`feature/login` → `branches/feature%2Flogin/`. Сначала `%` заменяется на `%25`,
+затем `/` на `%2F`; Unicode сохраняется. Кодирование обратимо и различает
+`feature/login`, `feature_login` и `feature%2Flogin`. Полный ref хранится в manifest. Все поля
 обязательны; неизвестные поля, дубликаты ключей и неподдерживаемые версии отвергаются.
 
 HEAD и prerequisites — 40 lowercase hex: протокол явно ограничен SHA-1 repositories.
@@ -104,7 +105,8 @@ advertised ref, точного HEAD, типа commit, ancestry к previous HEAD 
 Порядок публикации: проверить видимую цепочку → создать/проверить bundle → повторно
 проверить цепочку → upload bundle → upload manifest последним → проверить новую
 цепочку → сохранить проверенные объекты и retaining ref в локальном кеше.
-Обе загрузки используют rclone copyto --immutable.
+Обе загрузки используют directory `rclone copy --immutable --checksum --no-traverse`.
+Single-file copy/copyto обходят immutable guard в проверенной версии rclone.
 
 Bundle без manifest не выбирается. Неудачный upload может оставить orphan bundle.
 Upload manifest не атомарен на всех backends: видимый повреждённый/частичный manifest
@@ -190,7 +192,7 @@ bundle проверяется в пустом quarantine, включая ancestr
 `gdi gc NAME` читает metadata всех опубликованных веток и показывает план.
 `--keep-checkpoints N` (по умолчанию 2, минимум 1) сохраняет последние N полных
 checkpoint каждой ветки и все публикации после старшего из них. Дополнительно
-сохраняется рекурсивное замыкание по `base_publication`: v2 допускает базу раньше
+сохраняется рекурсивное замыкание по `base_publication`: v3 допускает базу раньше
 непосредственной предыдущей публикации. Набор нужных bundle hashes объединяется
 по всем веткам. Все manifests, repository.json и bundles без manifest сохраняются.
 
@@ -206,7 +208,7 @@ checkpoint каждой ветки и все публикации после с�
 повтора частично завершённого GC. Отсутствующий сохраняемый bundle, неизвестные пути,
 некорректные metadata, конфликтующие цепочки или ошибка проверки отменяют удаление.
 При сбое удаления часть кандидатов уже может быть удалена; оставьте обмен на паузе
-и повторите GC. Metadata не переписывается, protocol v2 остаётся совместимым.
+и повторите GC. Metadata не переписывается, формат protocol v3 не меняется.
 
 Это не online GC: `--quiescent` требует согласованной остановки push/fetch/pull/GC
 на всех остальных клиентах, включая уже выполняющиеся чтения. Проверки снимков не
@@ -230,7 +232,7 @@ Listing и чтение всей metadata-истории происходят п
 ## Автономный CI
 
 Начиная с gdi 0.3 CI использует отдельный namespace `ci/` и `ci_version:1` без
-изменения Git protocol v2. Request связывает exact publication/ref/head и локальный
+изменения Git protocol v3. Request связывает exact publication/ref/head и локальный
 профиль worker; result и artifacts проверяются независимо от Git fetch.
 См. [ci-protocol.md](ci-protocol.md). Обычный pull не имеет CI gate, а
 `pull --passed --job ID --profile full` применяет точно SHA выбранного PASS.

@@ -20,11 +20,11 @@ from .git import GdiError
 def publication(exchange, transport, repository_id, publication_id):
     if not hex_value(publication_id, 64):
         raise GdiError("publication ID must be 64 lowercase hexadecimal characters")
-    listing = transport.list("updates", recursive=True)
+    listing = transport.list("branches", recursive=True)
     paths = [entry["Path"] for entry in listing if not entry["IsDir"] and entry["Path"].endswith('/' + publication_id + '.json')]
     if len(paths) != 1:
         raise GdiError("CI publication not found or ambiguous")
-    data = decode(transport.read("updates/" + paths[0]))
+    data = decode(transport.read("branches/" + paths[0]))
     if not isinstance(data.get("ref"), str) or not data["ref"].startswith("refs/heads/"):
         raise GdiError("invalid CI publication branch ref")
     chain = exchange.publications(transport, repository_id, data["ref"], listing=listing)

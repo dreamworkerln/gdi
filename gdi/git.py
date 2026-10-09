@@ -13,21 +13,24 @@ class GdiError(RuntimeError):
 
 
 def run(args, *, cwd=None, allowed=(0,), isolated_git=False):
+    from .diagnostics import subprocess_call
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env["GIT_TERMINAL_PROMPT"] = "0"
     if isolated_git:
         env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
                    GIT_CONFIG_NOSYSTEM="1")
-    try:
-        result = subprocess.run(args, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                                errors="strict")
-    except FileNotFoundError as exc:
-        raise GdiError(f"{args[0]} not found in PATH") from exc
-    if result.returncode not in allowed:
-        detail = result.stderr.strip() or result.stdout.strip()
-        raise GdiError(f"{args[0]} failed (exit {result.returncode}): {detail}")
-    return result
+    with subprocess_call(args) as timing:
+        try:
+            result = subprocess.run(args, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                                    errors="strict")
+        except FileNotFoundError as exc:
+            raise GdiError(f"{args[0]} not found in PATH") from exc
+        timing['result'] = result
+        if result.returncode not in allowed:
+            detail = result.stderr.strip() or result.stdout.strip()
+            raise GdiError(f"{args[0]} failed (exit {result.returncode}): {detail}")
+        return result
 
 
 class Git:

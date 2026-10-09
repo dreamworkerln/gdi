@@ -1,4 +1,4 @@
-"""CI v1 identities and artifact verification, independent of Git protocol v2."""
+"""CI v1 identities and artifact verification, independent of Git protocol v3."""
 
 from datetime import datetime, timezone
 import os

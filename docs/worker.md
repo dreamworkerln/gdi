@@ -8,6 +8,14 @@ Engine. Docker Compose требуется только если его испо�
 ## Общая конфигурация
 
 Скопируйте [пример](../examples/worker.json) в `~/.config/gdi/worker.json`.
+Задайте `INSTALL_DIR` — абсолютный путь к папке с исходниками gdi:
+
+```bash
+INSTALL_DIR="/путь/к/gdi"
+mkdir -p "$HOME/.config/gdi"
+cp "$INSTALL_DIR/examples/worker.json" "$HOME/.config/gdi/worker.json"
+```
+
 Укажите `remote_url`, например `gdrive:gdi`, и постоянный `worker_id`.
 **Проекты, ветки и команды CI перечислять не нужно.** Проекты подключаются через
 `gdi remote add`, а уведомления всех проектов поступают в общую `inbox`.

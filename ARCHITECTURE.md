@@ -1,6 +1,6 @@
 # Архитектура gdi 0.3: автономный агент и host CI
 
-Реализованы Git protocol v2 и CI protocol v1/v2. Обычный обмен работает без worker;
+Реализованы Git protocol v3 и CI protocol v1/v2. Обычный обмен работает без worker;
 автономный CI требует один раз настроенного host. Python 3.10.12, стандартная
 библиотека, внешние Git/rclone; для GitHub Actions — act/Docker. Человеческий workflow: [QUICKSTART.md](QUICKSTART.md),
 инструкция агенту: [GOOGLE_DRIVE_CI_PUBLISHING_WORKFLOW.md](GOOGLE_DRIVE_CI_PUBLISHING_WORKFLOW.md).
@@ -107,7 +107,7 @@ worktree и повторно проверяет branch/HEAD/status перед п
     <project>/
         repository.json
         bundles/<sha256>.bundle
-        updates/<sha256-of-ref>/<publication>.json
+        branches/<encoded-branch>/<publication>.json
         ci/jobs/<job-id>/
             request.json, request.ready, worker.running.json
             status.json, events/, log-chunks/, artifacts/
@@ -131,7 +131,7 @@ Legacy config/request v1 с per-repository queues сохраняется для 
 ## История и исполнение
 
 Постоянный receiver каждого проекта из inbox содержит verified bare
-cache существующего Git protocol v2. Worker валидирует исходную publication,
+cache существующего Git protocol v3. Worker валидирует исходную publication,
 восстанавливает текущий tip от последнего доступного full/cache, проверяет наличие
 и ancestry job HEAD. Старую публикацию можно проверить даже после удаления её
 старого bundle: commits остаются достижимыми из сохранённого полного checkpoint.
