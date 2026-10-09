@@ -23,8 +23,11 @@ Engine. Docker Compose требуется только если его испо�
 | `poll_idle_max_seconds` | Максимальная пауза в простое/при сетевых ошибках, по умолчанию 60 |
 | `state_dir`, `cache_dir` | Необязательные абсолютные пути вместо XDG defaults |
 | `act_executable` | `act` в PATH службы или абсолютный путь к программе |
+| `act_version` | Требуемая версия act, default `0.2.89`; несовпадение блокирует capabilities |
+| `docker_executable` | Docker CLI в PATH или абсолютный путь, default `docker` |
 | `platforms` | Сопоставление `runs-on` и образов; default: `ubuntu-latest=catthehacker/ubuntu:act-latest` |
 | `artifact_server_port` | Порт локального сервера артефактов act, по умолчанию 34567 |
+| `artifact_server_addr` | IPv4 адрес сервера artifacts/cache, default `127.0.0.1` для host network/self-hosted |
 | `secret_names` | Имена secrets, которые act возьмёт из окружения службы; default `[]` |
 | `transport.connect_timeout_seconds` | rclone connection timeout, по умолчанию 10 |
 | `transport.timeout_seconds` | rclone I/O idle timeout, по умолчанию 60 |
@@ -54,8 +57,25 @@ Act получает отдельный checkout точного commit, `GITHUB_
 `actions/checkout` использует переданные локальные исходники. Workspaces jobs копируются;
 исходный checkout и пользовательская рабочая ветка не используются для build outputs.
 Act запускается вне checkout: project `.actrc` не заменяет выбранный план. Docker
-images и actions используют persistent caches. Версии act и образы рекомендуется
-закрепить после проверки; обновление изменяемого image tag не меняет revision config.
+images и actions используют persistent caches. При advertise worker проверяет
+`act_version`, SHA256 бинарника, host `.actrc`, Docker daemon ID/version и фактические
+image IDs из `platforms`. Эти значения входят в execution revision. Все выбранные
+base images должны уже присутствовать локально; загрузите их через `docker pull`
+перед запуском. Act получает immutable image IDs и `--pull=false`; обновление
+локального image tag меняет revision после restart. Обновление act с прежним номером
+версии также выявляется по SHA256. Отчёт включён в проверяемый `artifacts/environment.json`.
+
+Имя `owner/repository` берётся из GitHub origin отправителя и закрепляется в request
+v2 без URL/credentials. Worker передаёт repository/owner в event и act contexts;
+retry сохраняет прежний namespace. При отсутствии GitHub origin эти поля не
+подменяются придуманным namespace. Pull request API payload и остальные GitHub
+contexts автоматически не воспроизводятся.
+
+Docker CLI и act используют один явный daemon endpoint. Jobs без `services` работают
+в host network. Если workflow создаёт bridge network для services, задайте
+`artifact_server_addr` как IPv4 host, достижимый из контейнеров. Значение `127.0.0.1`
+для такой сети не подходит. Внешние actions и собственные `container`/`services`
+images задаёт YAML; их версии/digests закрепляйте в проекте отдельно.
 
 Консоль act сохраняется как JSON lines в общем build.log и передаётся streaming chunks.
 В результате gdi это одна blocking-стадия `github-actions`; детализация jobs/steps
@@ -66,8 +86,13 @@ job даёт ERROR, а не PASS. Upload artifacts собираются серв
 [Act не полностью совместим с GitHub Actions](https://nektosact.com/not_supported.html):
 в частности, не все GitHub contexts, permissions, cancellation и job timeouts
 воспроизводятся. Общий timeout обеспечивает gdi: сначала SIGINT для cleanup act,
-через 10 секунд при необходимости SIGKILL. После принудительного прерывания проверьте
-остаточные Docker containers: Docker daemon не входит в process group worker.
+через 10 секунд при необходимости SIGKILL. Перед исполнением worker сохраняет
+Docker daemon identity и уникальный checkout в durable ownership record. После CI
+и при restart он удаляет только containers `act-*` с WorkingDir данного checkout;
+чужие containers сохраняются. Ошибка cleanup оставляет job в recovery до восстановления
+исходного daemon. Docker volumes/networks и containers, созданные shell-командами
+самого workflow, требуют отдельного обслуживания; глобальный prune не выполняется.
+Это проверяется на Docker отдельно от host/self-hosted fixture.
 Windows/macOS jobs требуют соответствующей среды; Linux Docker не заменяет эти ОС.
 
 Установку [Docker Engine](https://docs.docker.com/engine/install/) и
@@ -78,14 +103,16 @@ act — v0.2.89. Убедитесь, что пользователь служб�
 
 ```bash
 gdi worker check --config ~/.config/gdi/worker.json --json
+gdi worker check --config ~/.config/gdi/worker.json --runtime --json
 act --version
 docker version
 rclone lsf gdrive:gdi
 gdi worker run --config ~/.config/gdi/worker.json
 ```
 
-`check` проверяет схему config и revision; наличие act/Docker и доступ к Drive
-проверяются отдельно. Foreground worker создаёт общие capabilities и inbox,
+`check` проверяет схему config и выдаёт `config_revision`; `check --runtime`
+проверяет act/Docker/images и выдаёт фактические `execution_revision` и environment.
+Доступ к Drive проверяется при запуске. Foreground worker создаёт capabilities и inbox,
 остаётся работать после PASS/FAIL. Ctrl+C запрашивает завершение после текущего job.
 Для одного обхода: `gdi worker run --config ~/.config/gdi/worker.json --once`.
 Сетевые ретраи не повторяют уже исполненный CI.
@@ -168,7 +195,7 @@ Ledger и spool постоянные; не удаляйте их при акти
 | Подготовка не дошла до RUNNING | Подготовить checkout снова, сохранив job/run IDs |
 | RUNNING/FINALIZING без durable result | Не запускать снова; остановить известный собственный процесс с совпавшей Linux identity, сохранить INTERRUPTED |
 | Локальный result уже записан | Проверить spool и повторить только upload |
-| Result опубликован, queue pointer остался | Завершить подтверждение/очистку очереди, без CI |
+| Result опубликован, уведомление inbox или legacy queue pointer остался | Перепроверить result и повторить удаление конкретного marker, без CI |
 | Claim принадлежит другому run или ledger потерян | Явная ошибка в journal, автоматического takeover нет |
 
 Live publisher работает отдельно от чтения stdout. Недоступный Drive не блокирует
@@ -177,9 +204,13 @@ Live publisher работает отдельно от чтения stdout. Не�
 последующие обходы повторяют её с теми же bytes, не выполняя команды снова.
 
 При остановке `gdi worker stop` worker не берёт новые jobs и заканчивает текущий.
-Systemd ждёт до 120 секунд, затем убивает всю control group. На следующем старте
+Unit использует `KillMode=mixed`: SIGTERM получает только worker, чтобы act и
+его дочерние процессы могли закончить текущий CI. Systemd ждёт до 120 секунд,
+затем убивает всю control group. На следующем старте
 незавершённый запуск становится INTERRUPTED, а готовый result допубликовывается.
-Если полный CI длится дольше, увеличьте `TimeoutStopSec` через override.
+Если CI вместе с доставкой результатов длится дольше, увеличьте `TimeoutStopSec`
+через override.
+Условия и команды реальной проверки: [acceptance.md](acceptance.md).
 При SIGKILL foreground вне systemd могут остаться потомки: контролируйте их на host;
 никогда не начинайте повторный запуск вслепую. Exactly-once не обещается.
 

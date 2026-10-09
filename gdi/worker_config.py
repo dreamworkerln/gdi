@@ -1,6 +1,7 @@
 """Registered workflow selectors and legacy stages; requests never supply commands."""
 
 import math
+import ipaddress
 import os
 import re
 from pathlib import Path, PurePosixPath
@@ -12,7 +13,7 @@ from .transport import validate_url
 
 
 def relative_path(value):
-    if (not isinstance(value, str) or not value or '\\' in value or '\x00' in value
+    if (not isinstance(value, str) or not value or '\\' in value or any(ord(c) < 32 or ord(c) == 127 for c in value)
             or PurePosixPath(value).is_absolute() or '..' in value.split('/')):
         raise GdiError("profile paths must stay inside the job checkout")
     return value
@@ -31,12 +32,18 @@ def directory(kind):
 
 
 def workflow_config(value):
-    allowed = {"path", "event", "job", "executable", "platforms", "inputs", "vars", "secrets", "repository", "artifact_server_port"}
+    allowed = {"path", "event", "job", "executable", "platforms", "inputs", "vars", "secrets", "repository", "artifact_server_port", "artifact_server_addr", "act_version", "docker_executable"}
     if not isinstance(value, dict) or set(value) - allowed:
         raise GdiError("invalid workflow fields")
     port = value.setdefault("artifact_server_port", 34567)
     if type(port) is not int or not 1 <= port <= 65535:
         raise GdiError("artifact_server_port must be between 1 and 65535")
+    address = value.setdefault("artifact_server_addr", "127.0.0.1")
+    try:
+        if not isinstance(address, str) or ipaddress.ip_address(address).version != 4:
+            raise ValueError()
+    except ValueError as exc:
+        raise GdiError("artifact_server_addr must be an IPv4 address reachable from runner jobs") from exc
     relative_path(value.setdefault("path", ".github/workflows"))
     event = value.setdefault("event", "push")
     if not isinstance(event, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", event):
@@ -47,6 +54,12 @@ def workflow_config(value):
             raise GdiError("invalid workflow " + key)
     if value["repository"] and not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value["repository"]):
         raise GdiError("workflow repository must be owner/repository")
+    version = value.setdefault("act_version", "0.2.89")
+    if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        raise GdiError("act_version must be a pinned semantic version")
+    docker = value.setdefault("docker_executable", "docker")
+    if not isinstance(docker, str) or not docker or "\x00" in docker or ("/" in docker and not Path(docker).is_absolute()):
+        raise GdiError("docker_executable must be absolute or a command in PATH")
     for key in ("platforms", "inputs", "vars"):
         mapping = value.setdefault(key, {"ubuntu-latest": "catthehacker/ubuntu:act-latest"} if key == "platforms" else {})
         if (not isinstance(mapping, dict) or any(not isinstance(k, str) or not k or '=' in k or "\x00" in k
@@ -147,7 +160,7 @@ def load_config(path):
 
 def global_config(config):
     allowed = {"config_version", "worker_id", "remote_url", "poll_active_seconds", "poll_idle_max_seconds",
-               "state_dir", "cache_dir", "timeout_seconds", "act_executable", "platforms", "secret_names", "artifact_server_port", "transport"}
+               "state_dir", "cache_dir", "timeout_seconds", "act_executable", "act_version", "docker_executable", "platforms", "secret_names", "artifact_server_port", "artifact_server_addr", "transport"}
     if set(config) - allowed:
         raise GdiError("invalid global worker config fields; repositories/profiles belong outside worker.json")
     identifier(config.get("worker_id"))
@@ -163,12 +176,17 @@ def global_config(config):
         config[key] = str(Path(value).expanduser().resolve())
     config["timeout_seconds"] = seconds(config.get("timeout_seconds", 3600))
     workflow = workflow_config({"executable": config.get("act_executable", "act"),
+                                "act_version": config.get("act_version", "0.2.89"), "docker_executable": config.get("docker_executable", "docker"),
                                 "secrets": config.get("secret_names", []), "artifact_server_port": config.get("artifact_server_port", 34567),
+                                "artifact_server_addr": config.get("artifact_server_addr", "127.0.0.1"),
                                 **({"platforms": config["platforms"]} if "platforms" in config else {})})
     config["act_executable"] = workflow["executable"]
+    config["act_version"] = workflow["act_version"]
+    config["docker_executable"] = workflow["docker_executable"]
     config["platforms"] = workflow["platforms"]
     config["secret_names"] = workflow["secrets"]
     config["artifact_server_port"] = workflow["artifact_server_port"]
+    config["artifact_server_addr"] = workflow["artifact_server_addr"]
     profile = {"workflow": workflow, "timeout_seconds": config["timeout_seconds"], "env": {}, "artifacts": []}
     profile["revision"] = digest(encode(profile))
     config["execution_profile"] = profile

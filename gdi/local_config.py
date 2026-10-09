@@ -15,7 +15,8 @@ def repository_path(root, url):
     validate_url(root); validate_url(url)
     if not url.startswith(root + "/"):
         raise GdiError("repository URL must be below the inbox root")
-    return url[len(root) + 1:]
+    from .inbox import relative_repository
+    return relative_repository(url[len(root) + 1:])
 
 
 def load(git):

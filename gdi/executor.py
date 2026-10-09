@@ -39,6 +39,7 @@ def execute(checkout, profile, log, update, process_changed):
     results, warnings = [], []
     env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
     env.update(profile["env"])
+    env.update(profile.get("process_env", {}))
     env["PYTHONUNBUFFERED"] = "1"
     with log.open('ab', buffering=0) as output:
         for stage in profile["stages"]:
@@ -51,7 +52,6 @@ def execute(checkout, profile, log, update, process_changed):
             process = subprocess.Popen(stage["argv"], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
             identity = process_identity(process.pid)
-            process_changed(identity)
             timed_out = False
             force_kill_at = None
             heartbeat = time.monotonic()
@@ -59,6 +59,7 @@ def execute(checkout, profile, log, update, process_changed):
             selector.register(process.stdout, selectors.EVENT_READ)
             os.set_blocking(process.stdout.fileno(), False)
             try:
+                process_changed(identity)
                 while selector.get_map() or process.poll() is None:
                     if time.monotonic() >= deadline and not timed_out:
                         timed_out = True

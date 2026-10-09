@@ -333,7 +333,7 @@ class ConfigTests(unittest.TestCase):
     def test_service_absolute_paths_and_profile_rejection(self):
         from gdi.service import unit
         text = unit('/tmp/space here/worker.json')
-        self.assertIn('KillMode=control-group', text)
+        self.assertIn('KillMode=mixed', text)
         self.assertIn('StandardError=journal', text)
         self.assertIn('"/tmp/space here/worker.json"', text)
         self.assertNotIn('.bashrc', text)

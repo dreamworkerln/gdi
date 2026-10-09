@@ -5,7 +5,7 @@ commit, постоянный worker пользователя запускает 
 агент получает проверенный результат и весь консольный вывод. Ручная передача логов
 между пользователем и агентом не требуется.
 
-Настройка host: [Install.md](Install.md), [docs/worker.md](docs/worker.md).
+Настройка host: [INSTALL.md](INSTALL.md), [docs/worker.md](docs/worker.md).
 Человеческий справочник: [QUICKSTART.md](QUICKSTART.md).
 
 ## Перед первой отправкой
@@ -65,7 +65,7 @@ Request использует возвращённую Git-публикацию. 
 gdi ci submit drive --publication PUBLICATION_ID --worker user-host --profile full --json
 ```
 
-Outbox сохраняется в `<git-common-dir>/gdi-ci/<repository-id>/outbox/` до upload.
+Outbox сохраняется в `.gdi/ci/<repository-id>/outbox/` основного worktree до upload.
 Повтор после сетевой ошибки допубликовывает те же bytes с тем же job ID. Повтор
 успешного submit возвращает прежний job, даже если он уже завершён. Не удаляйте outbox
 ради повторного исполнения; используйте `ci retry`. После потери outbox сначала
@@ -91,8 +91,8 @@ gdi ci logs drive JOB_ID --output /tmp/gdi-JOB_ID.log
 
 Без `--output` команда показывает уже опубликованные фрагменты; с `--follow` ждёт
 окончания и показывает новые. Бинарные bytes сохраняются без преобразований.
-В локальном Git common directory также остаются проверенные result и artifacts:
-`gdi-ci/<repository-id>/results/<job-id>/`.
+В локальной `.gdi` основного worktree также остаются проверенные result и artifacts:
+`ci/<repository-id>/results/<job-id>/`.
 
 | Exit `ci wait` | Значение |
 | --- | --- |
@@ -159,3 +159,10 @@ jobs. Старый gdi 0.2.1 не знает CI-защиту GC: обновит�
 в request и сохраняется при retry. Не добавляйте shell-команды в другие configs.
 Подключения хранятся в `.gdi/config.json`, Git config не изменяется. `.gdi/` должна
 оставаться локальной и не попадать в commits. Протокол: [docs/inbox.md](docs/inbox.md).
+
+Execution revision связывает настройки с фактическим act/Docker/base image окружением.
+После обновления host tools/images требуется restart worker; новые capabilities
+могут потребовать resubmit. Проверяемый отчёт — `artifacts/environment.json`.
+Namespace GitHub из обычного origin закрепляется в request v2 и сохраняется при retry.
+Перед push CLI проверяет синтаксис selector и наличие обычных tracked YAML файлов
+в выбранном commit для global worker. YAML/job/event semantics проверяет act.

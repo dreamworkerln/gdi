@@ -6,6 +6,8 @@
   "poll_idle_max_seconds": 60,
   "timeout_seconds": 3600,
   "act_executable": "act",
+  "act_version": "0.2.89",
+  "docker_executable": "docker",
   "platforms": {
     "ubuntu-latest": "catthehacker/ubuntu:act-latest"
   },

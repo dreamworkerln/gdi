@@ -21,6 +21,7 @@ from .git import GdiError, Git
 from .ledger import Ledger
 from .transport import Rclone
 from .workflow import prepare as prepare_workflow, require_completed_job, collect_uploads
+from . import runner
 
 LOG = logging.getLogger("gdi.worker")
 CHUNK_BYTES = 256 * 1024
@@ -57,6 +58,7 @@ class Worker:
 
     def advertise(self):
         if self.shared:
+            self.config['execution_profile'] = runner.resolve_profile(self.config['execution_profile'], self.root)
             transport = self.transport_factory(self.config['remote_url'])
             for path in ('inbox', f'ci/workers/{self.worker_id}'):
                 transport.mkdir(path)
@@ -276,6 +278,9 @@ class Worker:
         with log.open('ab') as handle:
             handle.flush(); os.fsync(handle.fileno())
         artifacts = []
+        environment_path = spool / 'artifacts/environment.json'
+        if environment_path.exists():
+            artifacts.append(descriptor(environment_path, 'artifacts/environment.json'))
         if checkout is not None and profile is not None:
             for spec in profile['artifacts']:
                 try:
@@ -366,6 +371,7 @@ class Worker:
         if row['state'] in ('RUNNING', 'FINALIZING'):
             # Execution may have finished just before the crash; never rerun blindly.
             kill_owned(decode(row['process']) if row['process'] else None)
+            runner.cleanup(spool)
             self.finish(row, req, 'INTERRUPTED', 1, None, [], [], now(), 0,
                         'worker restarted with uncertain execution; explicit ci retry is required')
             self.deliver(repo, row, req)
@@ -396,6 +402,9 @@ class Worker:
                 if req['ci_version'] == 2:
                     profile = {**profile, 'workflow': {**profile['workflow'], **req['workflow']}}
                 profile = prepare_workflow(checkout, profile, spool, req, cache_dir=Path(self.config['cache_dir']) / self.worker_id / 'act')
+                if profile.get('environment'):
+                    atomic_write(spool / 'artifacts/environment.json', encode(profile['environment']))
+                runner.record_owner(spool, checkout, profile)
             self.ledger.update(req['job_id'], 'RUNNING')
             state, code, failed, stages, warnings = execute(checkout, profile, spool / 'build.log',
                 lambda state, stage: self.status(row, state, stage),
@@ -413,6 +422,11 @@ class Worker:
         finally:
             done.set()
             publisher.join()
+        try:
+            runner.cleanup(spool)
+        except (GdiError, OSError) as exc:
+            # Keep RUNNING until recovery can finish cleanup; never lose ownership.
+            raise GdiError('Docker cleanup pending: ' + str(exc)) from exc
         self.ledger.update(req['job_id'], 'FINALIZING')
         self.finish(row, req, state, code, failed, stages, warnings, started_at, time.monotonic() - started,
                     detail, checkout, profile)
@@ -430,6 +444,17 @@ class Worker:
                 LOG.error('job=%s pending state=%s: %s', row['job_id'], self.ledger.get(row['job_id'])['state'], exc)
         return bool(pending)
 
+    def recover_delivery(self):
+        """Prepared results and uncertain runs recover even when runner setup fails."""
+        for row in self.ledger.pending():
+            if self.stop.is_set():
+                return
+            if (self.spool(row['job_id']) / 'result.json').exists() or row['state'] in ('RUNNING', 'FINALIZING'):
+                try:
+                    self.process(row)
+                except (GdiError, OSError) as exc:
+                    LOG.error('job=%s recovery pending: %s', row['job_id'], exc)
+
     def run(self, *, once=False):
         delay = self.config['poll_active_seconds']
         advertised = False
@@ -446,6 +471,7 @@ class Worker:
                     delay = self.config['poll_active_seconds'] if active else min(delay * 1.5, self.config['poll_idle_max_seconds'])
                 except (GdiError, OSError) as exc:
                     LOG.error('worker transport/config error: %s', exc)
+                    self.recover_delivery()
                     delay = min(delay * 2, self.config['poll_idle_max_seconds'])
                 if once:
                     return

@@ -327,7 +327,7 @@ gdi push drive
 сначала создайте commit обычным Git. Незакоммиченные файлы останутся локальными.
 
 Здесь `drive` — **имя gdi remote**, `gdrive:` — **rclone remote**, `gdi/my-project` —
-**папка на Google Drive**. Настройки записываются локально в `.git/config`; GitHub remote
+**папка на Google Drive**. Настройки записываются локально в `.gdi/config.json`; GitHub remote
 не требуется. На каждый независимый проект выделите другую папку.
 
 ## 6. Компьютер B: получить историю и продолжить работу
@@ -423,10 +423,9 @@ gdi push drive --full
 Если она уже полная и HEAD тот же, повтор ничего не публикует.
 Вывод push показывает вид bundle (`full` / `incremental`) и его размер в bytes.
 
-Кеш проверенных объектов находится внутри общего Git directory:
-`gdi-cache/<repository-id>/repository.git`. В обычном repo это
-`.git/gdi-cache/<repository-id>/repository.git`; для linked worktrees смотрите
-`git rev-parse --git-common-dir`. Кеш не требует отдельной настройки или службы.
+Кеш проверенных объектов находится в
+`.gdi/cache/<repository-id>/repository.git` основного worktree. Linked worktrees
+используют общие `.gdi`, конфигурацию и lock. Кеш не требует отдельной настройки или службы.
 Повторный fetch не скачивает уже проверенные bundles. Metadata цепочки всё ещё читается.
 
 Очистить только локальный кеш:
@@ -515,6 +514,20 @@ v0.2.89. Для systemd act/rclone должны быть в PATH службы л
 `act_executable`. Пользователь службы должен иметь доступ к Docker Engine.
 Compose нужен только если его вызывает workflow проекта.
 
+Сверьте `act_version` в worker.json с установленной версией и загрузите выбранный
+образ перед первым запуском (для default `platforms`):
+
+```bash
+act --version
+docker pull catthehacker/ubuntu:act-latest
+gdi worker check --config ~/.config/gdi/worker.json --runtime --json
+```
+
+Worker закрепляет фактический image ID и SHA256 act в execution revision.
+Обновление локального образа или бинарника требует restart worker; pending запрос
+со старой revision получает REJECTED. Сам worker не устанавливает и не обновляет
+инструменты/images. Для независимой проверки используйте [acceptance.md](docs/acceptance.md).
+
 Команды тестов, сборки и анализа читаются из `.github/workflows` проверяемого commit.
 Локальное подключение создаёт `gdi remote add drive gdrive:gdi/my-project`;
 общий inbox root по умолчанию — `gdrive:gdi`. Для вложенного URL укажите
@@ -534,8 +547,8 @@ gdi worker run --config ~/.config/gdi/worker.json
 
 Check проверяет схему, run проверяет соединение и публикует capabilities. Сначала
 убедитесь, что foreground worker объявил профиль и не сообщает ошибку доступа.
-Остановите foreground через Ctrl+C перед запуском службы. Один remote обслуживается
-одним worker; несколько registered repositories допустимы в одном config.
+Остановите foreground через Ctrl+C перед запуском службы. Один общий root обслуживается
+одним worker; новые проекты подключаются через общую inbox.
 
 ### 7.2. Запустить постоянно через systemd
 

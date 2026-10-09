@@ -758,7 +758,7 @@ class ProtocolAndCliTests(unittest.TestCase):
         help_text = outputs["-h"]
         self.assertIn("gdi push drive", help_text)
         self.assertIn("gdi gc drive", help_text)
-        self.assertIn("Setup: Install.md.", help_text)
+        self.assertIn("Setup: INSTALL.md.", help_text)
         self.assertNotIn("Autonomous CI is planned", help_text)
         self.assertNotIn("###", help_text)
 

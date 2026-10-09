@@ -28,7 +28,7 @@ Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=120
-KillMode=control-group
+KillMode=mixed
 UMask=0077
 StandardOutput=journal
 StandardError=journal

@@ -11,7 +11,8 @@ duplicate keys и metadata больше 1 MiB отвергаются. Неизв
 
 Новый worker config version 2 публикует capabilities **в общем root**:
 `{ci_version:1, inbox_version:1, worker_id, profiles:{full:revision}}`.
-Списка репозиториев нет. Revision закрепляет общие параметры исполнения.
+Списка репозиториев нет. Revision закрепляет общие параметры и фактическое окружение
+исполнения: SHA256/version act, host actrc hashes, Docker daemon/version и local base image IDs.
 Пути проектов берутся из immutable notifications общей `inbox`; schema, checksum,
 маршрутизация и подтверждение описаны в [inbox.md](inbox.md).
 
@@ -20,6 +21,10 @@ Request v2 содержит те же identity fields, что v1 ниже, но 
 `{path:".github/workflows", event:"push", job:"", inputs:{}}`.
 Selector не содержит executable/argv, host paths или secrets. Он выбирает YAML
 **внутри checkout закреплённого commit**; исполняет его act.
+Необязательное поле `github_repository` содержит только `owner/repository`, полученное
+из GitHub origin клиента. Старые запросы v2 без этого поля сохраняют совместимость.
+Namespace входит в bytes/hash запроса и сохраняется при retry; произвольный origin URL
+и credentials в request не копируются.
 
 Порядок публикации v2: durable outbox → request → request.ready → shared inbox.
 Ready marker содержит ci_version запроса. Worker проверяет hash request из
@@ -115,11 +120,12 @@ Descriptor: `{path, bytes, sha256, complete:true}`. Разрешённые от�
 Log и final status обязательны даже при ошибке подготовки. Legacy profile whitelist
 ограничивает artifacts, required missing или symlink outside даёт ERROR. Для act
 artifact store архивируется в `artifacts/workflow-artifacts.zip`; symlinks запрещены.
+Фактическое окружение global runner включается в `artifacts/environment.json`.
 Exit 0 без завершённого успешного job не принимается как PASS.
 
 | State | Смысл |
 | --- | --- |
-| PASS | Все обязательные стадии выполнены и прошли, источники/HEAD соответствуют request, artifacts собраны |
+| PASS | Обязательные стадии прошли; act начал с checkout выбранного SHA и завершил успешный job; host checkout/HEAD проверены, artifacts собраны |
 | FAIL | Blocking команда вернула ненулевой код |
 | ERROR | Ошибка подготовки/окружения/консоли/artifacts либо изменение исходников/HEAD |
 | TIMEOUT | Host лимит исполнения превышен, группа процессов остановлена |
@@ -133,13 +139,20 @@ artifacts, final status и полного streaming log. Клиентский `v
 ## Recovery и GC
 
 Ledger PUBLISHED фиксируется после read-back проверки result/artifacts, затем
-удаляется только `ci/queue/<job-id>.json`. Crash между этими действиями исправляется
+удаляется конкретный marker: v2 — notification общей inbox, legacy v1 —
+`ci/queue/<job-id>.json`. Crash между этими действиями исправляется
 при discovery, без исполнения. Request/ready/claim/chunks/result остаются в архиве.
 
 При RUNNING/FINALIZING без durable result нет автоматического rerun: INTERRUPTED.
 Сохранившийся result допубликовывается независимо от прежнего ledger state. Повреждение
 локального закрытого artifact/chunk блокирует доставку и не вызывает повтор CI.
 
-Apply-GC bundles отказывает при queue pointer или неполном/неterminal job. Completed
+Apply-GC bundles отказывает при legacy queue pointer или неполном/nonterminal job v1/v2. Completed
 CI artifacts не удаляются. Все clients и worker должны быть остановлены; snapshot
 checks не заменяют распределённый lock. Retention CI namespace пока не реализован.
+
+`--bind=false` означает копию исходников для act jobs. Post-check host checkout
+не доказывает неизменность container workspace во время CI: workflows могут
+генерировать/менять файлы внутри своей копии и явно получать другие repositories.
+PASS относится к исполнению выбранного workflow из закреплённого commit, а не
+к запрету таких действий. Версии external actions/images определяет проектный YAML.

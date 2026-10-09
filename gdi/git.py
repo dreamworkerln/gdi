@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 import fcntl
 import os
+import re
 from pathlib import Path
 import subprocess
 
@@ -104,6 +105,12 @@ class Git:
         if result.returncode or not result.stdout.startswith("refs/heads/"):
             raise GdiError("detached HEAD: switch to a branch or specify a branch for push/fetch")
         return result.stdout.strip()[len("refs/heads/"):]
+
+    def github_repository(self):
+        """Read the public namespace, never copy an origin URL or its credentials."""
+        origin = self.config("remote.origin.url") or ""
+        match = re.fullmatch(r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?", origin)
+        return match[1] + "/" + match[2] if match else ""
 
     def ref(self, branch):
         if not branch or branch.startswith("-"):

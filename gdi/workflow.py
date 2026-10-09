@@ -11,9 +11,32 @@ from .executor import inside
 from .git import GdiError
 
 
+def validate_selection(git, head, selector):
+    """Validate paths from the committed tree before publishing any Git data."""
+    selected = Path(selector["path"]).as_posix().rstrip("/")
+    prefix = "" if selected == "." else selected + "/"
+    records = git.call("ls-tree", "-r", "-z", head, "--", selected).stdout.split("\0")
+    files = []
+    for record in records:
+        if not record:
+            continue
+        metadata, path = record.split("\t", 1)
+        if path == selected or path.startswith(prefix) and "/" not in path[len(prefix):]:
+            if path.endswith((".yml", ".yaml")):
+                if not metadata.startswith(("100644 blob ", "100755 blob ")):
+                    raise GdiError("workflow YAML must be a regular tracked file")
+                files.append(path)
+    if not files:
+        raise GdiError("no workflow YAML files found in the selected commit: " + selector["path"])
+    return files
+
+
 def prepare(checkout, profile, spool, req, *, cache_dir=None):
     """Resolve only paths and runner options; act owns all workflow semantics."""
     workflow = profile["workflow"]
+    from .runner import verify_environment
+    verify_environment(profile)
+    validate_selection(checkout, req["head"], workflow)
     path = inside(checkout.path, workflow["path"])
     candidates = sorted(path.iterdir()) if path.is_dir() else [path]
     files = [item for item in candidates if item.suffix in (".yml", ".yaml") and item.is_file()]
@@ -25,6 +48,8 @@ def prepare(checkout, profile, spool, req, *, cache_dir=None):
             raise GdiError("workflow YAML must be a regular tracked file")
         checkout.call("ls-files", "--error-unmatch", "--", item.relative_to(checkout.path).as_posix())
     executable = workflow["executable"]
+    if (spool / '.actrc').exists():
+        raise GdiError('job spool must not contain .actrc')
     if "/" in executable and not Path(executable).is_absolute():
         raise GdiError("workflow executable must be absolute or a command in PATH")
     for name in workflow["secrets"]:
@@ -32,7 +57,7 @@ def prepare(checkout, profile, spool, req, *, cache_dir=None):
             raise GdiError("missing workflow secret in worker environment: " + name)
     event = {"ref": req["ref"], "after": req["head"], "act": True,
              "inputs": workflow["inputs"], "head_commit": {"id": req["head"]}}
-    repository = workflow["repository"]
+    repository = req.get("github_repository", workflow["repository"])
     if repository:
         owner, name = repository.split("/")
         event["repository"] = {"full_name": repository, "name": name, "owner": {"login": owner, "name": owner}}
@@ -45,26 +70,32 @@ def prepare(checkout, profile, spool, req, *, cache_dir=None):
     argv = [executable, workflow["event"], "--directory", str(checkout.path),
             "--workflows", str(path), "--no-recurse", "--eventpath", str(event_path),
             "--artifact-server-path", str(uploads), "--artifact-server-port", str(workflow["artifact_server_port"]),
+            "--artifact-server-addr", workflow["artifact_server_addr"], "--network", "host",
             "--action-cache-path", str(cache_dir),
+            "--cache-server-path", str(cache_dir / 'cache-server'),
+            "--cache-server-addr", workflow["artifact_server_addr"], "--cache-server-port", "0",
             "--env-file", os.devnull, "--secret-file", os.devnull,
             "--var-file", os.devnull, "--input-file", os.devnull,
-            "--json", "--rm", "--bind=false", "--reuse=false", "--no-skip-checkout=false",
+            "--json", "--rm", "--pull=false", "--bind=false", "--reuse=false", "--no-skip-checkout=false",
             "--dryrun=false", "--list=false", "--graph=false", "--watch=false", "--validate=false",
             "--job", workflow["job"], "--env", "GITHUB_REF=" + req["ref"],
             "--env", "SHA_REF=" + req["head"]]
     if repository:
-        argv += ["--env", "GITHUB_REPOSITORY=" + repository]
+        argv += ["--env", "GITHUB_REPOSITORY=" + repository, "--env", "GITHUB_REPOSITORY_OWNER=" + repository.split("/")[0]]
     for key, flag in (("platforms", "--platform"), ("inputs", "--input"), ("vars", "--var")):
         for name, value in sorted(workflow[key].items()):
             argv += [flag, name + "=" + value]
     for name, value in sorted(profile["env"].items()):
-        if name in {"GITHUB_REF", "SHA_REF", "GITHUB_REPOSITORY"}:
+        if name in {"GITHUB_REF", "SHA_REF", "GITHUB_REPOSITORY", "GITHUB_REPOSITORY_OWNER"}:
             raise GdiError("workflow env cannot override the verified Git identity")
         argv += ["--env", name + "=" + value]
     for name in workflow["secrets"]:
         argv += ["--secret", name]
     # Run outside checkout so a committed .actrc cannot replace the execution plan.
     effective = dict(profile)
+    effective['process_env'] = {'XDG_CACHE_HOME': str(cache_dir / 'xdg')}
+    if profile.get('environment', {}).get('docker') is not None:
+        effective['process_env']['DOCKER_HOST'] = profile['environment']['docker']['endpoint']
     effective["stages"] = [{"name": "github-actions", "argv": argv, "cwd": ".", "blocking": True,
                             "timeout_seconds": profile["timeout_seconds"]}]
     return effective

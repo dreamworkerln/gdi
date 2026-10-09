@@ -5,9 +5,10 @@ gdi переносит commits через Google Drive и запускает CI 
 commit. Ваш рабочий каталог при этом не меняется.
 
 Полная первоначальная настройка Python, rclone, Google OAuth и worker:
-[Install.md](Install.md). Здесь предполагается, что она уже выполнена.
+[INSTALL.md](INSTALL.md). Здесь предполагается, что она уже выполнена.
 `drive` — подключение gdi, `gdrive:` — подключение rclone, `user-host` — ID worker,
-`full` — общее имя исполнения workflows; команды берутся из `.github/workflows` commit.
+`full` — общее имя исполнения workflows; команды берутся из `.github/workflows`
+проверяемого commit. Замените имена и пути в примерах своими.
 
 ## Один раз для проекта
 
@@ -27,19 +28,69 @@ gdi remote add drive gdrive:gdi/my-project --repository-id REPOSITORY_ID
 `--init` нужен только один раз для отдельной пустой папки. Подключение хранится в
 `.gdi/config.json`; добавьте `.gdi/` в `.gitignore`. По умолчанию общий inbox root —
 родитель URL проекта (`gdrive:gdi`); для вложенных путей есть `--inbox-root`.
-На host один раз задайте общий `remote_url: "gdrive:gdi"` в worker config version 2,
-установите act и Docker. Новые проекты и ветки не требуют изменения worker.json.
-Затем:
+
+## Один раз для CI host
+
+На компьютере, который будет выполнять CI, настройте `~/.config/gdi/worker.json`
+по [примеру](examples/worker.json): `config_version: 2`, `worker_id: "user-host"`,
+общий `remote_url: "gdrive:gdi"`. Новые проекты и ветки не требуют изменения config.
+Установите act **v0.2.89** и Docker по [INSTALL.md](INSTALL.md); для act и Docker
+в config можно указать абсолютные пути. Пользователь службы должен иметь доступ
+к Docker, а rclone — к указанному Drive root.
+
+Загрузите образ из `platforms` и проверьте среду до установки службы:
 
 ```bash
-gdi worker check --config ~/.config/gdi/worker.json
-gdi worker install --config ~/.config/gdi/worker.json
-gdi worker start
+docker version
+docker pull catthehacker/ubuntu:act-latest
+rclone lsf gdrive:gdi
+gdi worker check --config ~/.config/gdi/worker.json --runtime --json
 ```
 
-Установка службы не запускает её до `worker start`. Для одного remote работает
-один worker на общий root. Агент выбирает workflows из commit и не передаёт argv
-в запросе. Общая inbox всех проектов опрашивается без обхода папок репозиториев.
+Если в config выбран другой образ, загрузите его. Проверенный образ можно закрепить
+по digest в `platforms`. Worker использует уже загруженные base images; после
+обновления act, образа или config перезапустите службу.
+
+Установите и запустите user service:
+
+```bash
+gdi worker install --config ~/.config/gdi/worker.json
+gdi worker start
+gdi worker status
+systemctl --user status gdi-worker.service
+```
+
+Установка не запускает службу до `worker start`; start также включает её автозапуск
+при старте user manager. Служба не читает `.bashrc`: PATH, proxy, secrets и нестандартный
+`RCLONE_CONFIG` настраиваются через unit override/EnvironmentFile.
+Подробности и работа после выхода из аккаунта через linger: [docs/worker.md](docs/worker.md).
+
+На общий root запускайте **один активный worker**. Два host с одинаковым worker ID
+не защищены локальным lock от одновременного исполнения; координации нескольких
+worker и автоматического failover пока нет. Общая inbox всех проектов опрашивается
+без обхода папок репозиториев.
+
+## Передать ветку без CI
+
+На отправителе, после обычного Git commit:
+
+```bash
+gdi push drive
+```
+
+На получателе, в clone проекта на той же ветке:
+
+```bash
+gdi fetch drive
+git log --oneline HEAD..refs/remotes/drive/main
+gdi pull drive
+```
+
+Замените `main` именем своей ветки. Push/fetch по умолчанию используют текущую ветку;
+для другой можно указать её явно, например `gdi push drive feature`.
+Fetch обновляет отдельный remote ref, pull делает fast-forward текущей ветки и требует
+чистого рабочего дерева. Обычный push уведомляет worker об истории, CI запускается
+через `--ci`.
 
 ## Обычная работа агента
 
@@ -62,12 +113,23 @@ gdi push drive --ci --worker user-host --profile full --json
 
 ```bash
 gdi ci wait drive JOB_ID --follow --timeout 3600
-gdi ci logs drive JOB_ID --output ./ci-JOB_ID.log
+gdi ci logs drive JOB_ID --output /tmp/ci-JOB_ID.log
 ```
 
 При FAIL агент читает лог и отправляет исправление новым commit. Пользователю
 не нужно вручную скачивать commits или пересылать консоль. Worker остаётся запущен
 после FAIL и PASS. Несколько commits можно отправить одним push: проверяется HEAD.
+В commit должны быть tracked YAML workflows; по умолчанию выбирается событие `push`.
+Для конкретного workflow и другого события:
+
+```bash
+gdi push drive --ci --worker user-host --workflow .github/workflows/checks.yml --event workflow_dispatch --input MODE=full --json
+```
+
+`--job JOB_NAME` выбирает отдельный job workflow. Список CI команд в worker.json
+не нужен. Лог в примере сохраняется вне репозитория, чтобы не мешать чистому pull.
+`ci wait` возвращает код 0 при проверенном PASS, 1 при другом terminal result,
+124 при timeout ожидания.
 
 ## Получить проверенные изменения себе
 
@@ -94,15 +156,36 @@ gdi pull drive --passed --job JOB_ID --profile full
 | Получить последний commit без проверки CI | `gdi pull drive` |
 | Посмотреть подключение и Repository ID | `gdi remote list` |
 | Посмотреть службу | `gdi worker status` |
+| Подробное состояние службы и последние сообщения | `systemctl --user status gdi-worker.service` |
 | Лог службы за текущую загрузку | `journalctl --user -u gdi-worker.service -b` |
 | Следить за логом службы | `journalctl --user -u gdi-worker.service -f` |
 | Остановить службу | `gdi worker stop` |
 | Запустить службу | `gdi worker start` |
+| Перезапустить после изменения config/окружения | `systemctl --user restart gdi-worker.service` |
 | Помощь / версия с эмблемой | `gdi -h` / `gdi -v` |
 
-`worker stop` перестаёт принимать новые задания и даёт текущему закончиться.
-Systemd ждёт до 120 секунд, затем завершает группу процессов; при следующем запуске
-неопределённый запуск станет INTERRUPTED. Ctrl+C или timeout у `ci wait` не отменяют CI.
+`worker stop` перестаёт принимать новые задания и ждёт завершения текущего CI
+и доставки результатов. Unit использует `KillMode=mixed`: SIGTERM получает worker,
+а act продолжает текущий запуск. По умолчанию systemd ждёт до **120 секунд**, затем
+принудительно завершает группу процессов. Увеличьте лимит с учётом CI и передачи
+файлов в Drive:
+
+```bash
+systemctl --user edit gdi-worker.service
+```
+
+Например, для 15 минут ожидания добавьте:
+
+```ini
+[Service]
+TimeoutStopSec=900
+```
+
+Затем выполните `systemctl --user daemon-reload`. Это лимит остановки службы;
+лимит самого CI задаётся `timeout_seconds` в worker.json.
+Прерванное исполнение без сохранённого result станет INTERRUPTED; сохранённый
+result будет доставлен без повторного исполнения. Ctrl+C или timeout у `ci wait`
+не отменяют CI.
 
 ## Если что-то пошло не так
 
@@ -111,14 +194,17 @@ Systemd ждёт до 120 секунд, затем завершает групп
 | QUEUED | Проверить `worker status` и journalctl; host должен быть включён и иметь доступ к Drive |
 | FAIL | Читать полный лог; исправлять исходники и делать новый commit |
 | ERROR | Читать `detail` и лог: инструменты, checkout, обязательные artifacts или окружение |
-| TIMEOUT | CI превысил лимит host; проверить зависание и настройки профиля |
+| TIMEOUT | CI превысил лимит host; проверить зависание и `timeout_seconds` в worker.json |
 | INTERRUPTED | Worker перезапустился во время CI; изучить лог и явно выполнить `ci retry` |
-| REJECTED | Профиль отсутствует или изменился; после настройки повторить `push --ci` |
+| REJECTED | Проверить настройки и версию среды worker в journal; после исправления повторить `push --ci` |
 | Ошибка сети | Повторить ту же команду; для готового результата worker повторяет загрузку без повторного CI |
 
-Повтор `push --ci` для той же публикации/профиля возвращает прежний job ID при
-сохранённом локальном outbox. Новый запуск на том же commit — через `ci retry`.
+Повтор `push --ci` для той же публикации при неизменённых настройках CI возвращает
+прежний job ID при сохранённом локальном outbox. Новый запуск на том же commit —
+через `ci retry`.
 Не удаляйте ledger/spool worker для «разблокировки»: они нужны для восстановления.
+При задержке результата смотрите journal службы: завершение CI и доставка/проверка
+файлов на Drive — отдельные этапы. Замеры и статус реальных проверок: [TODO.md](TODO.md).
 
 ## Убрать старые bundles
 

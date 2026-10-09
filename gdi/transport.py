@@ -22,11 +22,11 @@ class Rclone:
         self.url = validate_url(url)
         self.options = options or {}
 
-    def call(self, *args):
+    def call(self, *args, allowed=(0,)):
         return run(["rclone", *args, "--contimeout", str(self.options.get("connect_timeout_seconds", 10)) + "s",
                     "--timeout", str(self.options.get("timeout_seconds", 60)) + "s",
                     "--retries", str(self.options.get("retries", 3)),
-                    "--low-level-retries", str(self.options.get("low_level_retries", 3))])
+                    "--low-level-retries", str(self.options.get("low_level_retries", 3))], allowed=allowed)
 
     def path(self, relative):
         return self.url + ("/" + relative if relative else "")
@@ -52,6 +52,19 @@ class Rclone:
 
     def read(self, relative):
         return self.call("cat", self.path(relative)).stdout.encode("utf-8")
+
+    def read_optional(self, relative):
+        """Only documented not-found codes permit legacy discovery."""
+        result = self.call("lsjson", self.path(relative), "--stat", allowed=(0, 3, 4))
+        if result.returncode in (3, 4):
+            return None
+        try:
+            value = json.loads(result.stdout)
+        except ValueError as exc:
+            raise GdiError("rclone returned invalid file stat JSON") from exc
+        if not isinstance(value, dict) or value.get("IsDir") is not False:
+            raise GdiError("expected a regular remote metadata file: " + relative)
+        return self.read(relative)
 
     def download(self, relative, target):
         self.call("copyto", self.path(relative), str(target))

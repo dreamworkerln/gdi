@@ -26,13 +26,16 @@ def workflow_arguments(command):
 
 
 def selected_workflow(args):
+    from .ci_protocol import workflow_selection
     inputs = {}
     for value in args.input:
         key, separator, content = value.partition("=")
         if not separator or not key or key in inputs:
             raise GdiError("workflow inputs must be unique KEY=VALUE arguments")
         inputs[key] = content
-    return {"path": args.workflow or ".github/workflows", "event": args.event or "push", "job": args.job or "", "inputs": inputs}
+    return workflow_selection({"path": args.workflow if args.workflow is not None else ".github/workflows",
+                               "event": args.event if args.event is not None else "push",
+                               "job": args.job if args.job is not None else "", "inputs": inputs})
 
 
 def parser():
@@ -51,7 +54,7 @@ def parser():
   gdi gc drive                                        # preview remote cleanup
   gdi gc drive --apply --quiescent                    # all clients must be paused
 
-Setup: Install.md. Human reference: QUICKSTART.md.
+Setup: INSTALL.md. Human reference: QUICKSTART.md.
 Use gdi COMMAND --help for command options; gdi -v/--version shows version and emblem.""")
     cli.epilog = "\n".join(line.split("#", 1)[0].rstrip().ljust(55) + "# " + line.split("#", 1)[1].strip()
                                  if line.startswith("  gdi ") and "#" in line else line
@@ -129,6 +132,8 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             sub.add_argument("--once", action="store_true", help="poll once and finish discovered jobs, then exit")
         if operation in ("status", "check"):
             sub.add_argument("--json", action="store_true")
+        if operation == "check":
+            sub.add_argument("--runtime", action="store_true", help="verify actual act/Docker/images and show execution revision")
     return cli
 
 
@@ -144,23 +149,38 @@ def main(argv=None):
     args = command_parser.parse_args(argv)
     if args.command == "push" and (args.ci and (not args.worker or not args.profile) or
                                   not args.ci and (args.worker or args.profile != "full" or args.workflow or args.event or args.job or args.input)):
-        command_parser.error("--ci requires --worker and --profile; these options are used together")
+        command_parser.error("--ci requires --worker; CI options require --ci (profile defaults to full)")
     if args.command == "pull" and (args.passed and (not args.job or not args.profile) or
                                   not args.passed and (args.job or args.profile)):
         command_parser.error("--passed requires --job and --profile; these options are used together")
     if args.command == "ci" and args.operation == "logs" and args.output and args.follow:
         command_parser.error("choose logs --output or --follow")
     try:
+        selector = None
+        if args.command == "push" and args.ci or args.command == "ci" and args.operation == "submit":
+            from .ci_protocol import identifier
+            identifier(args.worker)
+            identifier(args.profile)
+            selector = selected_workflow(args)
         if args.command == "worker":
             from . import service
             from .worker_config import load_config
             if args.operation in ("check", "run", "install"):
                 config = load_config(args.config)
                 if args.operation == "check":
-                    details = ({"remote_url": config["remote_url"], "inbox": "inbox", "execution_revision": config["execution_profile"]["revision"]}
+                    if args.runtime and config['config_version'] == 2:
+                        from .runner import resolve_profile
+                        import tempfile
+                        with tempfile.TemporaryDirectory(prefix='gdi-check-') as cwd:
+                            config['execution_profile'] = resolve_profile(config['execution_profile'], cwd)
+                    details = ({"remote_url": config["remote_url"], "inbox": "inbox",
+                                ("execution_revision" if args.runtime else "config_revision"): config["execution_profile"]["revision"],
+                                **({"environment": config['execution_profile']['environment']} if args.runtime else {})}
                                if config["config_version"] == 2 else {"repositories": {
                                    repo["repository_id"]: {name: profile["revision"] for name, profile in repo["profiles"].items()}
                                    for repo in config["repositories"]}})
+                    if args.runtime and config['config_version'] != 2:
+                        raise GdiError('--runtime requires global worker config version 2')
                     emit({"worker_id": config["worker_id"], **details, "valid": True}, args.json)
                 elif args.operation == "install":
                     print("Installed " + str(service.install(args.config)) + "; run gdi worker start")
@@ -182,7 +202,7 @@ def main(argv=None):
             client = CiClient(exchange, args.remote)
             if args.operation in ("submit", "retry"):
                 with git.lock():
-                    value = (client.submit(args.publication, args.worker, args.profile, workflow=selected_workflow(args)) if args.operation == "submit"
+                    value = (client.submit(args.publication, args.worker, args.profile, workflow=selector) if args.operation == "submit"
                              else client.retry(args.job))
             elif args.operation == "status":
                 value = client.status(args.job)
@@ -212,13 +232,23 @@ def main(argv=None):
             elif args.command == "gc":
                 exchange.gc(args.remote, apply=args.apply, keep_checkpoints=args.keep_checkpoints, quiescent=args.quiescent)
             elif args.command == "push":
+                if args.ci:
+                    from .ci import CiClient
+                    from .workflow import validate_selection
+                    client = CiClient(exchange, args.remote)
+                    _, shared, _ = client.execution_settings(args.worker, args.profile, selector)
+                    if shared is not None:
+                        head = git.oid(git.ref(args.branch or git.branch()))
+                        if head is None:
+                            raise GdiError("branch has no committed HEAD to check")
+                        validate_selection(git, head, selector)
                 head, pub, created = exchange.push(args.remote, args.branch, full=args.full, checkpoint_every=args.checkpoint_every)
                 data = exchange.last_publication
                 value = {"head": head, "publication_id": pub, "created": created,
                          "bundle_kind": data["bundle_kind"], "bundle_bytes": data["bundle_bytes"]}
                 if args.ci:
                     from .ci import CiClient
-                    value.update(CiClient(exchange, args.remote).submit(pub, args.worker, args.profile, workflow=selected_workflow(args)))
+                    value.update(client.submit(pub, args.worker, args.profile, workflow=selector))
                 if args.json:
                     emit(value, True)
                 else:

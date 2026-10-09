@@ -37,6 +37,7 @@ flowchart LR
 | `local_config.py` | Собственные `.gdi/config.json` и чтение legacy Git sections |
 | `inbox.py` | Общие immutable уведомления, checksum и строгая маршрутизация |
 | `workflow.py` | Запуск act, проверка завершения jobs и сбор artifact store |
+| `runner.py` | Фактическое окружение/revision, ownership и cleanup Docker containers |
 | `ledger.py` | SQLite WAL/FULL: разделение исполнения и доставки результата |
 | `worker.py` | Queue discovery, claims, recovery, source restoration, publisher, persistent loop |
 | `executor.py` | Binary console capture, stages, process groups, timeouts, Linux process identity |
@@ -50,7 +51,7 @@ flowchart LR
 `profile_id`, `profile_revision`, `job_id`. Request не содержит shell-команд или
 host paths. Request v2 закрепляет selector workflows из commit.
 Config worker version 2 задаёт общие параметры host и не содержит список проектов.
-Revision — SHA256 нормализованных общих параметров исполнения. Секреты
+Revision — SHA256 общих параметров и фактического act/Docker/base image окружения. Секреты
 рекомендуется передавать через унаследованное окружение, вне profile config.
 
 Push использует существующую последовательную модель одного writer на ref с
@@ -143,6 +144,10 @@ CI v2 выполняет выбранный YAML через act с изолир�
 Общий timeout обеспечивает executor, результат act без завершённых успешных jobs
 не даёт PASS. Artifact store act собирается в проверяемый zip. Подготовленный checkout
 и HEAD проверяются после исполнения; пользовательский worktree не меняется.
+Base images разрешаются в immutable local IDs до capabilities; после изменения
+act/image нужен restart. Проверяемый environment report сопровождает result.
+Проверка host checkout не инспектирует изменения копий внутри контейнеров при
+`--bind=false`. Namespace GitHub передаётся из origin через request, без credentials.
 Legacy v1 исполняет зарегистрированные argv/cwd/env stages на host с прежними
 blocking/non-blocking правилами. Workflows доверенные; Docker daemon доступен act.
 
@@ -179,7 +184,7 @@ result дают INTERRUPTED без слепого rerun. Для остановк
 и записью RESULT_READY. Foreign claim/lost ledger требуют ручной диагностики.
 
 Служба `gdi-worker.service` — `systemd --user`, Restart=on-failure,
-KillMode=control-group, TimeoutStopSec=120, stdout/stderr в journal. Явная install
+KillMode=mixed, TimeoutStopSec=120, stdout/stderr в journal. Явная install
 сохраняет абсолютный Python venv и config; start делает enable --now. Нормальный stop
 запрещает новые jobs, текущий заканчивается до системного deadline; форсированное
 прерывание будет диагностировано при restart. Foreground вне systemd при SIGKILL

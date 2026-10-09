@@ -1,8 +1,11 @@
 import json
+import contextlib
+import io
 import os
 from pathlib import Path
 import sys
 import shutil
+import socket
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -70,6 +73,9 @@ class InboxTests(ExchangeTestCase):
         self.arguments = self.root / 'arguments.json'
         self.fake.write_text('#!' + sys.executable + '\n' + r'''import json, pathlib, subprocess, sys
 args = sys.argv[1:]
+if args == ['--version']:
+    print('act version 0.2.89')
+    sys.exit(0)
 def option(name): return args[args.index(name) + 1]
 checkout = pathlib.Path(option('--directory'))
 event = json.loads(pathlib.Path(option('--eventpath')).read_text())
@@ -99,7 +105,7 @@ sys.exit(0 if source in ('fixed', 'skip') else 1)
         path = self.root / 'worker.json'
         path.write_bytes(encode({'config_version': 2, 'worker_id': 'user-host', 'remote_url': 'memory:hub',
                                 'state_dir': str(self.root / 'state'), 'cache_dir': str(self.root / 'cache'),
-                                'act_executable': str(self.fake), 'timeout_seconds': 10}))
+                                'act_executable': str(self.fake), 'platforms': {'ubuntu-latest': '-self-hosted'}, 'timeout_seconds': 10}))
         return load_config(path)
 
     def worker(self, config=None):
@@ -305,6 +311,190 @@ sys.exit(0 if source in ('fixed', 'skip') else 1)
         self.assertEqual(self.ea.remotes(), [('new', 'memory:hub/repos/a')])
         self.assertEqual(git_config.read_bytes(), before)
 
+    def test_ci_migration_resumes_partial_tree_and_preserves_outbox_ids(self):
+        worker = self.worker()
+        client, req = self.submit(worker)
+        old = self.a.common_dir() / 'gdi-ci' / self.identity
+        old.parent.mkdir()
+        shutil.move(client.root, old)
+        (old / 'results').mkdir()
+        (old / 'results/log').write_bytes(b'legacy result')
+        original = shutil.copyfileobj
+        calls = []
+        def interrupted(source, target):
+            calls.append(1)
+            if len(calls) == 2:
+                target.write(b'partial')
+                raise OSError('simulated crash during migration')
+            return original(source, target)
+        with patch('gdi.ci.shutil.copyfileobj', side_effect=interrupted), self.assertRaises(OSError):
+            CiClient(self.ea, 'drive')
+        self.assertFalse((client.root / '.legacy-migrated').exists())
+        resumed = CiClient(self.ea, 'drive')
+        self.assertEqual(resumed.submit(req['publication_id'], 'user-host')['job_id'], req['job_id'])
+        self.assertEqual((resumed.root / 'results/log').read_bytes(), b'legacy result')
+        self.assertTrue((resumed.root / '.legacy-migrated').exists())
+        self.assertTrue(old.exists())
+
+    def test_ci_migration_conflicts_preserve_both_states(self):
+        from gdi.ci import migrate_state
+        old, target = self.root / 'legacy', self.root / 'current'
+        old.mkdir(); target.mkdir()
+        (old / 'request.json').write_bytes(b'original')
+        (target / 'request.json').write_bytes(b'another job')
+        with self.assertRaisesRegex(GdiError, 'conflicting legacy'):
+            migrate_state(old, target)
+        self.assertEqual((target / 'request.json').read_bytes(), b'another job')
+        self.assertFalse((target / '.legacy-migrated').exists())
+
+    def test_capabilities_corruption_and_network_failures_do_not_fall_back(self):
+        worker = self.worker()
+        _, pub, _ = self.ea.push('drive')
+        client = CiClient(self.ea, 'drive')
+        path = 'ci/workers/user-host/capabilities.json'
+        self.store.data['repos/a/' + path] = encode({'ci_version': 1, 'worker_id': 'user-host',
+                                                  'repositories': {self.identity: {'full': 'a' * 64}}})
+        raw = self.store.data[path]
+        self.store.data[path] = b'{broken'
+        with self.assertRaisesRegex(GdiError, 'invalid metadata JSON'):
+            client.submit(pub, 'user-host')
+        self.store.data[path] = raw
+        original = PrefixTransport.read
+        def unavailable(transport, relative):
+            if transport.prefix == '' and relative == path:
+                raise OSError('connection reset')
+            return original(transport, relative)
+        with patch.object(PrefixTransport, 'read', unavailable), self.assertRaisesRegex(OSError, 'connection reset'):
+            client.submit(pub, 'user-host')
+        del self.store.data[path]
+        request = client.submit(pub, 'user-host')
+        self.assertEqual(request['ci_version'], 1)
+
+    def test_invalid_selector_is_rejected_before_cli_push(self):
+        from gdi.cli import main
+        self.worker()
+        for arguments in (['--workflow', '../outside.yml'], ['--event', 'bad event'],
+                          ['--job', 'bad job'], ['--input', 'A=1', '--input', 'A=2'],
+                          ['--workflow', '.github/workflows/missing.yml']):
+            with self.subTest(arguments=arguments), patch('gdi.cli.Git.discover', return_value=self.a), \
+                    patch('gdi.cli.Exchange', return_value=self.ea), \
+                    patch.object(self.ea, 'push') as push, \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(['push', 'drive', '--ci', '--worker', 'user-host', '--json', *arguments]), 1)
+                push.assert_not_called()
+
+    def test_v2_revision_change_rejects_pending_job(self):
+        worker = self.worker()
+        client, req = self.submit(worker)
+        worker.config['execution_profile']['revision'] = 'a' * 64
+        worker.tick()
+        self.assertEqual(client.status(req['job_id'])['state'], 'REJECTED')
+        self.assertFalse(self.counter.exists())
+
+    def test_pending_route_survives_root_change_without_rerun(self):
+        worker = self.worker()
+        client, req = self.submit(worker)
+        self.store.fail = 'repos/a/ci/jobs/' + req['job_id'] + '/result.json'
+        worker.tick()
+        self.store.fail = None
+        config = worker.config
+        worker.close(); self._cleanups.pop()
+        config['remote_url'] = 'memory:hub-other'
+        resumed = self.worker(config)
+        with self.assertRaisesRegex(GdiError, 'original inbox root'):
+            resumed.process(resumed.ledger.get(req['job_id']))
+        self.assertEqual(self.counter.read_text(), 'x')
+        config['remote_url'] = 'memory:hub'
+        resumed.tick()
+        self.assertEqual(client.status(req['job_id'])['state'], 'PASS')
+        self.assertEqual(self.counter.read_text(), 'x')
+
+    def test_v2_uncertain_execution_is_interrupted_without_rerun(self):
+        worker = self.worker()
+        client, req = self.submit(worker)
+        worker.discover()
+        worker.ledger.update(req['job_id'], 'RUNNING')
+        worker.tick()
+        self.assertEqual(client.status(req['job_id'])['state'], 'INTERRUPTED')
+        self.assertFalse(self.counter.exists())
+
+    def test_workflow_path_and_missing_secrets_fail_without_execution(self):
+        for kind in ('missing', 'symlink', 'secret'):
+            with self.subTest(kind=kind):
+                config = self.config()
+                if kind == 'secret':
+                    config['execution_profile']['workflow']['secrets'] = ['GDI_TEST_UNSET_SECRET']
+                worker = self.worker(config)
+                workflow = {'path': '.github/workflows/missing.yml'} if kind == 'missing' else None
+                if kind == 'symlink':
+                    path = self.a.path / '.github/workflows/checks.yml'
+                    path.unlink()
+                    path.symlink_to(self.root / 'outside.yml')
+                    self.a.call('add', '.github')
+                    self.commit(self.a, 'symlink')
+                client, req = self.submit(worker, workflow=workflow)
+                worker.tick()
+                self.assertEqual(client.status(req['job_id'])['state'], 'ERROR')
+                self.assertFalse(self.counter.exists())
+                worker.close(); self._cleanups.pop()
+                if kind == 'symlink':
+                    path.unlink()
+                    path.write_text('on: push\njobs: {}\n')
+                    self.a.call('add', '.github')
+                    self.commit(self.a, 'fixed')
+
+    def test_github_namespace_is_pinned_and_retry_preserves_it(self):
+        self.a.call('remote', 'add', 'origin', 'git@github.com:example/project.git')
+        worker = self.worker()
+        client, req = self.submit(worker)
+        self.assertEqual(req['github_repository'], 'example/project')
+        worker.tick()
+        arguments = json.loads(self.arguments.read_text())
+        self.assertIn('GITHUB_REPOSITORY=example/project', arguments)
+        self.assertIn('GITHUB_REPOSITORY_OWNER=example', arguments)
+        self.a.call('remote', 'set-url', 'origin', 'https://github.com/other/project.git')
+        self.assertEqual(client.retry(req['job_id'])['github_repository'], 'example/project')
+
+    def test_durable_result_before_ledger_update_is_delivered_without_execution(self):
+        worker = self.worker()
+        client, req = self.submit(worker)
+        update = worker.ledger.update
+        def crash(jid, state, process=None):
+            if state == 'RESULT_READY':
+                raise OSError('crash after result fsync')
+            return update(jid, state, process)
+        with patch.object(worker.ledger, 'update', side_effect=crash):
+            worker.tick()
+        self.assertEqual(worker.ledger.get(req['job_id'])['state'], 'FINALIZING')
+        worker.tick()
+        self.assertEqual(client.status(req['job_id'])['state'], 'PASS')
+        self.assertEqual(self.counter.read_text(), 'x')
+
+    def test_ready_result_is_delivered_when_runner_is_unavailable(self):
+        worker = self.worker()
+        client, req = self.submit(worker)
+        self.store.fail = 'repos/a/ci/jobs/' + req['job_id'] + '/result.json'
+        worker.tick()
+        self.store.fail = None
+        with patch('gdi.runner.resolve_profile', side_effect=GdiError('act unavailable')):
+            worker.run(once=True)
+        self.assertEqual(client.status(req['job_id'])['state'], 'PASS')
+        self.assertEqual(self.counter.read_text(), 'x')
+
+    def test_publication_receipt_before_ack_survives_restart(self):
+        worker = self.worker()
+        _, pub, _ = self.ea.push('drive')
+        self.store.fail = 'delete-notification'
+        worker.tick()
+        self.assertEqual(len(list((worker.root / 'notifications').iterdir())), 1)
+        config = worker.config
+        worker.close(); self._cleanups.pop()
+        self.store.fail = None
+        resumed = self.worker(config)
+        with patch('gdi.worker.publication', side_effect=AssertionError('receipt should avoid replay')):
+            resumed.tick()
+        self.assertFalse(any(path.startswith('inbox/') for path in self.store.data))
+
 
 @unittest.skipUnless(os.environ.get('GDI_TEST_ACT') and shutil.which('rclone'), 'set GDI_TEST_ACT to test real act and rclone')
 class RealInboxTests(ExchangeTestCase):
@@ -343,9 +533,13 @@ jobs:
             self.a.call('add', '.github')
             self.commit(self.a, 'broken')
             config_path = self.root / 'worker.json'
+            with socket.socket() as port:
+                port.bind(('127.0.0.1', 0))
+                artifact_port = port.getsockname()[1]
             config_path.write_bytes(encode({'config_version': 2, 'worker_id': 'user-host', 'remote_url': root_url,
                                            'state_dir': str(self.root / 'state'), 'cache_dir': str(self.root / 'cache'),
                                            'act_executable': os.environ['GDI_TEST_ACT'],
+                                           'artifact_server_port': artifact_port,
                                            'platforms': {'ubuntu-latest': '-self-hosted'}, 'timeout_seconds': 60}))
             from gdi.worker import Worker
             worker = Worker(load_config(config_path))

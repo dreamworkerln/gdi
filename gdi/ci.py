@@ -1,9 +1,11 @@
 """Agent-side durable submission, live console and verified results."""
 
 import hashlib
+import fcntl
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -11,7 +13,7 @@ import uuid
 
 from .ci_protocol import (TERMINAL, atomic_write, job_id, marker, now, request, upload_json,
                           validate_result, verify_file, workflow_selection)
-from .exchange import decode, digest, encode, hex_value
+from .exchange import decode, digest, encode, file_digest, hex_value
 from .git import GdiError
 
 
@@ -35,6 +37,69 @@ def files(transport, path):
     return {item["Path"] for item in transport.list(path) if not item["IsDir"]}
 
 
+def optional_read(transport, path):
+    if hasattr(transport, "read_optional"):
+        return transport.read_optional(path)
+    # Custom transports can establish absence by listing; read failures propagate.
+    parent = ""
+    for part in path.split("/"):
+        entries = {item["Path"]: item for item in transport.list(parent)}
+        if part not in entries:
+            return None
+        parent += ("/" if parent else "") + part
+    return transport.read(path)
+
+
+def migrate_state(old, root):
+    """Resume copying immutable legacy files; publish the completion marker last."""
+    if root.is_symlink():
+        raise GdiError("CI state must not be a symlink")
+    root.mkdir(parents=True, exist_ok=True)
+    with (root.parent / ".migration.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        complete = root / ".legacy-migrated"
+        if complete.exists() or not old.exists():
+            return
+        if old.is_symlink():
+            raise GdiError("legacy CI state must not be a symlink")
+        for source in sorted(old.rglob("*")):
+            target = root / source.relative_to(old)
+            if source.is_symlink() or target.is_symlink():
+                raise GdiError("CI migration refuses symlinks")
+            if source.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            if not source.is_file():
+                raise GdiError("legacy CI state contains a non-regular file")
+            if target.exists():
+                if not target.is_file() or file_digest(source) != file_digest(target):
+                    raise GdiError("conflicting legacy CI state; preserve both copies: " + str(target))
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as output:
+                pending = Path(output.name)
+                try:
+                    with source.open("rb") as handle:
+                        shutil.copyfileobj(handle, output)
+                    output.flush()
+                    os.fsync(output.fileno())
+                    os.replace(pending, target)
+                finally:
+                    pending.unlink(missing_ok=True)
+            fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        for directory in sorted((p for p in root.rglob("*") if p.is_dir()), reverse=True) + [root, root.parent]:
+            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        atomic_write(complete, b"1\n")
+
+
 class CiClient:
     def __init__(self, exchange, remote):
         self.exchange = exchange
@@ -43,26 +108,19 @@ class CiClient:
         self.settings = exchange.remote(remote)
         self.root = self.git.gdi_dir() / "ci" / self.repository_id
         old = self.git.common_dir() / "gdi-ci" / self.repository_id
-        if old.exists() and not self.root.exists():
-            import shutil
-            shutil.copytree(old, self.root)
-        self.root.mkdir(parents=True, exist_ok=True)
+        migrate_state(old, self.root)
 
-    def submit(self, publication_id, worker_id, profile_id="full", *, retry_of=None, workflow=None):
+    def execution_settings(self, worker_id, profile_id="full", workflow=None):
         from .ci_protocol import identifier
         identifier(worker_id); identifier(profile_id)
-        pub, _ = publication(self.exchange, self.transport, self.repository_id, publication_id)
         selector = workflow_selection(workflow)
         shared = None
         capabilities = None
         if self.settings["inbox_root"] is not None:
             candidate = self.exchange.transport_factory(self.settings["inbox_root"])
-            try:
-                capabilities = decode(candidate.read(f"ci/workers/{worker_id}/capabilities.json"))
-            except (GdiError, OSError):
-                # Older workers advertise only inside each repository.
-                capabilities = None
-            else:
+            raw_capabilities = optional_read(candidate, f"ci/workers/{worker_id}/capabilities.json")
+            if raw_capabilities is not None:
+                capabilities = decode(raw_capabilities)
                 if capabilities.get("inbox_version") != 1:
                     raise GdiError("worker does not support the shared inbox")
                 shared = candidate
@@ -77,9 +135,17 @@ class CiClient:
             raise GdiError("invalid worker capabilities")
         if shared is None and selector != workflow_selection():
             raise GdiError("workflow selection requires a global inbox worker")
+        return revision, shared, selector
+
+    def submit(self, publication_id, worker_id, profile_id="full", *, retry_of=None, workflow=None, github_repository=None):
+        revision, shared, selector = self.execution_settings(worker_id, profile_id, workflow)
+        pub, _ = publication(self.exchange, self.transport, self.repository_id, publication_id)
+        namespace = self.git.github_repository() if github_repository is None else github_repository
         key_fields = [publication_id, worker_id, profile_id, revision, retry_of]
         if shared is not None:
             key_fields.append(selector)
+            if namespace:
+                key_fields.append(namespace)
         key = digest(encode(key_fields))
         outbox = self.root / "outbox" / (key + ".json")
         if outbox.exists():
@@ -92,6 +158,8 @@ class CiClient:
                    "created_at": now(), "retry_of": retry_of}
             if shared is not None:
                 req.update(ci_version=2, workflow=selector)
+                if namespace:
+                    req["github_repository"] = namespace
             request(req, self.git, self.repository_id)
             raw = encode(req)
             atomic_write(outbox, raw)
@@ -256,7 +324,8 @@ class CiClient:
         req, _ = self.load_request(jid)
         if self.result(jid) is None:
             raise GdiError("cannot retry an active job; wait for a verified terminal result")
-        return self.submit(req["publication_id"], req["worker_id"], req["profile_id"], retry_of=jid, workflow=req.get("workflow"))
+        return self.submit(req["publication_id"], req["worker_id"], req["profile_id"], retry_of=jid,
+                           workflow=req.get("workflow"), github_repository=req.get("github_repository", ""))
 
     def pull_passed(self, jid, profile):
         result = self.result(jid)

@@ -7,7 +7,7 @@ workflows из точного commit через act + Docker; агент
 получает progress, консоль и проверенный PASS/FAIL и повторяет исправления автономно.
 Работает на Linux с Python 3.10+, включая 3.10.12. Python runtime dependencies нет.
 
-Полная установка, настройка Bash, Google Cloud OAuth и rclone: **[Install.md](Install.md)**.
+Полная установка, настройка Bash, Google Cloud OAuth и rclone: **[INSTALL.md](INSTALL.md)**.
 Формат данных и гарантии: [docs/protocol.md](docs/protocol.md).
 Публикация изменений агентом и проверка на host пользователя:
 [GOOGLE_DRIVE_CI_PUBLISHING_WORKFLOW.md](GOOGLE_DRIVE_CI_PUBLISHING_WORKFLOW.md).
@@ -125,14 +125,14 @@ publication ID и фактические prerequisites из bundle. Пропущ
 публикует полный bundle; `--full` позволяет сделать контрольную публикацию вручную.
 Большие новые файлы могут давать большие дельты.
 
-Проверенные объекты сохраняются в `<git-common-dir>/gdi-cache/<repository-id>/repository.git`.
+Проверенные объекты сохраняются в `.gdi/cache/<repository-id>/repository.git` основного worktree.
 Кеш общий для linked worktrees, не коммитится и удерживает принятые commits отдельными refs.
 Неполное восстановление можно продолжить после перезапуска. Потерянный или обнаруженный
 повреждённый кеш восстанавливается из remote; ручная очистка — `gdi cache clear NAME`.
 
 **Протокол v2 несовместим с v1.** Для remote от gdi 0.1 заведите новую пустую папку и
 один раз выполните `remote add --init`, затем подключите остальные клиенты к новому ID.
-Старый remote автоматически не переписывается. Порядок перехода есть в Install.md.
+Старый remote автоматически не переписывается. Порядок перехода есть в INSTALL.md.
 
 ## Очистка bundles на Drive
 
@@ -144,7 +144,7 @@ gdi gc drive --apply --quiescent
 
 GC сохраняет по умолчанию два последних полных checkpoint каждой ветки, последующие
 bundles и все дополнительные базы дельт. Вся metadata и bundles без manifest остаются.
-Применение отказывает при CI queue markers или незавершённых jobs. CI logs/results
+Применение отказывает при legacy CI queue markers или незавершённых jobs v1/v2. CI logs/results
 остаются; старым gdi 0.2.1 нельзя применять GC на CI remote.
 Перед удалением все сохраняемые публикации проверяются в отдельных временных Git
 репозиториях без локального кеша. Формат protocol v2 не меняется.
@@ -194,6 +194,16 @@ GC tests проверяют все ветки, старые базы дельт,
 CI tests проверяют отдельный постоянный worker, FAIL → log → исправление → PASS,
 точный pull, upload/restart recovery, timeout descendants, binary console, artifact
 checksums и защиту GC. Для тестов достаточно стандартной библиотеки.
+Версия act закрепляется полем `act_version` (по умолчанию `0.2.89`). Перед запуском
+worker образы из `platforms` должны быть загружены через `docker pull`. Worker
+включает фактический SHA256 act, Docker daemon/version и immutable image IDs
+в execution revision; выбранные base images запускаются с `--pull=false`.
+После обновления act/images перезапустите worker. Отчёт сохраняется в проверяемом
+`artifacts/environment.json`. Workflow actions и собственные container images
+закрепляются внутри самого YAML. Команда `worker check --runtime` проверяет эту среду.
+
+Сквозные CLI fixtures, Docker/artifact и signal/restart проверки:
+[docs/acceptance.md](docs/acceptance.md).
 Реальный Google Drive и установка службы на host требуют отдельной проверки в
 разрешённом окружении; тесты rclone local не подменяют её.
 

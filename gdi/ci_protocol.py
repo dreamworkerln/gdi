@@ -34,6 +34,10 @@ def job_id(value):
 def request(value, git, repository_id=None):
     version = value.get("ci_version")
     keys = REQUEST_KEYS | ({"workflow"} if version == 2 else set())
+    if version == 2 and "github_repository" in value:
+        keys.add("github_repository")
+        if not isinstance(value["github_repository"], str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value["github_repository"]):
+            raise GdiError("invalid CI GitHub repository namespace")
     if set(value) != keys or type(version) is not int or version not in (1, 2):
         raise GdiError("unsupported or invalid CI request schema")
     if version == 2 and workflow_selection(value["workflow"]) != value["workflow"]:
@@ -72,7 +76,7 @@ def workflow_selection(value=None):
     relative_path(result["path"])
     if not isinstance(result["event"], str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", result["event"]):
         raise GdiError("invalid CI workflow event")
-    if not isinstance(result["job"], str) or "\x00" in result["job"]:
+    if not isinstance(result["job"], str) or (result["job"] and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", result["job"])):
         raise GdiError("invalid CI workflow job")
     inputs = result["inputs"]
     if not isinstance(inputs, dict) or any(not isinstance(k, str) or not k or '=' in k or "\x00" in k

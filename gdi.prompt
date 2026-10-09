@@ -2,6 +2,14 @@
 QUICKSTART.md и docs/worker.md. Ниже сохранены исходные требования/обсуждение;
 точные действующие команды см. в справке gdi -h и документации, а не в эскизах CLI.
 
+Действующая схема v2: собственная `.gdi/config.json`, общая immutable inbox,
+global worker без списка репозиториев и CI из `.github/workflows` точного commit
+через act/Docker. Legacy registered stages относятся только к config/request v1.
+Runtime execution revision включает фактический act/Docker/base images; host workflow
+checkout и container workspace имеют разные гарантии (docs/ci-protocol.md).
+Текущие задачи и фактически выполненные проверки перечислены в TODO.md;
+эксплуатационные fixtures — docs/acceptance.md. Chatter не изменять.
+
 # Стартовый промпт для разработки gdi
 
 Мы перенесли работу в отдельный Git-репозиторий для создания утилиты `gdi`.

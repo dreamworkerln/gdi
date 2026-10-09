@@ -8,5 +8,36 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+      - name: Install integration tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rclone
+          curl -fL https://github.com/nektos/act/releases/download/v0.2.89/act_Linux_x86_64.tar.gz -o /tmp/act.tar.gz
+          mkdir -p /tmp/gdi-act
+          tar -xzf /tmp/act.tar.gz -C /tmp/gdi-act act
       - name: Unit and integration tests
+        env:
+          GDI_TEST_ACT: /tmp/gdi-act/act
+          PYTHONDONTWRITEBYTECODE: '1'
         run: python -m unittest discover -s tests -v
+  docker-acceptance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install tools and runner image
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rclone
+          curl -fL https://github.com/nektos/act/releases/download/v0.2.89/act_Linux_x86_64.tar.gz -o /tmp/act.tar.gz
+          mkdir -p /tmp/gdi-act
+          tar -xzf /tmp/act.tar.gz -C /tmp/gdi-act act
+          docker pull catthehacker/ubuntu:act-latest
+      - name: Docker workflows and crash cleanup
+        env:
+          GDI_TEST_ACT: /tmp/gdi-act/act
+          GDI_TEST_DOCKER: catthehacker/ubuntu:act-latest
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -m unittest tests.test_v2_cli.DockerV2CliTests -v
