@@ -92,21 +92,22 @@ def marker(req, raw):
 def atomic_write(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
-        temporary = Path(handle.name)
-        try:
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
+            temporary = Path(handle.name)
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        except BaseException:
-            temporary.unlink(missing_ok=True)
-            raise
-    os.replace(temporary, path)
-    fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(fd)
+        os.replace(temporary, path)
+        fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
     finally:
-        os.close(fd)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def upload_json(transport, path, value, *, mutable=False):
@@ -166,3 +167,35 @@ def validate_result(value, req, request_sha256):
                 or any(s["blocking"] and (s["state"] != "PASS" or s["exit_code"] != 0) for s in stages)):
             raise GdiError("CI PASS has no successful complete blocking stages")
     return value
+
+
+def capability_revision(capabilities, worker_id, profile_id, repository_id=None):
+    """Use the same advertised identity and revision checks for both client modes."""
+    identifier(worker_id); identifier(profile_id)
+    if (not isinstance(capabilities, dict) or type(capabilities.get('ci_version')) is not int or
+            capabilities['ci_version'] != 1 or capabilities.get('worker_id') != worker_id):
+        raise GdiError('invalid worker capabilities')
+    if repository_id is None and (type(capabilities.get('inbox_version')) is not int or capabilities['inbox_version'] != 1):
+        raise GdiError('worker does not support the shared inbox')
+    try:
+        revision = (capabilities['profiles'][profile_id] if repository_id is None else
+                    capabilities['repositories'][repository_id][profile_id])
+    except (KeyError, TypeError) as exc:
+        raise GdiError('worker does not advertise the requested CI execution settings') from exc
+    if not hex_value(revision, 64):
+        raise GdiError('invalid worker capabilities revision')
+    return revision
+
+
+def prepare_request(git, repository_id, publication_id, pub, worker_id, profile_id, revision,
+                    *, shared=True, workflow=None, github_repository='', retry_of=None):
+    import uuid
+    value = {'ci_version': 2 if shared else 1, 'job_id': uuid.uuid4().hex,
+             'repository_id': repository_id, 'ref': pub['ref'], 'head': pub['head'],
+             'publication_id': publication_id, 'worker_id': worker_id, 'profile_id': profile_id,
+             'profile_revision': revision, 'created_at': now(), 'retry_of': retry_of}
+    if shared:
+        value['workflow'] = workflow_selection(workflow)
+        if github_repository:
+            value['github_repository'] = github_repository
+    return request(value, git, repository_id)

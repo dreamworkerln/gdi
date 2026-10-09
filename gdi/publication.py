@@ -219,3 +219,103 @@ def verify_bundle(bundle, publication, ref, cache=None, previous=None):
         git.check_payload(publication["head"])
         yield quarantine
 
+
+
+def validate_publications(repository_id, ref, listing, metadata):
+    """Validate exact manifest bytes and a complete listing, independent of transport."""
+    prefix = branch_directory(ref) + "/"
+    if not isinstance(listing, list) or any(not isinstance(item, dict) or
+            not isinstance(item.get('Path'), str) or type(item.get('IsDir')) is not bool
+            for item in listing):
+        raise GdiError('invalid publication listing')
+    names = [item['Path'] for item in listing]
+    if len(names) != len(set(names)):
+        raise GdiError('duplicate publication paths')
+    selected = {item['Path'] for item in listing if not item['IsDir'] and
+                item['Path'].startswith(prefix) and item['Path'].endswith('.json')}
+    if not isinstance(metadata, dict) or not selected.issubset(metadata):
+        raise GdiError('incomplete publication metadata')
+    records = {}
+    for item in listing:
+        path = item["Path"]
+        if item["IsDir"] or not path.startswith(prefix) or not path.endswith(".json"):
+            continue
+        publication_id = path[len(prefix):-len(".json")]
+        if not hex_value(publication_id, 64):
+            raise GdiError("invalid publication filename")
+        raw = metadata[path]
+        data = validate_manifest(raw, publication_id, repository_id, ref)
+        if publication_id in records:
+            raise GdiError("duplicate publication")
+        records[publication_id] = data
+    if not records:
+        return []
+    children = {}
+    for publication_id, data in records.items():
+        parent = data["previous"]
+        if parent is not None and parent not in records:
+            raise GdiError("incomplete publication chain: predecessor is missing; retry after upload completes")
+        if parent in children:
+            raise GdiError("conflicting publications: concurrent push detected; no tip was selected")
+        children[parent] = publication_id
+    current = children.get(None)
+    seen = set()
+    chain = []
+    while current is not None and current not in seen:
+        data = records[current]
+        if data["bundle_kind"] == "incremental":
+            base = data["base_publication"]
+            if base not in seen or records[base]["head"] != data["base_head"]:
+                raise GdiError("incremental base must identify an earlier publication with the exact base HEAD")
+        seen.add(current)
+        chain.append((current, data))
+        current = children.get(current)
+    if current is not None or len(seen) != len(records):
+        raise GdiError("invalid publication chain: cycle or disconnected records")
+    return chain
+
+
+def validate_manifest(raw, publication_id, repository_id, ref):
+    """Validate a single manifest; chain completeness is checked separately."""
+    if digest(raw) != publication_id:
+        raise GdiError("publication metadata checksum mismatch")
+    data = decode(raw)
+    required = {"version", "repository_id", "ref", "head", "bundle_sha256", "previous", "nonce",
+                "bundle_kind", "base_publication", "base_head", "prerequisites", "bundle_bytes"}
+    if (set(data) != required or type(data.get("version")) is not int or data["version"] != PROTOCOL_VERSION or
+            data.get("repository_id") != repository_id or data.get("ref") != ref or
+            not hex_value(data.get("head"), 40) or not hex_value(data.get("bundle_sha256"), 64) or
+            not hex_value(data.get("nonce"), 32) or
+            type(data.get("bundle_bytes")) is not int or data["bundle_bytes"] <= 0 or
+            not isinstance(data.get("prerequisites"), list) or
+            any(not hex_value(oid, 40) for oid in data["prerequisites"]) or
+            data["prerequisites"] != sorted(set(data["prerequisites"])) or
+            (data.get("previous") is not None and not hex_value(data["previous"], 64))):
+        raise GdiError("invalid publication metadata, repository ID, or ref")
+    if data["bundle_kind"] == "full":
+        if data["base_publication"] is not None or data["base_head"] is not None or data["prerequisites"]:
+            raise GdiError("full publication must not have a base or prerequisites")
+    elif data["bundle_kind"] == "incremental":
+        if (not hex_value(data["base_publication"], 64) or not hex_value(data["base_head"], 40)
+                or not data["prerequisites"] or data["base_head"] == data["head"]):
+            raise GdiError("invalid incremental publication base or prerequisites")
+    else:
+        raise GdiError("unsupported publication bundle_kind")
+    return data
+
+
+def bundle_sequence(chain, contains=None):
+    """Checkpoint/base replay order for an already validated chain."""
+    if not chain:
+        return []
+    records, pending = dict(chain), []
+    current = chain[-1][0]
+    while True:
+        data = records[current]
+        if contains is not None and contains(current, data['head']):
+            break
+        pending.append((current, data))
+        if data['bundle_kind'] == 'full':
+            break
+        current = data['base_publication']
+    return list(reversed(pending))

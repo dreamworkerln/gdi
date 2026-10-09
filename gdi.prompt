@@ -44,7 +44,7 @@ checkout и container workspace имеют разные гарантии (docs/c
 Все материалы для работы находятся в репозитории gdi:
 
 - `README.md`, `ARCHITECTURE.md`, `TODO.md`;
-- `INSTALL.md`, `QUICKSTART.md`, `GOOGLE_DRIVE_CI_PUBLISHING_WORKFLOW.md`;
+- `INSTALL.md`, `QUICKSTART.md`, `docs/agent.md`, `docs/ci.md`;
 - `docs/`, `examples/worker.json`, модули `gdi/` и проверки `tests/`.
 
 В командах, обращающихся к исходникам, задавай путь через переменную:

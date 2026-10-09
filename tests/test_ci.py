@@ -21,7 +21,7 @@ from gdi.worker_config import load_config
 from tests.test_exchange import ExchangeTestCase
 
 
-class CiTests(ExchangeTestCase):
+class CiTestCase(ExchangeTestCase):
     def config(self, argv=None, **profile_fields):
         profile = {'stages': [{'name': 'test', 'argv': argv or [sys.executable, '-c', "print('hello CI')"],
                                'timeout_seconds': 10}], **profile_fields}
@@ -44,6 +44,9 @@ class CiTests(ExchangeTestCase):
         req = client.submit(pub, 'user-host', 'full')
         return client, req
 
+
+
+class CiTests(CiTestCase):
     def test_full_cycle_fail_fix_pass_and_exact_pass_pull(self):
         worker = self.worker(self.config([sys.executable, '-c',
             "from pathlib import Path; print('CONSOLE'); assert Path('file.txt').read_text().strip() == 'fixed', 'expected fixed' "]))

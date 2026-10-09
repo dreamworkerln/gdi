@@ -3,7 +3,8 @@
 Реализованы Git protocol v3 и CI protocol v1/v2. Обычный обмен работает без worker;
 автономный CI требует один раз настроенного host. Python 3.10.12, стандартная
 библиотека, внешние Git/rclone; для GitHub Actions — act/Docker. Человеческий workflow: [QUICKSTART.md](QUICKSTART.md),
-инструкция агенту: [GOOGLE_DRIVE_CI_PUBLISHING_WORKFLOW.md](GOOGLE_DRIVE_CI_PUBLISHING_WORKFLOW.md).
+инструкция агенту с Drive-коннектором: [docs/agent.md](docs/agent.md),
+CI через обычный CLI с rclone: [docs/ci.md](docs/ci.md).
 
 ## Поток данных
 

@@ -64,7 +64,7 @@ def display(value):
     print('Worktree: ' + worktree)
     if not value['connections']:
         print('Connections: none; gdi remote add drive <rclone:path> --init')
-    descriptions = {'published': 'HEAD is published', 'unpublished': 'branch is not published',
+    descriptions = {'published': 'Nothing to push.', 'unpublished': 'branch is not published',
                     'ahead': 'local HEAD is ahead; push needed', 'behind': 'local HEAD is behind; pull needed',
                     'diverged': 'histories diverged', 'unknown': 'remote HEAD is missing locally; fetch to compare',
                     'detached': 'switch to a branch to inspect its publication', 'error': 'remote check failed'}

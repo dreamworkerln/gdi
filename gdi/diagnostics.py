@@ -228,3 +228,63 @@ def note(message, **fields):
         session.event('note', phase=_phase.get(), message=message, **fields)
         if session.path is not None:
             session.show(message)
+
+
+def transfer_progress_enabled():
+    return _active is not None and _active.progress
+
+
+class TransferProgress:
+    """Render actual transfer counters on stderr, independently of profiling."""
+
+    def __init__(self, label, total=None):
+        self.label = ''.join(c if ord(c) >= 32 and ord(c) != 127 else '?' for c in label)
+        self.total = total
+        self.started = self.last_shown = time.monotonic()
+        self.last = None
+        self.transfer_id = uuid.uuid4().hex
+        if _active is not None:
+            _active.event('transfer_start', transfer_id=self.transfer_id, phase=_phase.get(),
+                          label=self.label, total_bytes=total)
+
+    def finish(self, error=None):
+        if _active is not None:
+            _active.event('transfer_finish', transfer_id=self.transfer_id, phase=_phase.get(),
+                          label=self.label, duration_seconds=time.monotonic() - self.started,
+                          error=error, counters=self.last)
+
+    def update(self, stats, *, final=False):
+        session = _active
+        if session is None or not session.progress or not isinstance(stats, dict):
+            return
+        transferred, total, speed = stats.get('bytes'), stats.get('totalBytes'), stats.get('speed', 0)
+        if type(transferred) is not int or transferred < 0:
+            return
+        if type(total) is not int or total <= 0:
+            total = self.total
+        if type(speed) not in (int, float) or not 0 <= speed < float('inf'):
+            speed = 0
+        if speed == 0:
+            speed = transferred / max(.001, time.monotonic() - self.started)
+        now = time.monotonic()
+        if not final and now - self.last_shown < 1:
+            return
+        counters = (transferred, total, int(speed))
+        if counters == self.last and not final:
+            return
+        self.last, self.last_shown = counters, now
+        text = (f'{transferred}/{total} bytes ({min(100, transferred * 100 / total):.1f}%)'
+                if total else f'{transferred} bytes (total unknown)')
+        session.show(f'{self.label}: {text}, {speed:.0f} bytes/s' + ('; complete' if final else ''))
+        session.event('transfer_progress', phase=_phase.get(), label=self.label,
+                      bytes=transferred, total_bytes=total, speed_bytes_per_second=speed, complete=final)
+
+    def line(self, raw):
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            return
+        if isinstance(value, dict) and isinstance(value.get('stats'), dict):
+            stats = value['stats']
+            self.update(stats, final=stats.get('errors', 0) == 0 and not stats.get('fatalError') and
+                        stats.get('transfers', 0) >= stats.get('totalTransfers', 1))

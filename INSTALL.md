@@ -607,7 +607,8 @@ gdi pull drive --passed --job JOB_ID --profile full
 непроверенный tip. Только fast-forward; gdi не сбрасывает ваши локальные изменения.
 Обычный `gdi pull drive` получает последний tip без CI gate.
 
-Подробный цикл агента: [GOOGLE_DRIVE_CI_PUBLISHING_WORKFLOW.md](GOOGLE_DRIVE_CI_PUBLISHING_WORKFLOW.md).
+Подробный цикл CI через CLI с rclone: [docs/ci.md](docs/ci.md).
+Обмен и запрос CI агентом с Drive-коннектором: [docs/agent.md](docs/agent.md).
 Практический справочник всех основных действий: [QUICKSTART.md](QUICKSTART.md).
 Для GC сначала доставьте все результаты, остановите worker и обмен на всех машинах.
 Незавершённые jobs/queue markers блокируют apply-GC; CI logs им не очищаются.

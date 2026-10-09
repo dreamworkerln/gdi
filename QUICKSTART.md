@@ -13,6 +13,8 @@ commit. Ваш рабочий каталог при этом не меняетс
 Для измерения задержек: `gdi push drive --profile-log PATH --progress`.
 Журнал содержит каждый вызов rclone, этапы и итоговое время;
 подробности — [docs/profiling.md](docs/profiling.md).
+Прогресс этапов и передачи байтов/процента/скорости доступен без профилирования;
+`--progress` включает его, `--no-progress` отключает.
 
 ## Один раз для проекта
 
@@ -95,6 +97,7 @@ gdi pull
 Fetch обновляет отдельный remote ref, pull делает fast-forward текущей ветки и требует
 чистого рабочего дерева. Обычный push уведомляет worker об истории, CI запускается
 через `--ci`.
+Если pull не меняет HEAD, команда выводит `Already up to date.` после проверки Drive.
 
 ## Подключение по умолчанию и статус
 
@@ -114,6 +117,7 @@ gdi push drive feature/login
 локальная ветка впереди/позади, истории разошлись. Если remote commit ещё отсутствует
 локально, статус предлагает `fetch` для сравнения; bundles сам не загружает.
 Dirty worktree не меняет состояние публикации committed HEAD.
+Когда текущий HEAD уже опубликован, состояние подключения — `Nothing to push.`.
 
 На Drive имена каталогов читаемы: `branches/main/`, `branches/dev/`.
 Для `feature/login` используется `branches/feature%2Flogin/`, а `%` кодируется `%25`.
@@ -177,6 +181,12 @@ gdi push drive --ci --worker user-host --workflow .github/workflows/checks.yml -
 
 `--job JOB_NAME` выбирает отдельный job workflow. Список CI команд в worker.json
 не нужен. Лог в примере сохраняется вне репозитория, чтобы не мешать чистому pull.
+`ci wait --follow` и `ci logs --follow` сохраняют позицию в `.gdi/ci/.../follow/`:
+повтор команды продолжает после уже выведенных chunks. `--restart` вместе с
+`--follow` воспроизводит лог с начала. Обычный `ci logs` и `logs --output` выдают
+полный лог. При аварии между выводом chunk и сохранением позиции возможен повтор
+последнего chunk; невидимый пользователю вывод не пропускается.
+
 `ci wait` возвращает код 0 при проверенном PASS, 1 при другом terminal result,
 124 при timeout ожидания.
 
@@ -198,6 +208,7 @@ gdi pull drive --passed --job JOB_ID --profile full
 | --- | --- |
 | Посмотреть состояние задания | `gdi ci status drive JOB_ID` |
 | Смотреть консоль по мере выполнения | `gdi ci logs drive JOB_ID --follow` |
+| Воспроизвести консоль с начала | `gdi ci logs drive JOB_ID --follow --restart` |
 | Снова ждать тот же job после Ctrl+C | `gdi ci wait drive JOB_ID --follow` |
 | Явно повторить завершённый CI на том же commit | `gdi ci retry drive JOB_ID --json` |
 | Отправить commits без CI | `gdi push drive` |
@@ -271,3 +282,11 @@ gdi worker start
 
 Незавершённые jobs и оставшиеся queue markers блокируют применение GC.
 CI logs/results этим GC не удаляются. Подробнее: [docs/gc.md](docs/gc.md).
+
+## Агент с Drive-коннектором
+
+Исходники самого GDI можно получить через его GDI-репозиторий. Агент запускает
+`python3 -m gdi agent ...` из исходников с Python и Git, без pip и rclone. GDI
+готовит bundle/manifest и CI request/ready/inbox, агент передаёт их коннектором
+и возвращает скачанные bytes для проверки. Команды, снимки, порядок загрузок
+и восстановление проектов: [docs/agent.md](docs/agent.md).

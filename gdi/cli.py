@@ -43,7 +43,7 @@ def diagnostics_arguments(command):
                          help='append command/stage timings and every rclone call to JSONL (or GDI_PROFILE_LOG)')
     progress = command.add_mutually_exclusive_group()
     progress.add_argument('--progress', action='store_true', default=argparse.SUPPRESS,
-                          help='show operation stages on stderr (default: terminal); rclone timings require profiling')
+                          help='show stages and transfer bytes/speed on stderr (default: terminal); timings require profiling')
     progress.add_argument('--no-progress', action='store_false', dest='progress', default=argparse.SUPPRESS,
                           help='disable progress messages')
 
@@ -157,12 +157,51 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             sub.add_argument("job")
         if operation in ("wait", "logs"):
             sub.add_argument("--follow", action="store_true")
+            sub.add_argument("--restart", action="store_true", help="replay logs from the beginning instead of the saved follow position")
         if operation == "wait":
             sub.add_argument("--timeout", type=float, default=3600)
         if operation == "logs":
             sub.add_argument("--output", help="save the verified complete binary log after completion")
         else:
             sub.add_argument("--json", action="store_true")
+    agent = commands.add_parser('agent', help='offline connector exchange (Python and Git only)')
+    agent_ops = agent.add_subparsers(dest='operation', required=True)
+    for operation in ('snapshot', 'prepare', 'check', 'accept', 'clone'):
+        sub = agent_ops.add_parser(operation)
+        diagnostics_arguments(sub)
+        sub.set_defaults(json=True)
+        sub.add_argument('--snapshot', required=True, help='complete connector snapshot JSON')
+        sub.add_argument('--repository-id', required=True, help='trusted identity supplied independently')
+        if operation == 'prepare':
+            sub.add_argument('--repo', default='.', help='target Git worktree (default: current directory)')
+            sub.add_argument('--branch', help='branch name (default: current branch)')
+            sub.add_argument('--output', required=True, help='durable plan directory; reuse for retries')
+        if operation in ('check', 'accept'):
+            sub.add_argument('--plan', required=True, help='saved plan directory')
+        if operation == 'clone':
+            sub.add_argument('--destination', required=True, help='new worktree directory, must not exist')
+    agent_ci = agent_ops.add_parser('ci', help='offline CI request and result exchange')
+    agent_ci_ops = agent_ci.add_subparsers(dest='ci_operation', required=True)
+    for operation in ('prepare', 'check', 'accept', 'result'):
+        sub = agent_ci_ops.add_parser(operation)
+        diagnostics_arguments(sub)
+        sub.set_defaults(json=True)
+        sub.add_argument('--snapshot', required=True)
+        sub.add_argument('--repository-id', required=True)
+        sub.add_argument('--repo', default='.')
+        if operation == 'prepare':
+            sub.add_argument('--publication', required=True)
+            sub.add_argument('--worker', required=True)
+            sub.add_argument('--profile', default='full')
+            sub.add_argument('--output', required=True)
+            sub.add_argument('--retry-of', help='explicit retry with a new job ID')
+            workflow_arguments(sub)
+        else:
+            sub.add_argument('--plan', required=True)
+        if operation == 'accept':
+            sub.add_argument('--inbox-proof', required=True, help='complete inbox listing and downloaded event proof')
+        if operation in ('prepare', 'check', 'accept'):
+            sub.add_argument('--capabilities', required=True, help='fresh downloaded worker capabilities JSON')
     worker = commands.add_parser("worker", help="host worker and systemd user service (works outside Git)")
     worker_ops = worker.add_subparsers(dest="operation", required=True)
     for operation in ("check", "run", "install", "start", "status", "stop"):
@@ -197,13 +236,18 @@ def main(argv=None):
         command_parser.error("--passed requires --job and --profile; these options are used together")
     if args.command == "ci" and args.operation == "logs" and args.output and args.follow:
         command_parser.error("choose logs --output or --follow")
+    if args.command == 'ci' and args.operation in ('wait', 'logs') and args.restart and not args.follow:
+        command_parser.error('--restart requires --follow')
     try:
         from .diagnostics import command_session
         with command_session(args.command + (' ' + args.operation if hasattr(args, 'operation') else ''),
                              path=getattr(args, 'profile_log', None), progress=getattr(args, 'progress', None)) as diagnostics:
-            from .rc_transport import TransportSession
-            with TransportSession() as transport_factory:
-                code = execute(args, transport_factory=transport_factory)
+            if args.command == 'agent':
+                code = execute(args)
+            else:
+                from .rc_transport import TransportSession
+                with TransportSession() as transport_factory:
+                    code = execute(args, transport_factory=transport_factory)
             if diagnostics is not None:
                 diagnostics.exit_code = code
             return code
@@ -219,6 +263,39 @@ def main(argv=None):
 
 def execute(args, *, transport_factory=None):
     try:
+        if args.command == 'agent':
+            from . import agent
+            if args.operation == 'snapshot':
+                from .snapshot import Snapshot
+                snapshot = Snapshot(args.snapshot, args.repository_id)
+                value = {'repository_id': snapshot.repository_id, 'repository_path': snapshot.repository_path,
+                         'ref': snapshot.ref, 'publications': len(snapshot.chain),
+                         'publication_id': snapshot.chain[-1][0] if snapshot.chain else None,
+                         'head': snapshot.chain[-1][1]['head'] if snapshot.chain else None,
+                         'required_bundles': snapshot.required_bundles(),
+                         'snapshot_fingerprint': snapshot.fingerprint, 'freshness': 'connector_provided_snapshot'}
+            elif args.operation == 'prepare':
+                git = Git.discover(args.repo)
+                with git.lock():
+                    value = agent.prepare(git, args.snapshot, args.repository_id, args.output, args.branch)
+            elif args.operation == 'clone':
+                value = agent.clone(args.snapshot, args.repository_id, args.destination)
+            elif args.operation == 'ci':
+                from . import agent_ci
+                git = Git.discover(args.repo)
+                if args.ci_operation == 'prepare':
+                    with git.lock():
+                        value = agent_ci.prepare(git, args.snapshot, args.repository_id, args.output,
+                                                 args.publication, args.worker, args.profile, args.capabilities,
+                                                 workflow=selected_workflow(args), retry_of=args.retry_of)
+                else:
+                    value = getattr(agent_ci, args.ci_operation)(git, args.plan, args.snapshot, args.repository_id,
+                        **({'capabilities_path': args.capabilities} if args.ci_operation != 'result' else {}),
+                        **({'inbox_proof': args.inbox_proof} if args.ci_operation == 'accept' else {}))
+            else:
+                value = getattr(agent, args.operation)(args.plan, args.snapshot, args.repository_id)
+            emit(value, True)
+            return 0
         selector = None
         if args.command == "push" and args.ci or args.command == "ci" and args.operation == "submit":
             from .ci_protocol import identifier
@@ -274,11 +351,11 @@ def execute(args, *, transport_factory=None):
             elif args.operation == "status":
                 value = client.status(args.job)
             elif args.operation == "wait":
-                value, code = client.wait(args.job, timeout=args.timeout, follow=args.follow)
+                value, code = client.wait(args.job, timeout=args.timeout, follow=args.follow, restart=args.restart)
                 emit(value, args.json)
                 return code
             else:
-                client.logs(args.job, output=args.output, follow=args.follow)
+                client.logs(args.job, output=args.output, follow=args.follow, restart=args.restart)
                 return 0
             emit(value, args.json)
             return 0
@@ -365,13 +442,19 @@ def execute(args, *, transport_factory=None):
                     if args.ci:
                         print(f"CI job: {value['job_id']}\nWorker/profile: {value['worker_id']}/{value['profile_id']}")
             else:
+                before_head = git.oid('HEAD') if args.command == "pull" else None
                 if args.command == "pull" and args.passed:
                     from .ci import CiClient
                     value = CiClient(exchange, args.remote).pull_passed(args.job, args.profile)
                     print(f"pull: verified PASS {args.job} -> {value['head']}")
+                    if value['head'] == before_head:
+                        print("Already up to date.")
                 else:
                     head, pub, tracking = (exchange.fetch(args.remote, args.branch) if args.command == "fetch" else exchange.pull(args.remote))
-                    print(f"{args.command}: {tracking} -> {head}\nPublication: {pub}")
+                    if args.command == "pull" and head == before_head:
+                        print("Already up to date.")
+                    else:
+                        print(f"{args.command}: {tracking} -> {head}\nPublication: {pub}")
         return 0
     except KeyboardInterrupt:
         print("gdi: interrupted; the remote job is not cancelled", file=sys.stderr)

@@ -29,10 +29,24 @@ class Rclone:
         self.options = options or {}
 
     def call(self, *args, allowed=(0,)):
-        return run(["rclone", *args, "--contimeout", str(self.options.get("connect_timeout_seconds", 10)) + "s",
-                    "--timeout", str(self.options.get("timeout_seconds", 60)) + "s",
-                    "--retries", str(self.options.get("retries", 3)),
-                    "--low-level-retries", str(self.options.get("low_level_retries", 3))], allowed=allowed)
+        from .diagnostics import TransferProgress, transfer_progress_enabled
+        progress = None
+        if args[0] in ('copy', 'copyto') and transfer_progress_enabled():
+            progress = TransferProgress('transfer')
+            args = (*args, '--stats', '1s', '--stats-log-level', 'NOTICE', '--use-json-log')
+        error = None
+        try:
+            return run(["rclone", *args, "--contimeout", str(self.options.get("connect_timeout_seconds", 10)) + "s",
+                        "--timeout", str(self.options.get("timeout_seconds", 60)) + "s",
+                        "--retries", str(self.options.get("retries", 3)),
+                        "--low-level-retries", str(self.options.get("low_level_retries", 3))], allowed=allowed,
+                       **({'stderr_line': progress.line} if progress is not None else {}))
+        except BaseException as exc:
+            error = type(exc).__name__
+            raise
+        finally:
+            if progress is not None:
+                progress.finish(error)
 
     def path(self, relative):
         return self.url + ("/" + relative if relative else "")

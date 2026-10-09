@@ -12,7 +12,7 @@ class GdiError(RuntimeError):
     """An actionable command, transport, or protocol failure."""
 
 
-def run(args, *, cwd=None, allowed=(0,), isolated_git=False):
+def run(args, *, cwd=None, allowed=(0,), isolated_git=False, stderr_line=None):
     from .diagnostics import subprocess_call
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env["GIT_TERMINAL_PROMPT"] = "0"
@@ -21,9 +21,32 @@ def run(args, *, cwd=None, allowed=(0,), isolated_git=False):
                    GIT_CONFIG_NOSYSTEM="1")
     with subprocess_call(args) as timing:
         try:
-            result = subprocess.run(args, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                                    errors="strict")
+            if stderr_line is None:
+                result = subprocess.run(args, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                                        errors="strict")
+            else:
+                # A temporary stdout avoids pipe deadlocks while we consume stats
+                # on stderr; no payload or raw rclone log is sent to the terminal.
+                import tempfile
+                with tempfile.TemporaryFile() as output:
+                    process = subprocess.Popen(args, cwd=cwd, env=env, stdout=output,
+                                               stderr=subprocess.PIPE)
+                    lines = []
+                    try:
+                        for line in iter(process.stderr.readline, b''):
+                            text = line.decode('utf-8', errors='strict')
+                            lines.append(text)
+                            stderr_line(text)
+                        code = process.wait()
+                        output.seek(0)
+                        result = subprocess.CompletedProcess(args, code, output.read().decode('utf-8'), ''.join(lines))
+                    except BaseException:
+                        process.kill()
+                        process.wait()
+                        raise
+                    finally:
+                        process.stderr.close()
         except FileNotFoundError as exc:
             raise GdiError(f"{args[0]} not found in PATH") from exc
         timing['result'] = result

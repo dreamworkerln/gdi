@@ -56,7 +56,7 @@ class PrefixTransport:
         return self.store.delete_bundle(self.path(path))
 
 
-class InboxTests(ExchangeTestCase):
+class InboxTestCase(ExchangeTestCase):
     def setUp(self):
         super().setUp()
         self.store = MemoryTransport()
@@ -125,6 +125,9 @@ sys.exit(0 if source in ('fixed', 'skip') else 1)
         return {path: decode(raw) for path, raw in self.store.data.items()
                 if path.startswith('inbox/') and decode(raw)['type'] == 'ci_requested'}
 
+
+
+class InboxTests(InboxTestCase):
     def test_empty_poll_lists_only_the_shared_inbox(self):
         worker = self.worker()
         for number in range(100):

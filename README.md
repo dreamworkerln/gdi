@@ -9,13 +9,16 @@ workflows из точного commit через act + Docker; агент
 
 Полная установка, настройка Bash, Google Cloud OAuth и rclone: **[INSTALL.md](INSTALL.md)**.
 Формат данных и гарантии: [docs/protocol.md](docs/protocol.md).
-Публикация изменений агентом и проверка на host пользователя:
-[GOOGLE_DRIVE_CI_PUBLISHING_WORKFLOW.md](GOOGLE_DRIVE_CI_PUBLISHING_WORKFLOW.md).
+CI через обычный CLI с rclone и проверка на host пользователя:
+[docs/ci.md](docs/ci.md).
 Короткий справочник человеку: **[QUICKSTART.md](QUICKSTART.md)**.
 Общая очередь и подключения `.gdi`: [docs/inbox.md](docs/inbox.md).
 Worker/systemd: [docs/worker.md](docs/worker.md). Архитектура: [ARCHITECTURE.md](ARCHITECTURE.md),
 состояние проверок и дальнейшие задачи: [TODO.md](TODO.md).
 Профилирование времени команд и журнал всех вызовов rclone: [docs/profiling.md](docs/profiling.md).
+
+Агент с Drive-коннектором запускает `python3 -m gdi agent ...` из исходников
+без rclone и сторонних Python-пакетов: [docs/agent.md](docs/agent.md).
 
 На Linux CLI и worker используют временные процессы native rclone RC с ограничением
 жизни операцией, свежей проверкой repository ID и остановкой при гибели родителя.

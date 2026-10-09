@@ -1,5 +1,6 @@
 """Agent-side durable submission, live console and verified results."""
 
+from contextlib import contextmanager, nullcontext
 import hashlib
 import fcntl
 import os
@@ -9,10 +10,9 @@ import shutil
 import sys
 import tempfile
 import time
-import uuid
 
-from .ci_protocol import (TERMINAL, atomic_write, job_id, marker, now, request, upload_json,
-                          validate_result, verify_file, workflow_selection)
+from .ci_protocol import (atomic_write, job_id, marker, request, upload_json,
+                          validate_result, verify_file, workflow_selection, capability_revision, prepare_request)
 from .exchange import decode, digest, encode, file_digest, hex_value
 from .git import GdiError
 
@@ -100,93 +100,12 @@ def migrate_state(old, root):
         atomic_write(complete, b"1\n")
 
 
-class CiClient:
-    def __init__(self, exchange, remote):
-        self.exchange = exchange
-        self.git = exchange.git
-        self.transport, self.repository_id = exchange.connect(remote)
-        self.settings = exchange.remote(remote)
-        self.root = self.git.gdi_dir() / "ci" / self.repository_id
-        old = self.git.common_dir() / "gdi-ci" / self.repository_id
-        migrate_state(old, self.root)
+class CiResultReader:
+    """Shared result verification for live transports and offline connector snapshots."""
 
-    def execution_settings(self, worker_id, profile_id="full", workflow=None):
-        from .ci_protocol import identifier
-        identifier(worker_id); identifier(profile_id)
-        selector = workflow_selection(workflow)
-        shared = None
-        capabilities = None
-        if self.settings["inbox_root"] is not None:
-            candidate = self.exchange.transport_factory(self.settings["inbox_root"])
-            raw_capabilities = optional_read(candidate, f"ci/workers/{worker_id}/capabilities.json")
-            if raw_capabilities is not None:
-                capabilities = decode(raw_capabilities)
-                if capabilities.get("inbox_version") != 1:
-                    raise GdiError("worker does not support the shared inbox")
-                shared = candidate
-        if capabilities is None:
-            capabilities = decode(self.transport.read(f"ci/workers/{worker_id}/capabilities.json"))
-        try:
-            revision = (capabilities["profiles"][profile_id] if shared is not None else
-                        capabilities["repositories"][self.repository_id][profile_id])
-        except (KeyError, TypeError) as exc:
-            raise GdiError("worker does not advertise the requested CI execution settings; start/check the worker") from exc
-        if capabilities.get("ci_version") != 1 or capabilities.get("worker_id") != worker_id or not hex_value(revision, 64):
-            raise GdiError("invalid worker capabilities")
-        if shared is None and selector != workflow_selection():
-            raise GdiError("workflow selection requires a global inbox worker")
-        return revision, shared, selector
-
-    def submit(self, publication_id, worker_id, profile_id="full", *, retry_of=None, workflow=None, github_repository=None):
-        revision, shared, selector = self.execution_settings(worker_id, profile_id, workflow)
-        pub, _ = publication(self.exchange, self.transport, self.repository_id, publication_id)
-        namespace = self.git.github_repository() if github_repository is None else github_repository
-        key_fields = [publication_id, worker_id, profile_id, revision, retry_of]
-        if shared is not None:
-            key_fields.append(selector)
-            if namespace:
-                key_fields.append(namespace)
-        key = digest(encode(key_fields))
-        outbox = self.root / "outbox" / (key + ".json")
-        if outbox.exists():
-            raw = outbox.read_bytes()
-            req = request(decode(raw), self.git, self.repository_id)
-        else:
-            req = {"ci_version": 1, "job_id": uuid.uuid4().hex, "repository_id": self.repository_id,
-                   "ref": pub["ref"], "head": pub["head"], "publication_id": publication_id,
-                   "worker_id": worker_id, "profile_id": profile_id, "profile_revision": revision,
-                   "created_at": now(), "retry_of": retry_of}
-            if shared is not None:
-                req.update(ci_version=2, workflow=selector)
-                if namespace:
-                    req["github_repository"] = namespace
-            request(req, self.git, self.repository_id)
-            raw = encode(req)
-            atomic_write(outbox, raw)
-        jid = req["job_id"]
-        prefix = f"ci/jobs/{jid}"
-        for directory in ((prefix,) if shared is not None else ("ci/queue", prefix)):
-            self.transport.mkdir(directory)
-        # A repeated successful submit must not put a completed job back in the queue.
-        existing = files(self.transport, prefix)
-        if "result.json" in existing:
-            self.result(jid)
-            return req
-        with tempfile.TemporaryDirectory(prefix="gdi-submit-") as temporary:
-            source = Path(temporary) / "request.json"
-            source.write_bytes(raw)
-            self.transport.upload(source, prefix + "/request.json")
-            ready = marker(req, raw)
-            if shared is None:
-                upload_json(self.transport, f"ci/queue/{jid}.json", ready)
-            upload_json(self.transport, prefix + "/request.ready", ready)
-            if shared is not None:
-                from .inbox import notification, publish
-                from .local_config import repository_path
-                event = notification(self.repository_id, repository_path(self.settings["inbox_root"], self.settings["url"]),
-                                     pub, publication_id, req, raw)
-                publish(shared, event)
-        return req
+    def __init__(self, git, transport, repository_id, root):
+        self.git, self.transport, self.repository_id = git, transport, repository_id
+        self.root = Path(root)
 
     def load_request(self, jid):
         job_id(jid)
@@ -232,19 +151,6 @@ class CiClient:
         atomic_write(local / "result.json", encode(result))
         return result
 
-    def status(self, jid):
-        result = self.result(jid)
-        if result is not None:
-            return {**result, "verified": True}
-        req, raw = self.load_request(jid)
-        listing = files(self.transport, f"ci/jobs/{jid}")
-        if "status.json" not in listing:
-            return {**req, "state": "QUEUED", "verified": False}
-        value = decode(self.transport.read(f"ci/jobs/{jid}/status.json"))
-        if value.get("job_id") != jid or value.get("request_sha256") != digest(raw):
-            raise GdiError("CI status/request identity mismatch")
-        return {**value, "verified": False}
-
     def chunks(self, jid):
         prefix = f"ci/jobs/{job_id(jid)}"
         if "log-chunks" not in {item["Path"] for item in self.transport.list(prefix) if item["IsDir"]}:
@@ -272,6 +178,101 @@ class CiClient:
             os.replace(pending, target)
         return target.read_bytes()
 
+
+class CiClient(CiResultReader):
+    def __init__(self, exchange, remote):
+        self.exchange = exchange
+        self.git = exchange.git
+        self.transport, self.repository_id = exchange.connect(remote)
+        self.settings = exchange.remote(remote)
+        self.root = self.git.gdi_dir() / "ci" / self.repository_id
+        old = self.git.common_dir() / "gdi-ci" / self.repository_id
+        migrate_state(old, self.root)
+
+    def execution_settings(self, worker_id, profile_id="full", workflow=None):
+        from .ci_protocol import identifier
+        identifier(worker_id); identifier(profile_id)
+        selector = workflow_selection(workflow)
+        shared = None
+        capabilities = None
+        if self.settings["inbox_root"] is not None:
+            candidate = self.exchange.transport_factory(self.settings["inbox_root"])
+            raw_capabilities = optional_read(candidate, f"ci/workers/{worker_id}/capabilities.json")
+            if raw_capabilities is not None:
+                capabilities = decode(raw_capabilities)
+                if capabilities.get("inbox_version") != 1:
+                    raise GdiError("worker does not support the shared inbox")
+                shared = candidate
+        if capabilities is None:
+            capabilities = decode(self.transport.read(f"ci/workers/{worker_id}/capabilities.json"))
+        revision = capability_revision(capabilities, worker_id, profile_id,
+                                       None if shared is not None else self.repository_id)
+        if shared is None and selector != workflow_selection():
+            raise GdiError("workflow selection requires a global inbox worker")
+        return revision, shared, selector
+
+    def submit(self, publication_id, worker_id, profile_id="full", *, retry_of=None, workflow=None, github_repository=None):
+        revision, shared, selector = self.execution_settings(worker_id, profile_id, workflow)
+        pub, _ = publication(self.exchange, self.transport, self.repository_id, publication_id)
+        namespace = self.git.github_repository() if github_repository is None else github_repository
+        key_fields = [publication_id, worker_id, profile_id, revision, retry_of]
+        if shared is not None:
+            key_fields.append(selector)
+            if namespace:
+                key_fields.append(namespace)
+        key = digest(encode(key_fields))
+        outbox = self.root / "outbox" / (key + ".json")
+        if outbox.exists():
+            raw = outbox.read_bytes()
+            req = request(decode(raw), self.git, self.repository_id)
+        else:
+            req = prepare_request(self.git, self.repository_id, publication_id, pub, worker_id,
+                                  profile_id, revision, shared=shared is not None,
+                                  workflow=selector, github_repository=namespace, retry_of=retry_of)
+            raw = encode(req)
+            atomic_write(outbox, raw)
+        jid = req["job_id"]
+        prefix = f"ci/jobs/{jid}"
+        for directory in ((prefix,) if shared is not None else ("ci/queue", prefix)):
+            self.transport.mkdir(directory)
+        # A repeated successful submit must not put a completed job back in the queue.
+        existing = files(self.transport, prefix)
+        if "result.json" in existing:
+            self.result(jid)
+            return req
+        with tempfile.TemporaryDirectory(prefix="gdi-submit-") as temporary:
+            source = Path(temporary) / "request.json"
+            source.write_bytes(raw)
+            self.transport.upload(source, prefix + "/request.json")
+            ready = marker(req, raw)
+            if shared is None:
+                upload_json(self.transport, f"ci/queue/{jid}.json", ready)
+            upload_json(self.transport, prefix + "/request.ready", ready)
+            if shared is not None:
+                from .inbox import notification, publish
+                from .local_config import repository_path
+                event = notification(self.repository_id, repository_path(self.settings["inbox_root"], self.settings["url"]),
+                                     pub, publication_id, req, raw)
+                publish(shared, event)
+        return req
+
+
+
+    def status(self, jid):
+        result = self.result(jid)
+        if result is not None:
+            return {**result, "verified": True}
+        req, raw = self.load_request(jid)
+        listing = files(self.transport, f"ci/jobs/{jid}")
+        if "status.json" not in listing:
+            return {**req, "state": "QUEUED", "verified": False}
+        value = decode(self.transport.read(f"ci/jobs/{jid}/status.json"))
+        if value.get("job_id") != jid or value.get("request_sha256") != digest(raw):
+            raise GdiError("CI status/request identity mismatch")
+        return {**value, "verified": False}
+
+
+
     def follow(self, jid, cursor, stream):
         chunks = self.chunks(jid)
         if len(chunks) < cursor:
@@ -284,29 +285,80 @@ class CiClient:
                 stream.write(data.decode("utf-8", errors="replace")); stream.flush()
         return len(chunks)
 
-    def wait(self, jid, *, timeout=3600, follow=False, stream=None, interval=2):
+    @contextmanager
+    def cursor_session(self, jid, *, restart=False):
+        """One follower per job; only flushed, verified chunks advance the cursor."""
+        req, raw = self.load_request(jid)
+        directory = self.root / 'follow'
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / (jid + '.json')
+        lock = directory / (jid + '.lock')
+        if path.is_symlink() or lock.is_symlink():
+            raise GdiError('CI follow cursor must not be a symlink')
+        with lock.open('a') as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise GdiError('another command is following this CI job') from exc
+            state = {'cursor_version': 1, 'job_id': jid, 'request_sha256': digest(raw), 'chunks': []}
+            if path.exists() and not restart:
+                saved = decode(path.read_bytes())
+                if (set(saved) != set(state) or type(saved.get('cursor_version')) is not int or
+                        saved['cursor_version'] != 1 or saved['job_id'] != jid or
+                        saved['request_sha256'] != digest(raw) or not isinstance(saved['chunks'], list) or
+                        any(not isinstance(name, str) or not re.fullmatch(r'[0-9]{8}-[0-9a-f]{64}\.bin', name)
+                            for name in saved['chunks'])):
+                    raise GdiError('invalid CI follow cursor; use --restart to replay the log')
+                state = saved
+            atomic_write(path, encode(state))
+            yield path, state
+
+    def follow_saved(self, jid, cursor, stream):
+        path, state = cursor
+        chunks = self.chunks(jid)
+        names = [name for name, _ in chunks]
+        consumed = state['chunks']
+        if names[:len(consumed)] != consumed:
+            raise GdiError('CI log sequence shrank or previously printed chunks changed')
+        for name, checksum in chunks[len(consumed):]:
+            data = self.chunk(jid, name, checksum)
+            if hasattr(stream, 'buffer'):
+                stream.buffer.write(data); stream.buffer.flush()
+            else:
+                stream.write(data.decode('utf-8', errors='replace')); stream.flush()
+            # Terminal writes and fsync cannot be atomic. A crash here can replay
+            # the current chunk, but never silently skip unflushed output.
+            consumed.append(name)
+            atomic_write(path, encode(state))
+
+    def wait(self, jid, *, timeout=3600, follow=False, stream=None, interval=2, restart=False):
         from .worker_config import seconds
         if timeout is not None:
             seconds(timeout)
         seconds(interval)
+        if restart and not follow:
+            raise GdiError('--restart requires --follow')
         stream = stream or sys.stderr
-        deadline, cursor, last = (time.monotonic() + timeout if timeout is not None else None), 0, None
-        while True:
-            value = self.status(jid)
-            if follow:
-                summary = (value.get("state"), value.get("stage"), value.get("updated_at"))
-                if summary != last:
-                    print(f"[{jid}] {summary[0]} stage={summary[1]} heartbeat={summary[2]}", file=stream, flush=True)
-                    last = summary
-                cursor = self.follow(jid, cursor, stream)
-            if value.get("verified"):
-                return value, 0 if value["state"] == "PASS" else 1
-            if deadline is not None and time.monotonic() >= deadline:
-                return {"job_id": jid, "state": "WAIT_TIMEOUT", "verified": False}, 124
-            time.sleep(interval if deadline is None else min(interval, max(0, deadline - time.monotonic())))
+        deadline, last = (time.monotonic() + timeout if timeout is not None else None), None
+        with self.cursor_session(jid, restart=restart) if follow else nullcontext(None) as cursor:
+            while True:
+                value = self.status(jid)
+                if follow:
+                    summary = (value.get('state'), value.get('stage'), value.get('updated_at'))
+                    if summary != last:
+                        print(f"[{jid}] {summary[0]} stage={summary[1]} heartbeat={summary[2]}", file=stream, flush=True)
+                        last = summary
+                    self.follow_saved(jid, cursor, stream)
+                if value.get('verified'):
+                    return value, 0 if value['state'] == 'PASS' else 1
+                if deadline is not None and time.monotonic() >= deadline:
+                    return {'job_id': jid, 'state': 'WAIT_TIMEOUT', 'verified': False}, 124
+                time.sleep(interval if deadline is None else min(interval, max(0, deadline - time.monotonic())))
 
-    def logs(self, jid, *, output=None, follow=False):
+    def logs(self, jid, *, output=None, follow=False, restart=False):
         self.load_request(jid)
+        if restart and (not follow or output):
+            raise GdiError('--restart requires --follow')
         if output:
             result, code = self.wait(jid)
             if code == 124:
@@ -316,7 +368,7 @@ class CiClient:
             shutil.copyfile(source, Path(output))
             return
         if follow:
-            self.wait(jid, follow=True, stream=sys.stdout, timeout=None)
+            self.wait(jid, follow=True, stream=sys.stdout, timeout=None, restart=restart)
         else:
             self.follow(jid, 0, sys.stdout)
 

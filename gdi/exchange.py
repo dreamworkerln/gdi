@@ -14,7 +14,7 @@ from .diagnostics import note, phase, timed
 # Keep existing import locations available while sharing the implementation.
 from .publication import (PROTOCOL_VERSION, bundle_prerequisites, decode, digest,
                           encode, file_digest, hex_value, prepare_publication,
-                          validate_repository, verify_bundle)
+                          validate_repository, verify_bundle, validate_publications, bundle_sequence)
 
 
 CHECKPOINT_EVERY = 20
@@ -137,7 +137,6 @@ class Exchange:
     @timed('read/verify publication chain')
     def publications(self, transport, repository_id, ref, *, listing=None, metadata=None):
         prefix = branch_directory(ref) + "/"
-        records = {}
         if listing is None:
             selected_listing = getattr(transport, 'publication_listing', None)
             listing = (selected_listing(ref) if callable(selected_listing)
@@ -152,66 +151,10 @@ class Exchange:
             if set(downloaded) != {'branches/' + path for path in selected}:
                 raise GdiError('incomplete batch publication metadata')
             metadata = {path: downloaded['branches/' + path] for path in selected}
-        for item in listing:
-            path = item["Path"]
-            if item["IsDir"] or not path.startswith(prefix) or not path.endswith(".json"):
-                continue
-            publication_id = path[len(prefix):-len(".json")]
-            if not hex_value(publication_id, 64):
-                raise GdiError("invalid publication filename")
-            raw = transport.read("branches/" + path) if metadata is None else metadata[path]
-            if digest(raw) != publication_id:
-                raise GdiError("publication metadata checksum mismatch")
-            data = decode(raw)
-            required = {"version", "repository_id", "ref", "head", "bundle_sha256", "previous", "nonce",
-                        "bundle_kind", "base_publication", "base_head", "prerequisites", "bundle_bytes"}
-            if (set(data) != required or type(data.get("version")) is not int or data["version"] != PROTOCOL_VERSION or
-                    data.get("repository_id") != repository_id or data.get("ref") != ref or
-                    not hex_value(data.get("head"), 40) or not hex_value(data.get("bundle_sha256"), 64) or
-                    not hex_value(data.get("nonce"), 32) or
-                    type(data.get("bundle_bytes")) is not int or data["bundle_bytes"] <= 0 or
-                    not isinstance(data.get("prerequisites"), list) or
-                    any(not hex_value(oid, 40) for oid in data["prerequisites"]) or
-                    data["prerequisites"] != sorted(set(data["prerequisites"])) or
-                    (data.get("previous") is not None and not hex_value(data["previous"], 64))):
-                raise GdiError("invalid publication metadata, repository ID, or ref")
-            if data["bundle_kind"] == "full":
-                if data["base_publication"] is not None or data["base_head"] is not None or data["prerequisites"]:
-                    raise GdiError("full publication must not have a base or prerequisites")
-            elif data["bundle_kind"] == "incremental":
-                if (not hex_value(data["base_publication"], 64) or not hex_value(data["base_head"], 40)
-                        or not data["prerequisites"] or data["base_head"] == data["head"]):
-                    raise GdiError("invalid incremental publication base or prerequisites")
-            else:
-                raise GdiError("unsupported publication bundle_kind")
-            if publication_id in records:
-                raise GdiError("duplicate publication")
-            records[publication_id] = data
-        if not records:
-            return []
-        children = {}
-        for publication_id, data in records.items():
-            parent = data["previous"]
-            if parent is not None and parent not in records:
-                raise GdiError("incomplete publication chain: predecessor is missing; retry after upload completes")
-            if parent in children:
-                raise GdiError("conflicting publications: concurrent push detected; no tip was selected")
-            children[parent] = publication_id
-        current = children.get(None)
-        seen = set()
-        chain = []
-        while current is not None and current not in seen:
-            data = records[current]
-            if data["bundle_kind"] == "incremental":
-                base = data["base_publication"]
-                if base not in seen or records[base]["head"] != data["base_head"]:
-                    raise GdiError("incremental base must identify an earlier publication with the exact base HEAD")
-            seen.add(current)
-            chain.append((current, data))
-            current = children.get(current)
-        if current is not None or len(seen) != len(records):
-            raise GdiError("invalid publication chain: cycle or disconnected records")
-        return chain
+        if metadata is None:
+            metadata = {item['Path']: transport.read('branches/' + item['Path']) for item in listing
+                        if not item['IsDir'] and item['Path'].startswith(prefix) and item['Path'].endswith('.json')}
+        return validate_publications(repository_id, ref, listing, metadata)
 
     @timed('log')
     def log(self, name, branch=None, *, limit=20):
@@ -250,17 +193,7 @@ class Exchange:
         """Find a verified local base or the latest full checkpoint, then replay."""
         cache = VerifiedCache(self.git, repository_id)
         records = dict(chain)
-        pending = []
-        current = chain[-1][0]
-        while True:
-            data = records[current]
-            if cache.contains(current, data["head"]):
-                break
-            pending.append((current, data))
-            if data["bundle_kind"] == "full":
-                break
-            current = data["base_publication"]
-        for publication_id, data in reversed(pending):
+        for publication_id, data in bundle_sequence(chain, cache.contains):
             with tempfile.TemporaryDirectory(prefix="gdi-download-") as tmp:
                 bundle = Path(tmp) / "source.bundle"
                 transport.download("bundles/" + data["bundle_sha256"] + ".bundle", bundle)

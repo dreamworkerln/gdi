@@ -155,6 +155,41 @@ class RcServer:
         with self.lock, rc_call('read' if get else route.lstrip('/'), value) as profile:
             return self._request(route, value, get=get, profile=profile)
 
+    def transfer(self, route, value, label, total=None):
+        from .diagnostics import TransferProgress
+        import uuid
+        # Keep the cache/transfer lock for the whole job; polling uses the same
+        # thread and reentrant lock, so worker publication cannot clear its Fs.
+        with self.lock:
+            group = 'gdi/' + uuid.uuid4().hex
+            progress = TransferProgress(label, total)
+            jid, error = None, None
+            try:
+                job = self.request(route, {**value, '_async': True, '_group': group})
+                jid = job.get('jobid')
+                if type(jid) is not int:
+                    raise GdiError('invalid RC asynchronous job identity')
+                while True:
+                    status = self.request('/job/status', {'jobid': jid})
+                    # These calls are local to the daemon, not Drive API requests.
+                    stats = self.request('/core/stats', {'group': group})
+                    progress.update(stats, final=status.get('finished') is True and status.get('success') is True)
+                    if status.get('finished') is True:
+                        if status.get('success') is not True:
+                            raise RcError(500, str(status.get('error', 'transfer failed')).replace(self.password, '[redacted]'))
+                        return status.get('output', {})
+                    time.sleep(.5)
+            except BaseException as exc:
+                error = type(exc).__name__
+                if type(jid) is int:
+                    try:
+                        self.request('/job/stop', {'jobid': jid})
+                    except (GdiError, OSError):
+                        pass
+                raise
+            finally:
+                progress.finish(error)
+
     def _request(self, route, value=None, *, get=False, profile=None):
         if self.process is None or self.process.poll() is not None:
             raise GdiError('RC process is not running')
@@ -222,6 +257,12 @@ class RcTransport(Rclone):
 
     def api(self, endpoint, **value):
         return self.server.request('/' + endpoint, value)
+
+    def transfer_api(self, endpoint, *, label='transfer', total=None, **value):
+        from .diagnostics import transfer_progress_enabled
+        if not transfer_progress_enabled():
+            return self.api(endpoint, **value)
+        return self.server.transfer('/' + endpoint, value, label, total)
 
     def mkdir(self, relative):
         self.api('operations/mkdir', fs=self.url, remote=relative_path(relative, empty=True))
@@ -296,7 +337,7 @@ class RcTransport(Rclone):
             selection = root / 'files.txt'
             selection.write_text(''.join(path + '\n' for path in paths), encoding='utf-8')
             destination = root / 'snapshot'
-            self.api('sync/copy', srcFs=self.url, dstFs=str(destination),
+            self.transfer_api('sync/copy', label='download metadata', srcFs=self.url, dstFs=str(destination),
                      _config={'NoTraverse': True, 'IgnoreTimes': True},
                      _filter={'FilesFromRaw': [str(selection)]})
             result = {}
@@ -313,7 +354,8 @@ class RcTransport(Rclone):
 
     def download(self, relative, target):
         target = Path(target).resolve()
-        self.api('operations/copyfile', srcFs=self.url, srcRemote=relative_path(relative),
+        self.transfer_api('operations/copyfile', label='download ' + relative.rsplit('/', 1)[-1],
+                          srcFs=self.url, srcRemote=relative_path(relative),
                  dstFs=str(target.parent), dstRemote=target.name,
                  _config={'IgnoreTimes': True})
 
@@ -328,14 +370,16 @@ class RcTransport(Rclone):
                 os.link(source, staged)
             except OSError:
                 shutil.copyfile(source, staged)
-            self.api('sync/copy', srcFs=directory, dstFs=self.url,
+            self.transfer_api('sync/copy', label='upload ' + relative.rsplit('/', 1)[-1],
+                              total=source.stat().st_size, srcFs=directory, dstFs=self.url,
                      _config={'NoTraverse': True, 'Immutable': True, 'CheckSum': True})
 
     def update_advisory(self, source, relative):
         if not re.fullmatch(r'ci/(?:workers/[A-Za-z0-9][A-Za-z0-9_-]{0,63}/(?:status|capabilities)|jobs/[0-9a-f]{32}/status)\.json', relative):
             raise GdiError('only CI advisory snapshots may be overwritten')
         source = Path(source).resolve(strict=True)
-        self.api('operations/copyfile', srcFs=str(source.parent), srcRemote=source.name,
+        self.transfer_api('operations/copyfile', label='upload ' + relative.rsplit('/', 1)[-1],
+                          total=source.stat().st_size, srcFs=str(source.parent), srcRemote=source.name,
                  dstFs=self.url, dstRemote=relative, _config={'IgnoreTimes': True})
 
     def delete_queue(self, relative):
