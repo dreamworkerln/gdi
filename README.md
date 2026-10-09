@@ -2,7 +2,8 @@
 
 Обмен Git-историей через Google Drive и настроенный rclone: инкрементальные bundles,
 проверка metadata и SHA256, fetch в отдельные refs, pull только fast-forward.
-Постоянный worker на host пользователя выполняет CI для точного commit; агент
+Постоянный worker опрашивает общую inbox всех проектов и выполняет GitHub Actions
+workflows из точного commit через act + Docker; агент
 получает progress, консоль и проверенный PASS/FAIL и повторяет исправления автономно.
 Работает на Linux с Python 3.10+, включая 3.10.12. Python runtime dependencies нет.
 
@@ -11,6 +12,7 @@
 Публикация изменений агентом и проверка на host пользователя:
 [GOOGLE_DRIVE_CI_PUBLISHING_WORKFLOW.md](GOOGLE_DRIVE_CI_PUBLISHING_WORKFLOW.md).
 Короткий справочник человеку: **[QUICKSTART.md](QUICKSTART.md)**.
+Общая очередь и подключения `.gdi`: [docs/inbox.md](docs/inbox.md).
 Worker/systemd: [docs/worker.md](docs/worker.md). Архитектура: [ARCHITECTURE.md](ARCHITECTURE.md),
 состояние проверок и дальнейшие задачи: [TODO.md](TODO.md).
 
@@ -41,7 +43,7 @@ gdi pull drive
 | `gdi push NAME [BRANCH]` | Первый bundle полный, следующие инкрементальные; повтор того же HEAD ничего не публикует |
 | `gdi push NAME [BRANCH] --full` | Создаёт полный контрольный bundle, в том числе для уже опубликованного HEAD дельты |
 | `gdi push NAME [BRANCH] --checkpoint-every N` | Полный bundle после каждых N обновлений от предыдущего полного (по умолчанию 20) |
-| `gdi push NAME --ci --worker ID --profile full [--json]` | Публикует commit и job для настроенного host worker |
+| `gdi push NAME --ci --worker ID [--profile full] [--json]` | Публикует commit и запрос CI в общую inbox |
 | `gdi ci status/wait/logs NAME JOB_ID` | Прогресс, streaming console и проверенный terminal result |
 | `gdi ci retry NAME JOB_ID [--json]` | Явный повтор завершённой проверки, новый job ID |
 | `gdi pull NAME --passed --job ID --profile full` | Fast-forward именно на SHA выбранного проверенного PASS |
@@ -67,10 +69,15 @@ untracked files. Push передаёт только commits и не создаё
 Для `ci wait`: PASS → 0, другой terminal outcome → 1, timeout ожидания → 124.
 Timeout/Ctrl+C клиента не отменяют job. JSON stdout отделён от progress stderr.
 
+Подключения gdi хранятся в `.gdi/config.json`; `.git/config` не изменяется.
+Общий inbox root по умолчанию — родитель URL проекта; для вложенной структуры
+задайте `remote add --inbox-root gdrive:gdi`. Добавьте `.gdi/` в `.gitignore`.
+
 ## Автономный CI
 
-Владелец host один раз регистрирует проект и полный CI-профиль в worker.json,
-проверяет foreground запуск и включает службу. Пример: [examples/worker.json](examples/worker.json).
+Владелец host один раз задаёт общий Drive root, polling/ретраи/таймауты в worker.json,
+устанавливает act/Docker, проверяет foreground запуск и включает службу. Списка
+репозиториев и команд CI в config version 2 нет. Пример: [examples/worker.json](examples/worker.json).
 
 ```bash
 gdi worker check --config ~/.config/gdi/worker.json
@@ -98,8 +105,9 @@ gdi pull drive --passed --job JOB_ID --profile full
 ```
 
 Worker diagnostics: `journalctl --user -u gdi-worker.service -f`.
-CI консоль: `gdi ci logs`/`wait --follow`. Config/profile команды задаёт владелец host.
-Worker исполняет доверенный код с его правами; checkout не является OS sandbox.
+CI консоль: `gdi ci logs`/`wait --follow`. Команды CI берутся из `.github/workflows` проверяемого commit.
+`--workflow`, `--event`, `--job`, `--input KEY=VALUE` выбирают проверку при submit.
+Worker исполняет доверенные workflows; act имеет доступ к Docker Engine.
 
 ## Инкрементальный обмен
 
@@ -158,7 +166,8 @@ GC не запускается автоматически. Он удаляет �
 - Push/fetch/pull работают с одной веткой на команду; GC проверяет все опубликованные
   ветки. Tags, удаление веток, force push, refspecs и clone не реализованы.
   Metadata, orphan bundles и локальный кеш накапливаются; фонового GC нет.
-- Уведомления, отмена jobs и CI/local spool retention пока не реализованы.
+- Drive API/push notifications, отмена jobs и CI/local spool retention пока не реализованы.
+  Общие immutable уведомления через rclone inbox уже поддерживаются.
   Работает один назначенный worker на remote; multi-worker координации нет.
 - SHA256 проверяет целостность, а не авторство. Доступ к папке Drive предоставляйте
   доверенным участникам. Подписи публикаций и защита от удаления всей remote-истории

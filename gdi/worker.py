@@ -20,6 +20,7 @@ from .executor import execute, inside, kill_owned
 from .git import GdiError, Git
 from .ledger import Ledger
 from .transport import Rclone
+from .workflow import prepare as prepare_workflow, require_completed_job, collect_uploads
 
 LOG = logging.getLogger("gdi.worker")
 CHUNK_BYTES = 256 * 1024
@@ -38,8 +39,9 @@ class Worker:
             self.lock_file.close()
             raise GdiError("this worker is already running") from exc
         self.ledger = Ledger(self.root / 'ledger.sqlite3')
-        self.repositories = {repo['repository_id']: repo for repo in config['repositories']}
-        self.transport_factory = transport_factory
+        self.shared = config['config_version'] == 2
+        self.repositories = {repo['repository_id']: repo for repo in config.get('repositories', [])}
+        self.transport_factory = (lambda url: Rclone(url, options=config['transport'])) if self.shared and transport_factory is Rclone else transport_factory
         self.stop = threading.Event()
 
     def close(self):
@@ -54,6 +56,16 @@ class Worker:
         return transport
 
     def advertise(self):
+        if self.shared:
+            transport = self.transport_factory(self.config['remote_url'])
+            for path in ('inbox', f'ci/workers/{self.worker_id}'):
+                transport.mkdir(path)
+            capabilities = {'ci_version': 1, 'inbox_version': 1, 'worker_id': self.worker_id,
+                            'profiles': {'full': self.config['execution_profile']['revision']}}
+            upload_json(transport, f'ci/workers/{self.worker_id}/capabilities.json', capabilities, mutable=True)
+            upload_json(transport, f'ci/workers/{self.worker_id}/status.json',
+                        {'ci_version': 1, 'worker_id': self.worker_id, 'state': 'READY', 'updated_at': now()}, mutable=True)
+            return
         capabilities = {'ci_version': 1, 'worker_id': self.worker_id,
                         'repositories': {repo['repository_id']: {name: profile['revision'] for name, profile in repo['profiles'].items()}
                                          for repo in self.config['repositories']}}
@@ -66,6 +78,8 @@ class Worker:
                         {'ci_version': 1, 'worker_id': self.worker_id, 'state': 'READY', 'updated_at': now()}, mutable=True)
 
     def discover(self):
+        if self.shared:
+            return self.discover_inbox()
         for repo in self.config['repositories']:
             transport = self.transport(repo)
             # Queue absence after setup is an error, not a swallowed authentication failure.
@@ -95,6 +109,66 @@ class Worker:
                         transport.delete_queue(f'ci/queue/{jid}.json')
                 except (GdiError, OSError) as exc:
                     LOG.error('queue=%s: %s', entry['Path'], exc)
+
+    def discover_inbox(self):
+        from .inbox import NAME, read
+        root = self.transport_factory(self.config['remote_url'])
+        for entry in sorted(root.list('inbox'), key=lambda item: item['Path']):
+            if self.stop.is_set():
+                return
+            name = entry['Path']
+            try:
+                if entry['IsDir'] or not NAME.fullmatch(name):
+                    raise GdiError('invalid inbox entry')
+                event = read(root, name)
+                if event['type'] == 'ci_requested' and event['worker_id'] != self.worker_id:
+                    continue
+                repo = self.routed_repository(event['repository_id'], event['repository_path'])
+                transport = self.transport(repo)
+                scratch = Path(self.config['cache_dir'])
+                scratch.mkdir(parents=True, exist_ok=True)
+                git = Git(scratch, isolated=True)
+                git.ref(event['ref'][11:])
+                if event['type'] == 'repository_updated':
+                    receipt = self.root / 'notifications' / name
+                    if not receipt.exists():
+                        pub, _ = publication(Exchange(git, self.transport_factory), transport,
+                                             event['repository_id'], event['publication_id'])
+                        if (pub['head'], pub['ref']) != (event['head'], event['ref']):
+                            raise GdiError('inbox publication identity mismatch')
+                        atomic_write(receipt, encode(event))
+                    elif receipt.read_bytes() != encode(event):
+                        raise GdiError('durable inbox receipt differs')
+                    root.delete_notification('inbox/' + name)
+                    continue
+                prefix = 'ci/jobs/' + event['job_id']
+                raw = transport.read(prefix + '/request.json')
+                req = request(decode(raw), git, event['repository_id'])
+                expected = marker(req, raw)
+                if (req['ci_version'] != 2 or event['request_sha256'] != digest(raw)
+                        or any(event[key] != req[key] for key in ('job_id', 'worker_id', 'ref', 'head', 'publication_id'))
+                        or decode(transport.read(prefix + '/request.ready')) != expected):
+                    raise GdiError('inbox/request/ready identity mismatch')
+                route = {'root_url': self.config['remote_url'], 'repository_path': event['repository_path']}
+                row = self.ledger.discover(req, raw, uuid.uuid4().hex, route=route, notification=name)
+                if row['state'] == 'PUBLISHED':
+                    self.verify_remote(transport, req, row)
+                    self.acknowledge(row)
+            except (GdiError, OSError) as exc:
+                LOG.error('inbox=%s: %s; notification retained', name, exc)
+
+    def routed_repository(self, repository_id, path):
+        from .inbox import relative_repository
+        relative_repository(path)
+        return {'repository_id': repository_id, 'remote_url': self.config['remote_url'] + '/' + path,
+                'profiles': {'full': self.config['execution_profile']}}
+
+    def acknowledge(self, row):
+        if row['route'] is not None:
+            self.transport_factory(decode(row['route'])['root_url']).delete_notification('inbox/' + row['notification'])
+        else:
+            repo = self.repositories[row['repository_id']]
+            self.transport(repo).delete_queue('ci/queue/' + row['job_id'] + '.json')
 
     def spool(self, jid):
         path = self.root / 'jobs' / jid
@@ -152,7 +226,8 @@ class Worker:
         if (spool / 'status.json').exists():
             transport.update_advisory(spool / 'status.json', prefix + '/status.json')
             status = decode((spool / 'status.json').read_bytes())
-            upload_json(transport, f'ci/workers/{self.worker_id}/status.json', status, mutable=True)
+            target = self.transport_factory(self.config['remote_url']) if self.shared else transport
+            upload_json(target, f'ci/workers/{self.worker_id}/status.json', status, mutable=True)
 
     def publisher(self, transport, row, done):
         sent = set()
@@ -217,6 +292,13 @@ class Worker:
                     artifacts.append(descriptor(destination, 'artifacts/' + spec['name']))
                 except (OSError, GdiError) as exc:
                     state, code, detail = 'ERROR', 1, str(exc)
+        if profile is not None and 'workflow' in profile:
+            try:
+                archive = collect_uploads(spool)
+                if archive is not None:
+                    artifacts.append(descriptor(archive, 'artifacts/workflow-artifacts.zip'))
+            except (GdiError, OSError, ValueError) as exc:
+                state, code, detail = 'ERROR', 1, str(exc)
         self.status(row, state, failed_stage)
         atomic_write(spool / 'final-status.json', (spool / 'status.json').read_bytes())
         artifacts.extend([descriptor(log, 'build.log'), descriptor(spool / 'final-status.json', 'final-status.json')])
@@ -262,12 +344,18 @@ class Worker:
         transport.upload(spool / 'result.json', prefix + '/result.json')
         self.verify_remote(transport, req, row)
         self.ledger.update(req['job_id'], 'PUBLISHED')
-        transport.delete_queue(f"ci/queue/{req['job_id']}.json")
+        self.acknowledge(row)
         LOG.info('job=%s result=%s published', req['job_id'], result['state'])
 
     def process(self, row):
         req = request(decode(row['raw']), Git(self.root, isolated=True), row['repository_id'])
-        repo = self.repositories.get(req['repository_id'])
+        if row['route'] is not None:
+            route = decode(row['route'])
+            if not self.shared or route['root_url'] != self.config['remote_url']:
+                raise GdiError('restore the original inbox root to deliver pending jobs')
+            repo = self.routed_repository(req['repository_id'], route['repository_path'])
+        else:
+            repo = self.repositories.get(req['repository_id'])
         if repo is None:
             raise GdiError('pending repository was removed from config; restore registration to deliver result')
         transport = self.transport(repo)
@@ -304,10 +392,16 @@ class Worker:
             self.ledger.update(req['job_id'], 'RESTORING')
             checkout = self.checkout(repo, transport, req)
             self.status(row, 'CHECKOUT')
+            if 'workflow' in profile:
+                if req['ci_version'] == 2:
+                    profile = {**profile, 'workflow': {**profile['workflow'], **req['workflow']}}
+                profile = prepare_workflow(checkout, profile, spool, req, cache_dir=Path(self.config['cache_dir']) / self.worker_id / 'act')
             self.ledger.update(req['job_id'], 'RUNNING')
             state, code, failed, stages, warnings = execute(checkout, profile, spool / 'build.log',
                 lambda state, stage: self.status(row, state, stage),
                 lambda identity: self.ledger.update(req['job_id'], 'RUNNING', identity))
+            if state == 'PASS' and 'workflow' in profile:
+                require_completed_job(spool / 'build.log')
             if checkout.oid('HEAD') != req['head']:
                 raise GdiError('CI changed requested HEAD')
         except KeyboardInterrupt:

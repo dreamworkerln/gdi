@@ -504,17 +504,28 @@ cd "/home/$USER/coding/python/gdi"
 cp examples/worker.json "$HOME/.config/gdi/worker.json"
 ```
 
-Откройте `~/.config/gdi/worker.json` в редакторе. Замените `repository_id` значением
-из `gdi remote list`, `remote_url` — адресом папки вашего проекта. `worker_id`
-например `user-host`, профиль `full`. Пример запускает полный набор unittest самого
-gdi; для другого проекта замените `stages[].argv` на его согласованный полный CI.
+Откройте `~/.config/gdi/worker.json` в редакторе. Пример использует config version 2:
+укажите постоянный `worker_id`, например `user-host`, и `remote_url` общего корня,
+например `gdrive:gdi`. Общие retries/timeouts/polling можно оставить по умолчанию.
+Списка проектов, веток и команд CI в этом файле нет.
 
-Worker не устанавливает зависимости собираемого проекта. Подготовьте компилятор,
-SDK, Python venv или другие инструменты до отправки job. Указывайте абсолютный путь
-к исполняемой программе: systemd не читает `.bashrc`. `argv` — список аргументов
-без shell-подстановок, `cwd` относительно отдельного checkout. `$USER` в JSON сам
-не раскрывается. Не добавляйте поле revision: она вычисляется автоматически.
-Полное описание env, стадий, timeouts и artifacts: [docs/worker.md](docs/worker.md).
+Установите [act](https://nektosact.com/installation/) и
+[Docker Engine](https://docs.docker.com/engine/install/). Проверочная версия act —
+v0.2.89. Для systemd act/rclone должны быть в PATH службы либо задайте абсолютный
+`act_executable`. Пользователь службы должен иметь доступ к Docker Engine.
+Compose нужен только если его вызывает workflow проекта.
+
+Команды тестов, сборки и анализа читаются из `.github/workflows` проверяемого commit.
+Локальное подключение создаёт `gdi remote add drive gdrive:gdi/my-project`;
+общий inbox root по умолчанию — `gdrive:gdi`. Для вложенного URL укажите
+`--inbox-root gdrive:gdi`. Добавьте `.gdi/` в `.gitignore`; настройки хранятся в
+`.gdi/config.json`, Git config не изменяется. Старые подключения читаются и мигрируют
+без удаления старых Git sections. Полный протокол: [docs/inbox.md](docs/inbox.md).
+
+Workflow path/event/job/inputs выбираются аргументами CI; окружение runner и
+secrets настраиваются на host. Полное описание: [docs/worker.md](docs/worker.md).
+Legacy config version 1 ещё поддерживается; его pending jobs нужно завершить до
+перехода на общую inbox.
 
 ```bash
 gdi worker check --config ~/.config/gdi/worker.json --json

@@ -44,7 +44,7 @@ def execute(checkout, profile, log, update, process_changed):
         for stage in profile["stages"]:
             update("RUNNING", stage["name"])
             output.write(f"\n=== gdi stage: {stage['name']} ===\n".encode())
-            cwd = inside(checkout.path, stage["cwd"])
+            cwd = log.parent if "workflow" in profile else inside(checkout.path, stage["cwd"])
             deadline = min(started + profile["timeout_seconds"], time.monotonic() + stage["timeout_seconds"])
             if time.monotonic() >= deadline:
                 return "TIMEOUT", 124, stage["name"], results, warnings
@@ -53,6 +53,7 @@ def execute(checkout, profile, log, update, process_changed):
             identity = process_identity(process.pid)
             process_changed(identity)
             timed_out = False
+            force_kill_at = None
             heartbeat = time.monotonic()
             selector = selectors.DefaultSelector()
             selector.register(process.stdout, selectors.EVENT_READ)
@@ -63,9 +64,17 @@ def execute(checkout, profile, log, update, process_changed):
                         timed_out = True
                         # The leader may have exited while descendants still hold stdout.
                         try:
+                            os.killpg(process.pid, signal.SIGINT if "workflow" in profile else signal.SIGKILL)
+                            if "workflow" in profile:
+                                force_kill_at = time.monotonic() + 10
+                        except ProcessLookupError:
+                            pass
+                    if force_kill_at is not None and time.monotonic() >= force_kill_at:
+                        try:
                             os.killpg(process.pid, signal.SIGKILL)
                         except ProcessLookupError:
                             pass
+                        force_kill_at = None
                     for key, _ in selector.select(timeout=0.2):
                         block = os.read(key.fd, 65536)
                         if block:

@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from gdi.cache import VerifiedCache
-from gdi.exchange import bundle_prerequisites, decode, digest, encode
+from gdi.exchange import Exchange, bundle_prerequisites, decode, digest, encode
 from gdi.git import GdiError
 from gdi.transport import Rclone
 from tests.test_exchange import ExchangeTestCase
@@ -313,7 +313,7 @@ class LocalGcTests(ExchangeTestCase):
         self.assertEqual(len(list((remote / "bundles").glob("*.bundle"))), 4)
         self.assertEqual(manifests, {str(path.relative_to(remote)): path.read_bytes()
                                     for path in (remote / "updates").rglob("*.json")})
-        identity = self.a.config("gdi.remote.localdrive.repositoryid")
+        identity = Exchange(self.a).remote("localdrive")["repository_id"]
         cli(self.b.path, "remote", "add", "localdrive", "gditest:" + str(remote), "--repository-id", identity)
         cli(self.b.path, "pull", "localdrive")
         self.assertEqual(self.b.oid("HEAD"), self.a.oid("HEAD"))

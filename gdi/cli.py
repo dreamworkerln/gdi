@@ -18,6 +18,23 @@ class VersionAction(argparse.Action):
         parser.exit(0)
 
 
+def workflow_arguments(command):
+    command.add_argument("--workflow", help="workflow YAML file or directory (default: .github/workflows)")
+    command.add_argument("--event", help="workflow event (default: push)")
+    command.add_argument("--job", help="optional workflow job ID")
+    command.add_argument("--input", action="append", default=[], metavar="KEY=VALUE", help="workflow input; repeatable")
+
+
+def selected_workflow(args):
+    inputs = {}
+    for value in args.input:
+        key, separator, content = value.partition("=")
+        if not separator or not key or key in inputs:
+            raise GdiError("workflow inputs must be unique KEY=VALUE arguments")
+        inputs[key] = content
+    return {"path": args.workflow or ".github/workflows", "event": args.event or "push", "job": args.job or "", "inputs": inputs}
+
+
 def parser():
     cli = argparse.ArgumentParser(
         prog="gdi", description="Verified Git bundle exchange through rclone.",
@@ -47,6 +64,7 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
     add.add_argument("name")
     add.add_argument("url", help="e.g. gdrive:gdi/my-project")
     add.add_argument("--init", action="store_true", help="initialize a new empty remote folder once")
+    add.add_argument("--inbox-root", help="shared exchange root (default: parent of repository URL)")
     add.add_argument("--repository-id", help="require this known identity when joining an existing remote")
     operations.add_parser("list", help="list local gdi remotes")
     remove = operations.add_parser("remove", help="remove local config; retain remote files and fetched refs")
@@ -74,7 +92,8 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
                                  help=f"publish a full checkpoint every N updates (default: {CHECKPOINT_EVERY})")
             command.add_argument("--ci", action="store_true", help="submit exact published commit to the host worker")
             command.add_argument("--worker", help="registered worker ID (required with --ci)")
-            command.add_argument("--profile", help="registered host CI profile (required with --ci)")
+            command.add_argument("--profile", default="full", help="CI execution profile (default: full)")
+            workflow_arguments(command)
             command.add_argument("--json", action="store_true", help="write one machine-readable response")
         if name == "pull":
             command.add_argument("--passed", action="store_true", help="apply exactly the selected verified PASS commit")
@@ -88,7 +107,8 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
         if operation == "submit":
             sub.add_argument("--publication", required=True)
             sub.add_argument("--worker", required=True)
-            sub.add_argument("--profile", required=True)
+            sub.add_argument("--profile", default="full")
+            workflow_arguments(sub)
         else:
             sub.add_argument("job")
         if operation in ("wait", "logs"):
@@ -123,7 +143,7 @@ def main(argv=None):
     command_parser = parser()
     args = command_parser.parse_args(argv)
     if args.command == "push" and (args.ci and (not args.worker or not args.profile) or
-                                  not args.ci and (args.worker or args.profile)):
+                                  not args.ci and (args.worker or args.profile != "full" or args.workflow or args.event or args.job or args.input)):
         command_parser.error("--ci requires --worker and --profile; these options are used together")
     if args.command == "pull" and (args.passed and (not args.job or not args.profile) or
                                   not args.passed and (args.job or args.profile)):
@@ -137,9 +157,11 @@ def main(argv=None):
             if args.operation in ("check", "run", "install"):
                 config = load_config(args.config)
                 if args.operation == "check":
-                    emit({"worker_id": config["worker_id"], "repositories": {
-                        repo["repository_id"]: {name: profile["revision"] for name, profile in repo["profiles"].items()}
-                        for repo in config["repositories"]}, "valid": True}, args.json)
+                    details = ({"remote_url": config["remote_url"], "inbox": "inbox", "execution_revision": config["execution_profile"]["revision"]}
+                               if config["config_version"] == 2 else {"repositories": {
+                                   repo["repository_id"]: {name: profile["revision"] for name, profile in repo["profiles"].items()}
+                                   for repo in config["repositories"]}})
+                    emit({"worker_id": config["worker_id"], **details, "valid": True}, args.json)
                 elif args.operation == "install":
                     print("Installed " + str(service.install(args.config)) + "; run gdi worker start")
                 else:
@@ -160,7 +182,7 @@ def main(argv=None):
             client = CiClient(exchange, args.remote)
             if args.operation in ("submit", "retry"):
                 with git.lock():
-                    value = (client.submit(args.publication, args.worker, args.profile) if args.operation == "submit"
+                    value = (client.submit(args.publication, args.worker, args.profile, workflow=selected_workflow(args)) if args.operation == "submit"
                              else client.retry(args.job))
             elif args.operation == "status":
                 value = client.status(args.job)
@@ -176,14 +198,14 @@ def main(argv=None):
         with git.lock():
             if args.command == "remote":
                 if args.operation == "add":
-                    identity = exchange.add(args.name, args.url, initialize=args.init, expected_id=args.repository_id)
+                    identity = exchange.add(args.name, args.url, initialize=args.init, expected_id=args.repository_id, inbox_root=args.inbox_root)
                     print(f"Remote {args.name}: {args.url}\nRepository ID: {identity}")
                 elif args.operation == "remove":
                     exchange.remove(args.name)
                     print(f"Removed local configuration for {args.name}; files and fetched refs retained")
                 else:
                     for name, url in exchange.remotes():
-                        print(f"{name}\t{url}\t{git.config(exchange.key(name) + '.repositoryid')}")
+                        print(f"{name}\t{url}\t{exchange.remote(name)['repository_id']}")
             elif args.command == "cache":
                 exchange.clear_cache(args.remote)
                 print(f"Cleared local verified-object cache for {args.remote}")
@@ -196,7 +218,7 @@ def main(argv=None):
                          "bundle_kind": data["bundle_kind"], "bundle_bytes": data["bundle_bytes"]}
                 if args.ci:
                     from .ci import CiClient
-                    value.update(CiClient(exchange, args.remote).submit(pub, args.worker, args.profile))
+                    value.update(CiClient(exchange, args.remote).submit(pub, args.worker, args.profile, workflow=selected_workflow(args)))
                 if args.json:
                     emit(value, True)
                 else:

@@ -816,7 +816,7 @@ class LocalTransportTests(unittest.TestCase):
                 self.assertIn("Bundle: incremental", cli(source, "push", "drive"))
             manifests = [decode(path.read_bytes()) for path in (root / "transport/updates").rglob("*.json")]
             self.assertEqual(sorted(value["bundle_kind"] for value in manifests), ["full", "incremental", "incremental"])
-            identity = a.config("gdi.remote.drive.repositoryid")
+            identity = Exchange(a).remote("drive")["repository_id"]
             cli(target, "remote", "add", "drive", url, "--repository-id", identity)
             cli(target, "fetch", "drive")
             self.assertIsNone(b.oid("HEAD"))

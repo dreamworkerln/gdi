@@ -108,15 +108,22 @@ class Exchange:
         return "gdi.remote." + remote_name(name)
 
     def remotes(self):
-        output = self.git.call("config", "--local", "--get-regexp", r"^gdi\.remote\..*\.url$",
-                               allowed=(0, 1)).stdout
-        return [(line.split(" ", 1)[0][len("gdi.remote."):-len(".url")],
-                 line.split(" ", 1)[1]) for line in output.splitlines()]
+        from .local_config import load
+        return sorted((name, value["url"]) for name, value in load(self.git)["remotes"].items())
 
-    def add(self, name, url, *, initialize=False, expected_id=None):
-        key = self.key(name)
+    def remote(self, name):
+        from .local_config import get
+        return get(self.git, name)
+
+    def add(self, name, url, *, initialize=False, expected_id=None, inbox_root=None):
+        from .local_config import load, save, inferred_root, repository_path
+        remote_name(name)
         validate_url(url)
-        if self.git.config(key + ".url") is not None:
+        inbox_root = inbox_root if inbox_root is not None else inferred_root(url)
+        if inbox_root is not None:
+            repository_path(inbox_root, url)
+        settings = load(self.git)
+        if name in settings["remotes"]:
             raise GdiError(f"gdi remote {name} already exists")
         if self.git.config(f"remote.{name}.url") is not None:
             raise GdiError(f"Git remote {name} already uses this tracking namespace; choose another name")
@@ -142,39 +149,42 @@ class Exchange:
             repository = validate_repository(decode(transport.read("repository.json")))
         if expected_id is not None and repository["repository_id"] != expected_id:
             raise GdiError("repository ID mismatch")
-        self.git.call("config", "--local", key + ".url", url)
-        try:
-            self.git.call("config", "--local", key + ".repositoryid", repository["repository_id"])
-        except GdiError:
-            self.git.call("config", "--local", "--remove-section", key)
-            raise
+        settings["remotes"][name] = {"url": url, "repository_id": repository["repository_id"], "inbox_root": inbox_root}
+        save(self.git, settings)
         return repository["repository_id"]
 
     def remove(self, name):
-        key = self.key(name)
-        if self.git.config(key + ".url") is None:
+        from .local_config import load, save
+        remote_name(name)
+        settings = load(self.git)
+        if name not in settings["remotes"]:
             raise GdiError(f"unknown gdi remote: {name}")
-        self.git.call("config", "--local", "--remove-section", key)
+        del settings["remotes"][name]
+        save(self.git, settings)
 
     def clear_cache(self, name):
-        repository_id = self.git.config(self.key(name) + ".repositoryid")
-        if not hex_value(repository_id, 32):
-            raise GdiError(f"unknown or invalid gdi remote: {name}")
-        VerifiedCache(self.git, repository_id).clear()
+        VerifiedCache(self.git, self.remote(name)["repository_id"]).clear()
 
     def connect(self, name):
-        key = self.key(name)
-        url = self.git.config(key + ".url")
-        repository_id = self.git.config(key + ".repositoryid")
-        if url is None or not hex_value(repository_id, 32):
-            raise GdiError(f"missing remote configuration: gdi remote add {name} <rclone:path>")
+        settings = self.remote(name)
+        repository_id = settings["repository_id"]
         if self.git.config(f"remote.{name}.url") is not None:
             raise GdiError(f"Git remote {name} conflicts with the gdi tracking namespace")
-        transport = self.transport_factory(url)
+        transport = self.transport_factory(settings["url"])
         repository = validate_repository(decode(transport.read("repository.json")))
         if repository["repository_id"] != repository_id:
             raise GdiError("repository ID mismatch; remote was replaced or configuration points to another project")
         return transport, repository_id
+
+    def notify_publication(self, name, publication_id):
+        from .inbox import notification, publish
+        from .local_config import repository_path
+        settings = self.remote(name)
+        if settings["inbox_root"] is not None:
+            root = self.transport_factory(settings["inbox_root"])
+            value = notification(settings["repository_id"], repository_path(settings["inbox_root"], settings["url"]),
+                                 self.last_publication, publication_id)
+            publish(root, value)
 
     def publications(self, transport, repository_id, ref, *, listing=None, metadata=None):
         prefix = digest(ref.encode("utf-8")) + "/"
@@ -329,6 +339,7 @@ class Exchange:
                 self.git.import_objects(cache.path, tip[1]["head"])
             if head == tip[1]["head"] and (not full or tip[1]["bundle_kind"] == "full"):
                 self.last_publication = tip[1]
+                self.notify_publication(name, tip[0])
                 return head, tip[0], False
             if not self.git.ancestor(tip[1]["head"], head):
                 raise GdiError("push is not a fast-forward; fetch/pull and reconcile history first")
@@ -370,6 +381,7 @@ class Exchange:
                     raise GdiError("publication uploaded, but remote advanced concurrently; inspect with fetch")
                 cache.accept(publication_id, head, quarantine)
         self.last_publication = data
+        self.notify_publication(name, publication_id)
         return head, publication_id, True
 
     def fetch(self, name, branch=None):

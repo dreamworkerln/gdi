@@ -113,10 +113,10 @@ Upload manifest не атомарен на всех backends: видимый п�
 
 ## Fetch и локальный кеш
 
-Кеш каждого repository ID находится в общем Git directory:
+Кеш каждого repository ID находится в собственной `.gdi` основного worktree:
 
 ```text
-<git-common-dir>/gdi-cache/<repository-id>/repository.git/
+<main-worktree>/.gdi/cache/<repository-id>/repository.git/
     objects/
     refs/gdi/publications/<publication-id>
 ```

@@ -9,7 +9,7 @@ from .git import GdiError, Git
 
 class VerifiedCache:
     def __init__(self, owner, repository_id):
-        self.root = owner.common_dir() / "gdi-cache" / repository_id
+        self.root = owner.gdi_dir() / "cache" / repository_id
         self.path = self.root / "repository.git"
         self.git = Git(self.path, isolated=True)
 

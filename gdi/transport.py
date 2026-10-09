@@ -18,12 +18,15 @@ def validate_url(url):
 
 
 class Rclone:
-    def __init__(self, url):
+    def __init__(self, url, *, options=None):
         self.url = validate_url(url)
+        self.options = options or {}
 
     def call(self, *args):
-        return run(["rclone", *args, "--contimeout", "10s", "--timeout", "60s",
-                    "--retries", "3", "--low-level-retries", "3"])
+        return run(["rclone", *args, "--contimeout", str(self.options.get("connect_timeout_seconds", 10)) + "s",
+                    "--timeout", str(self.options.get("timeout_seconds", 60)) + "s",
+                    "--retries", str(self.options.get("retries", 3)),
+                    "--low-level-retries", str(self.options.get("low_level_retries", 3))])
 
     def path(self, relative):
         return self.url + ("/" + relative if relative else "")
@@ -64,6 +67,11 @@ class Rclone:
     def delete_queue(self, relative):
         if not re.fullmatch(r"ci/queue/[0-9a-f]{32}\.json", relative):
             raise GdiError("only a single CI queue pointer may be removed")
+        self.call("deletefile", self.path(relative))
+
+    def delete_notification(self, relative):
+        if not re.fullmatch(r"inbox/[0-9a-f]{32}-[0-9a-f]{64}\.json", relative):
+            raise GdiError("only a single immutable inbox notification may be removed")
         self.call("deletefile", self.path(relative))
 
     def delete_bundle(self, relative):

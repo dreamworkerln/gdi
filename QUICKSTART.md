@@ -7,7 +7,7 @@ commit. Ваш рабочий каталог при этом не меняетс
 Полная первоначальная настройка Python, rclone, Google OAuth и worker:
 [Install.md](Install.md). Здесь предполагается, что она уже выполнена.
 `drive` — подключение gdi, `gdrive:` — подключение rclone, `user-host` — ID worker,
-`full` — настроенный владельцем компьютера профиль полного CI.
+`full` — общее имя исполнения workflows; команды берутся из `.github/workflows` commit.
 
 ## Один раз для проекта
 
@@ -24,8 +24,12 @@ gdi remote list
 gdi remote add drive gdrive:gdi/my-project --repository-id REPOSITORY_ID
 ```
 
-`--init` нужен только один раз для отдельной пустой папки. На host внесите этот
-ID, адрес папки и команды полного CI в `~/.config/gdi/worker.json`, затем:
+`--init` нужен только один раз для отдельной пустой папки. Подключение хранится в
+`.gdi/config.json`; добавьте `.gdi/` в `.gitignore`. По умолчанию общий inbox root —
+родитель URL проекта (`gdrive:gdi`); для вложенных путей есть `--inbox-root`.
+На host один раз задайте общий `remote_url: "gdrive:gdi"` в worker config version 2,
+установите act и Docker. Новые проекты и ветки не требуют изменения worker.json.
+Затем:
 
 ```bash
 gdi worker check --config ~/.config/gdi/worker.json
@@ -34,7 +38,8 @@ gdi worker start
 ```
 
 Установка службы не запускает её до `worker start`. Для одного remote работает
-один worker. Профиль выбирает владелец host; агент не передаёт shell-команды.
+один worker на общий root. Агент выбирает workflows из commit и не передаёт argv
+в запросе. Общая inbox всех проектов опрашивается без обхода папок репозиториев.
 
 ## Обычная работа агента
 

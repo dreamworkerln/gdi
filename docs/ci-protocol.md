@@ -1,13 +1,36 @@
-# CI protocol v1 — gdi 0.3
+# CI protocol v1/v2 — gdi 0.3
 
 Отдельный от [Git protocol v2](protocol.md) namespace `ci/`. Один назначенный
-worker на remote. Все job IDs/run IDs — 32 lowercase hex, Git SHA — 40,
+worker на общий root; legacy v1 — на repository remote. Все job IDs/run IDs — 32 lowercase hex, Git SHA — 40,
 publication IDs/profile revisions/SHA256 — 64. Worker/profile IDs: ASCII letters,
 digits, `_`, `-`, до 64 символов. JSON UTF-8, canonical encoding как у Git metadata;
 duplicate keys и metadata больше 1 MiB отвергаются. Неизвестные request/result fields
 отвергаются. Доступ участников к Drive доверенный, подписи/авторство не проверяются.
 
-## Request
+## Общая inbox и request v2
+
+Новый worker config version 2 публикует capabilities **в общем root**:
+`{ci_version:1, inbox_version:1, worker_id, profiles:{full:revision}}`.
+Списка репозиториев нет. Revision закрепляет общие параметры исполнения.
+Пути проектов берутся из immutable notifications общей `inbox`; schema, checksum,
+маршрутизация и подтверждение описаны в [inbox.md](inbox.md).
+
+Request v2 содержит те же identity fields, что v1 ниже, но `ci_version: 2` и
+дополнительное поле `workflow` с точными ключами:
+`{path:".github/workflows", event:"push", job:"", inputs:{}}`.
+Selector не содержит executable/argv, host paths или secrets. Он выбирает YAML
+**внутри checkout закреплённого commit**; исполняет его act.
+
+Порядок публикации v2: durable outbox → request → request.ready → shared inbox.
+Ready marker содержит ci_version запроса. Worker проверяет hash request из
+уведомления, ready, repository ID, branch/head/publication и worker/job IDs.
+Result сохраняет ci_version исходного request и связывает полный selector через
+request_sha256; остальные поля и проверки результата ниже общие для v1/v2.
+Advisory status/events пока используют status schema version 1.
+После read-back результата удаляется конкретное уведомление inbox; `ci/queue`
+внутри проекта для v2 не создаётся и не опрашивается.
+
+## Request v1 (legacy)
 
 Путь: `ci/jobs/<job-id>/request.json`. Точный набор полей:
 
@@ -37,7 +60,7 @@ Capabilities: `ci/workers/<worker-id>/capabilities.json`:
 Snapshot mutable. Profile revision вычисляется из нормализованного config; сам config
 и его env values на Drive не публикуются.
 
-## Commit входного задания
+## Commit входного задания v1 (legacy)
 
 `ci/queue/<job-id>.json` и `ci/jobs/<job-id>/request.ready` содержат одинаковые поля:
 `ci_version:1`, `job_id`, `request_sha256` от точных bytes request.
@@ -58,7 +81,8 @@ Job `status.json` и worker `status.json` mutable advisory. Поля job status:
 Events сохраняют такой snapshot при смене state/stage в `events/<sequence:08d>.json`;
 heartbeat увеличивает sequence, но не создаёт event, поэтому gaps в **events** допустимы.
 
-Консоль — объединённые stdout+stderr, bytes без преобразований. Publisher пишет
+Консоль — объединённые stdout+stderr, bytes без преобразований. Для act это JSON lines;
+в результате одна blocking-стадия `github-actions`, детализация jobs/steps — в log. Publisher пишет
 `log-chunks/<sequence:08d>-<sha256>.bin`, начиная с 1 без gaps. Один chunk не больше
 256 KiB; при очередном upload cycle может быть меньше. Клиент проверяет каждый hash,
 сортировку, непрерывность и отсутствие дубликатов. При терминальном результате
@@ -88,8 +112,10 @@ Result содержит точные identity fields из request: `ci_version`,
 
 Descriptor: `{path, bytes, sha256, complete:true}`. Разрешённые относительные paths:
 `build.log`, `final-status.json`, `artifacts/<safe-name>`. Список без дубликатов.
-Log и final status обязательны даже при ошибке подготовки. Profile whitelist
-ограничивает artifacts, required missing или symlink outside даёт ERROR.
+Log и final status обязательны даже при ошибке подготовки. Legacy profile whitelist
+ограничивает artifacts, required missing или symlink outside даёт ERROR. Для act
+artifact store архивируется в `artifacts/workflow-artifacts.zip`; symlinks запрещены.
+Exit 0 без завершённого успешного job не принимается как PASS.
 
 | State | Смысл |
 | --- | --- |

@@ -68,8 +68,8 @@ class Git:
 
     @contextmanager
     def lock(self):
-        common = self.common_dir()
-        with (common / "gdi.lock").open("a") as handle:
+        common = self.gdi_dir()
+        with (common / "lock").open("a") as handle:
             try:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
@@ -82,6 +82,15 @@ class Git:
     def common_dir(self):
         common = Path(self.text("rev-parse", "--git-common-dir"))
         return common if common.is_absolute() else self.path / common
+
+    def gdi_dir(self):
+        common = self.common_dir().resolve()
+        base = common.parent if common.name == ".git" else self.path
+        path = base / ".gdi"
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise GdiError(".gdi must be a local directory, not a symlink")
+        path.mkdir(exist_ok=True, mode=0o700)
+        return path
 
     def config(self, key):
         result = self.call("config", "--local", "--get-all", key, allowed=(0, 1))
@@ -111,7 +120,7 @@ class Git:
         return self.call("cat-file", "-e", oid + "^{commit}", allowed=(0, 1, 128)).returncode == 0
 
     def snapshot(self):
-        return self.branch(), self.oid("HEAD"), self.call("status", "--porcelain=v1", "--untracked-files=all").stdout
+        return self.branch(), self.oid("HEAD"), self.call("status", "--porcelain=v1", "--untracked-files=all", "--", ".", ":(exclude).gdi").stdout
 
     def require_clean(self, snapshot):
         if snapshot[2]:
@@ -128,6 +137,8 @@ class Git:
 
     def check_payload(self, oid):
         tree = self.call("ls-tree", "-r", "-z", oid).stdout
+        if self.call("ls-tree", "-r", "--name-only", oid, "--", ".gdi").stdout:
+            raise GdiError(".gdi contains local metadata and must not be committed")
         if any(entry.startswith("160000 ") for entry in tree.split("\0")):
             raise GdiError("submodules are unsupported (bundle does not contain their data)")
         pointers = self.call("grep", "-I", "-l", "-e",

@@ -32,8 +32,12 @@ def job_id(value):
 
 
 def request(value, git, repository_id=None):
-    if set(value) != REQUEST_KEYS or type(value.get("ci_version")) is not int or value["ci_version"] != 1:
+    version = value.get("ci_version")
+    keys = REQUEST_KEYS | ({"workflow"} if version == 2 else set())
+    if set(value) != keys or type(version) is not int or version not in (1, 2):
         raise GdiError("unsupported or invalid CI request schema")
+    if version == 2 and workflow_selection(value["workflow"]) != value["workflow"]:
+        raise GdiError("CI workflow selector is not normalized")
     job_id(value["job_id"])
     for key, length in (("repository_id", 32), ("head", 40), ("publication_id", 64), ("profile_revision", 64)):
         if not hex_value(value[key], length):
@@ -57,8 +61,28 @@ def request(value, git, repository_id=None):
     return value
 
 
+def workflow_selection(value=None):
+    from .worker_config import relative_path
+    if value is None:
+        value = {}
+    if not isinstance(value, dict) or set(value) - {"path", "event", "job", "inputs"}:
+        raise GdiError("invalid CI workflow selector")
+    result = {"path": value.get("path", ".github/workflows"), "event": value.get("event", "push"),
+              "job": value.get("job", ""), "inputs": value.get("inputs", {})}
+    relative_path(result["path"])
+    if not isinstance(result["event"], str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", result["event"]):
+        raise GdiError("invalid CI workflow event")
+    if not isinstance(result["job"], str) or "\x00" in result["job"]:
+        raise GdiError("invalid CI workflow job")
+    inputs = result["inputs"]
+    if not isinstance(inputs, dict) or any(not isinstance(k, str) or not k or '=' in k or "\x00" in k
+            or not isinstance(v, str) or "\x00" in v for k, v in inputs.items()):
+        raise GdiError("workflow inputs must contain string keys/values")
+    return result
+
+
 def marker(req, raw):
-    return {"ci_version": 1, "job_id": req["job_id"], "request_sha256": digest(raw)}
+    return {"ci_version": req["ci_version"], "job_id": req["job_id"], "request_sha256": digest(raw)}
 
 
 def atomic_write(path, data):

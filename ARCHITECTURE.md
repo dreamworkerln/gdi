@@ -1,8 +1,8 @@
 # Архитектура gdi 0.3: автономный агент и host CI
 
-Реализованы Git protocol v2 и CI protocol v1. Обычный обмен работает без worker;
+Реализованы Git protocol v2 и CI protocol v1/v2. Обычный обмен работает без worker;
 автономный CI требует один раз настроенного host. Python 3.10.12, стандартная
-библиотека, внешние Git/rclone. Человеческий workflow: [QUICKSTART.md](QUICKSTART.md),
+библиотека, внешние Git/rclone; для GitHub Actions — act/Docker. Человеческий workflow: [QUICKSTART.md](QUICKSTART.md),
 инструкция агенту: [GOOGLE_DRIVE_CI_PUBLISHING_WORKFLOW.md](GOOGLE_DRIVE_CI_PUBLISHING_WORKFLOW.md).
 
 ## Поток данных
@@ -14,7 +14,7 @@ flowchart LR
     D <--> W[Постоянный worker пользователя]
     W --> K[Проверенный Git cache]
     K --> X[Отдельный checkout точного SHA]
-    X --> P[Локальный полный CI профиль]
+    X --> P[act: GitHub Actions workflows из commit]
     P --> S[Durable spool: консоль и result]
     S --> D
     C --> A
@@ -33,7 +33,10 @@ flowchart LR
 | `transport.py` | rclone: immutable artifacts, ограниченные mutable snapshots, scoped deletion |
 | `ci_protocol.py` | CI request/result schemas, identities, canonical JSON, checksums, durable writes |
 | `ci.py` | Durable agent outbox, submit/retry, progress/logs, verified results, pull gate |
-| `worker_config.py` | Локальная регистрация проектов и профилей, вычисление revision |
+| `worker_config.py` | Общие настройки host/root/таймаутов/runner, вычисление revision |
+| `local_config.py` | Собственные `.gdi/config.json` и чтение legacy Git sections |
+| `inbox.py` | Общие immutable уведомления, checksum и строгая маршрутизация |
+| `workflow.py` | Запуск act, проверка завершения jobs и сбор artifact store |
 | `ledger.py` | SQLite WAL/FULL: разделение исполнения и доставки результата |
 | `worker.py` | Queue discovery, claims, recovery, source restoration, publisher, persistent loop |
 | `executor.py` | Binary console capture, stages, process groups, timeouts, Linux process identity |
@@ -45,8 +48,9 @@ flowchart LR
 
 Каждый job связывает `repository_id`, `ref`, `head`, `publication_id`, `worker_id`,
 `profile_id`, `profile_revision`, `job_id`. Request не содержит shell-команд или
-host paths. Config профиля хранится на host и не переносится из Drive.
-Revision — SHA256 нормализованной эффективной конфигурации профиля. Секреты
+host paths. Request v2 закрепляет selector workflows из commit.
+Config worker version 2 задаёт общие параметры host и не содержит список проектов.
+Revision — SHA256 нормализованных общих параметров исполнения. Секреты
 рекомендуется передавать через унаследованное окружение, вне profile config.
 
 Push использует существующую последовательную модель одного writer на ref с
@@ -95,41 +99,37 @@ worktree и повторно проверяет branch/HEAD/status перед п
 ## Протокол Drive
 
 ```text
-repository.json                            # Git protocol v2
-bundles/<sha256>.bundle
-updates/<sha256-of-ref>/<publication>.json
-ci/
-    queue/<job-id>.json
-    workers/<worker-id>/capabilities.json   # mutable
-    workers/<worker-id>/status.json         # mutable, advisory
-    jobs/<job-id>/
-        request.json
-        request.ready
-        worker.running.json
-        status.json                        # mutable, advisory
-        events/<sequence>.json
-        log-chunks/<sequence>-<sha256>.bin
-        artifacts/<safe-name>
-        build.log
-        final-status.json
-        result.json
+<root>/
+    inbox/<event-id>-<sha256>.json
+    ci/workers/<worker-id>/capabilities.json
+    ci/workers/<worker-id>/status.json
+    <project>/
+        repository.json
+        bundles/<sha256>.bundle
+        updates/<sha256-of-ref>/<publication>.json
+        ci/jobs/<job-id>/
+            request.json, request.ready, worker.running.json
+            status.json, events/, log-chunks/, artifacts/
+            build.log, final-status.json, result.json
 ```
 
-Вход: durable local outbox → request → queue pointer → ready **последним**.
-Queue/ready связывают job ID и хеш точных request bytes. Неполное задание не
-исполняется и не мешает другим готовым jobs. Worker опрашивает активную queue,
-не сканирует всю историю завершённых заданий. Локальный ledger закрепляет порядок
-первого обнаружения; время remote не выбирает «победителя».
+Вход: durable local outbox → request → ready → shared inbox **последней**.
+Notification и ready связывают job ID и hash точных request bytes. Worker в простое
+опрашивает только общую inbox, без обхода проектов и архива jobs. Пустая, частичная
+или неверная запись остаётся для retry и не мешает другим заданиям. Разные producers
+создают разные immutable файлы, общего изменяемого индекса нет.
+Обычный push публикует notification без автоматического CI и изменения рабочих веток.
 
-Выход: закрытая локальная консоль и durable result → immutable chunks/events →
-artifacts/build.log/final-status → result **последним** → read-back/hash verification →
-ledger PUBLISHED → удаление queue pointer. Сетевой сбой доставки оставляет локальный
-result и приводит к повтору upload, а не к повторному исполнению CI.
-Детальные схемы: [docs/ci-protocol.md](docs/ci-protocol.md).
+Ledger сохраняет request, маршрут проекта и имя уведомления. Выход: durable result →
+chunks/events/artifacts/log/final-status → result **последним** → read-back verification →
+ledger PUBLISHED → удаление конкретной записи inbox. Сетевой retry повторяет доставку,
+не исполнение. При lost acknowledgement ledger предотвращает повтор CI.
+Legacy config/request v1 с per-repository queues сохраняется для обновления установок.
+Схемы: [docs/inbox.md](docs/inbox.md), [docs/ci-protocol.md](docs/ci-protocol.md).
 
 ## История и исполнение
 
-Постоянный receiver каждого зарегистрированного проекта содержит verified bare
+Постоянный receiver каждого проекта из inbox содержит verified bare
 cache существующего Git protocol v2. Worker валидирует исходную publication,
 восстанавливает текущий tip от последнего доступного full/cache, проверяет наличие
 и ancestry job HEAD. Старую публикацию можно проверить даже после удаления её
@@ -139,11 +139,12 @@ cache существующего Git protocol v2. Worker валидирует и
 alternates; импортируется exact SHA и выполняется detached checkout. Время CI
 не удерживает cache lock. Пользовательский repo не используется как build directory.
 
-Профиль задаёт argv/cwd/env/таймауты стадий и whitelist artifacts на host. Минимум одна
-blocking-стадия; обязательные ошибки → FAIL, non-blocking → warnings. Общий/stage
-timeout → TIMEOUT и завершение process group. Отсутствующий required artifact → ERROR.
-HEAD и tracked sources проверяются после исполнения. Untracked build outputs допустимы.
-Checkout не изолирует права ОС; это доверенный проект, исполняемый от имени worker.
+CI v2 выполняет выбранный YAML через act с изолированными копиями checkout для jobs.
+Общий timeout обеспечивает executor, результат act без завершённых успешных jobs
+не даёт PASS. Artifact store act собирается в проверяемый zip. Подготовленный checkout
+и HEAD проверяются после исполнения; пользовательский worktree не меняется.
+Legacy v1 исполняет зарегистрированные argv/cwd/env stages на host с прежними
+blocking/non-blocking правилами. Workflows доверенные; Docker daemon доступен act.
 
 ## Прогресс и консоль
 
@@ -154,8 +155,7 @@ Executor читает объединённые stdout+stderr как bytes в ф�
 `PYTHONUNBUFFERED=1`. При молчащем процессе локальный heartbeat обновляется раз в 5 секунд.
 
 Chunks immutable, последовательны, адресуются checksum; локальные spool chunks
-сохраняются до upload. Клиент кеширует проверенные chunks и полный result в Git common
-directory. Новый вызов follow показывает историю с начала, в рамках одного вызова
+сохраняются до upload. Клиент кеширует проверенные chunks и полный result в `.gdi/ci` репозитория. Новый вызов follow показывает историю с начала, в рамках одного вызова
 cursor исключает повторы. Resume cursor между вызовами CLI пока не сохраняется.
 Бинарные console bytes не преобразуются; текстовый fallback UI использует UTF-8 replace.
 
@@ -201,4 +201,4 @@ CI snapshot перепроверяется после восстановлени
 
 Следующие этапы: CI retention/local spool quotas, отмена jobs, сохранённый cursor
 между CLI вызовами, оптимизация listings/changes API, multi-worker координация,
-опциональная OS изоляция. Ограничения и оставшиеся проверки: [TODO.md](TODO.md).
+дальнейшая изоляция исполнения. Ограничения и оставшиеся проверки: [TODO.md](TODO.md).

@@ -10,7 +10,7 @@ import time
 import uuid
 
 from .ci_protocol import (TERMINAL, atomic_write, job_id, marker, now, request, upload_json,
-                          validate_result, verify_file)
+                          validate_result, verify_file, workflow_selection)
 from .exchange import decode, digest, encode, hex_value
 from .git import GdiError
 
@@ -40,21 +40,47 @@ class CiClient:
         self.exchange = exchange
         self.git = exchange.git
         self.transport, self.repository_id = exchange.connect(remote)
-        self.root = self.git.common_dir() / "gdi-ci" / self.repository_id
+        self.settings = exchange.remote(remote)
+        self.root = self.git.gdi_dir() / "ci" / self.repository_id
+        old = self.git.common_dir() / "gdi-ci" / self.repository_id
+        if old.exists() and not self.root.exists():
+            import shutil
+            shutil.copytree(old, self.root)
         self.root.mkdir(parents=True, exist_ok=True)
 
-    def submit(self, publication_id, worker_id, profile_id, *, retry_of=None):
+    def submit(self, publication_id, worker_id, profile_id="full", *, retry_of=None, workflow=None):
         from .ci_protocol import identifier
         identifier(worker_id); identifier(profile_id)
         pub, _ = publication(self.exchange, self.transport, self.repository_id, publication_id)
-        capabilities = decode(self.transport.read(f"ci/workers/{worker_id}/capabilities.json"))
+        selector = workflow_selection(workflow)
+        shared = None
+        capabilities = None
+        if self.settings["inbox_root"] is not None:
+            candidate = self.exchange.transport_factory(self.settings["inbox_root"])
+            try:
+                capabilities = decode(candidate.read(f"ci/workers/{worker_id}/capabilities.json"))
+            except (GdiError, OSError):
+                # Older workers advertise only inside each repository.
+                capabilities = None
+            else:
+                if capabilities.get("inbox_version") != 1:
+                    raise GdiError("worker does not support the shared inbox")
+                shared = candidate
+        if capabilities is None:
+            capabilities = decode(self.transport.read(f"ci/workers/{worker_id}/capabilities.json"))
         try:
-            revision = capabilities["repositories"][self.repository_id][profile_id]
+            revision = (capabilities["profiles"][profile_id] if shared is not None else
+                        capabilities["repositories"][self.repository_id][profile_id])
         except (KeyError, TypeError) as exc:
-            raise GdiError("worker does not advertise the requested repository/profile; start/check the worker") from exc
+            raise GdiError("worker does not advertise the requested CI execution settings; start/check the worker") from exc
         if capabilities.get("ci_version") != 1 or capabilities.get("worker_id") != worker_id or not hex_value(revision, 64):
             raise GdiError("invalid worker capabilities")
-        key = digest(encode([publication_id, worker_id, profile_id, revision, retry_of]))
+        if shared is None and selector != workflow_selection():
+            raise GdiError("workflow selection requires a global inbox worker")
+        key_fields = [publication_id, worker_id, profile_id, revision, retry_of]
+        if shared is not None:
+            key_fields.append(selector)
+        key = digest(encode(key_fields))
         outbox = self.root / "outbox" / (key + ".json")
         if outbox.exists():
             raw = outbox.read_bytes()
@@ -64,12 +90,14 @@ class CiClient:
                    "ref": pub["ref"], "head": pub["head"], "publication_id": publication_id,
                    "worker_id": worker_id, "profile_id": profile_id, "profile_revision": revision,
                    "created_at": now(), "retry_of": retry_of}
+            if shared is not None:
+                req.update(ci_version=2, workflow=selector)
             request(req, self.git, self.repository_id)
             raw = encode(req)
             atomic_write(outbox, raw)
         jid = req["job_id"]
         prefix = f"ci/jobs/{jid}"
-        for directory in ("ci/queue", prefix):
+        for directory in ((prefix,) if shared is not None else ("ci/queue", prefix)):
             self.transport.mkdir(directory)
         # A repeated successful submit must not put a completed job back in the queue.
         existing = files(self.transport, prefix)
@@ -81,8 +109,15 @@ class CiClient:
             source.write_bytes(raw)
             self.transport.upload(source, prefix + "/request.json")
             ready = marker(req, raw)
-            upload_json(self.transport, f"ci/queue/{jid}.json", ready)
+            if shared is None:
+                upload_json(self.transport, f"ci/queue/{jid}.json", ready)
             upload_json(self.transport, prefix + "/request.ready", ready)
+            if shared is not None:
+                from .inbox import notification, publish
+                from .local_config import repository_path
+                event = notification(self.repository_id, repository_path(self.settings["inbox_root"], self.settings["url"]),
+                                     pub, publication_id, req, raw)
+                publish(shared, event)
         return req
 
     def load_request(self, jid):
@@ -221,7 +256,7 @@ class CiClient:
         req, _ = self.load_request(jid)
         if self.result(jid) is None:
             raise GdiError("cannot retry an active job; wait for a verified terminal result")
-        return self.submit(req["publication_id"], req["worker_id"], req["profile_id"], retry_of=jid)
+        return self.submit(req["publication_id"], req["worker_id"], req["profile_id"], retry_of=jid, workflow=req.get("workflow"))
 
     def pull_passed(self, jid, profile):
         result = self.result(jid)

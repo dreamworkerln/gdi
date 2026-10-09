@@ -1,95 +1,99 @@
 # Настройка и эксплуатация worker
 
-Worker — постоянный процесс на Linux host пользователя. Работает на Python 3.10.12,
-использует Git, rclone и стандартную библиотеку Python. Один процесс выполняет
-задания последовательно для одного или нескольких зарегистрированных проектов.
-На каждый Drive remote назначайте ровно один worker.
+Worker — постоянный процесс на Linux host пользователя. Git/rclone и Python 3.10+
+нужны для обмена; CI из GitHub Actions запускается через установленный `act` и Docker
+Engine. Docker Compose требуется только если его использует сам workflow.
+На один общий корень Drive назначайте ровно один worker.
 
-## Конфигурация
+## Общая конфигурация
 
 Скопируйте [пример](../examples/worker.json) в `~/.config/gdi/worker.json`.
-Замените `repository_id` на ID из `gdi remote list`, `remote_url` на ваш rclone URL,
-а `stages` — на настоящий полный CI проекта. Пример запускает тесты самого gdi.
-Для проекта с собственным CI-скриптом стадия может выглядеть так:
-
-```json
-{
-  "name": "full-ci",
-  "argv": ["/usr/bin/bash", "ci/run.sh"],
-  "cwd": ".",
-  "blocking": true,
-  "timeout_seconds": 3600
-}
-```
-
-`argv` исполняется без shell. Bash используется только если вы явно указали его
-как программу. `~`, `$HOME`, `&&`, перенаправления и glob в аргументах сами не
-раскрываются. `cwd` и artifact paths относительны к изолированному checkout.
-Абсолютные executable paths удобны для systemd; можно указать Python вашего
-проектного venv, например `/home/$USER/.venvs/project/bin/python`, **заменив `$USER`
-реальным именем в JSON**. Shell-подстановок в JSON нет.
+Укажите `remote_url`, например `gdrive:gdi`, и постоянный `worker_id`.
+**Проекты, ветки и команды CI перечислять не нужно.** Проекты подключаются через
+`gdi remote add`, а уведомления всех проектов поступают в общую `inbox`.
+Протокол и локальные подключения: [inbox.md](inbox.md).
 
 | Поле | Назначение |
 | --- | --- |
-| `config_version: 1` | Версия локальной конфигурации |
+| `config_version: 2` | Общая конфигурация worker |
 | `worker_id` | ASCII ID worker, например `user-host` |
-| `repositories` | Список зарегистрированных repository IDs/URLs и profiles |
-| `profiles.full.timeout_seconds` | Общий лимит исполнения стадий, по умолчанию 3600 |
-| `stages[].name`, `argv` | Уникальное имя стадии и список аргументов |
-| `stages[].cwd` | Каталог внутри checkout, по умолчанию `.` |
-| `stages[].blocking` | Обязательная стадия, по умолчанию true |
-| `stages[].timeout_seconds` | Лимит стадии, по умолчанию общий лимит |
-| `profiles.full.env` | Не секретные переменные окружения; по умолчанию `{}` |
-| `profiles.full.artifacts` | Список разрешённых выходных файлов; по умолчанию `[]` |
-| `poll_active_seconds` | Пауза после активности, по умолчанию 5 |
+| `remote_url` | Общий корень обмена rclone, например `gdrive:gdi` |
+| `timeout_seconds` | Общий лимит CI, по умолчанию 3600 |
+| `poll_active_seconds` | Базовая пауза polling, по умолчанию 5 |
 | `poll_idle_max_seconds` | Максимальная пауза в простое/при сетевых ошибках, по умолчанию 60 |
 | `state_dir`, `cache_dir` | Необязательные абсолютные пути вместо XDG defaults |
+| `act_executable` | `act` в PATH службы или абсолютный путь к программе |
+| `platforms` | Сопоставление `runs-on` и образов; default: `ubuntu-latest=catthehacker/ubuntu:act-latest` |
+| `artifact_server_port` | Порт локального сервера артефактов act, по умолчанию 34567 |
+| `secret_names` | Имена secrets, которые act возьмёт из окружения службы; default `[]` |
+| `transport.connect_timeout_seconds` | rclone connection timeout, по умолчанию 10 |
+| `transport.timeout_seconds` | rclone I/O idle timeout, по умолчанию 60 |
+| `transport.retries`, `low_level_retries` | Число сетевых попыток, по умолчанию 3 |
 
-Профиль обязан содержать хотя бы одну blocking-стадию. Ненулевой exit blocking-стадии
-даёт FAIL и прекращает план. Ошибка non-blocking стадии записывается в warnings.
-Таймаут останавливает группу процессов и даёт TIMEOUT. Невыполненная обязательная
-стадия не даёт PASS. Worker проверяет HEAD и отсутствие изменений tracked sources
-после CI; untracked build outputs допустимы.
+Rclone credentials остаются в его конфигурации; gdi их не копирует. Значения secrets
+не записывайте в worker.json. Передавайте их через systemd EnvironmentFile и
+перечисляйте только имена в `secret_names`. Сам worker config на Drive не отправляется.
 
-Revision рассчитывается автоматически по нормализованным настройкам, включая команды,
-timeouts, env и artifacts. Поле `revision` в config добавлять не нужно. Сам config
-на Drive не отправляется. Secrets держите в окружении host/EnvironmentFile systemd,
-а не в `env`: изменение унаследованных secrets не меняет revision. Не печатайте
-secrets в консоль — CI logs публикуются в папку remote.
+## CI берётся из проверяемого commit
 
-Пример дополнительного artifact внутри профиля:
+По умолчанию выполняются workflows каталога `.github/workflows` для события `push`.
+Команды, `uses`, matrix, зависимости jobs и `continue-on-error` исполняет act.
+Выбрать другой файл, событие, job и inputs можно при отправке:
 
-```json
-"artifacts": [
-  {"name": "firmware.bin", "path": "build/firmware.bin", "required": true}
-]
+```bash
+gdi push drive --ci --worker user-host --json
+gdi push drive --ci --worker user-host --workflow .github/workflows/checks.yml --event workflow_dispatch --input MODE=full --json
 ```
 
-Публикуются только явно перечисленные files. `..`, выход за checkout и symlink наружу
-запрещены. Отсутствующий required artifact даёт ERROR. CI исполняется с правами
-пользователя worker; checkout не является контейнером или OS sandbox.
+`full` сохраняется как имя общего исполнения для совместимости CLI; отдельного
+профиля проекта в worker.json нет. Request v2 закрепляет selector и SHA, а revision —
+общие настройки исполнения host. После изменения config перезапустите службу.
+Старый запрос с другой revision получает REJECTED и требует явного повторного submit.
+
+Act получает отдельный checkout точного commit, `GITHUB_REF` и SHA. Обычный
+`actions/checkout` использует переданные локальные исходники. Workspaces jobs копируются;
+исходный checkout и пользовательская рабочая ветка не используются для build outputs.
+Act запускается вне checkout: project `.actrc` не заменяет выбранный план. Docker
+images и actions используют persistent caches. Версии act и образы рекомендуется
+закрепить после проверки; обновление изменяемого image tag не меняет revision config.
+
+Консоль act сохраняется как JSON lines в общем build.log и передаётся streaming chunks.
+В результате gdi это одна blocking-стадия `github-actions`; детализация jobs/steps
+сохраняется в консоли. Ненулевой exit act даёт FAIL; exit 0 без успешного завершённого
+job даёт ERROR, а не PASS. Upload artifacts собираются сервером act и публикуются
+как `artifacts/workflow-artifacts.zip`, содержащий его artifact store.
+
+[Act не полностью совместим с GitHub Actions](https://nektosact.com/not_supported.html):
+в частности, не все GitHub contexts, permissions, cancellation и job timeouts
+воспроизводятся. Общий timeout обеспечивает gdi: сначала SIGINT для cleanup act,
+через 10 секунд при необходимости SIGKILL. После принудительного прерывания проверьте
+остаточные Docker containers: Docker daemon не входит в process group worker.
+Windows/macOS jobs требуют соответствующей среды; Linux Docker не заменяет эти ОС.
+
+Установку [Docker Engine](https://docs.docker.com/engine/install/) и
+[act](https://nektosact.com/installation/) выполняет владелец host. Проверочная версия
+act — v0.2.89. Убедитесь, что пользователь службы имеет доступ к Docker Engine.
 
 ## Проверка и первый запуск
 
 ```bash
 gdi worker check --config ~/.config/gdi/worker.json --json
-rclone lsf gdrive:gdi/my-project
+act --version
+docker version
+rclone lsf gdrive:gdi
 gdi worker run --config ~/.config/gdi/worker.json
 ```
 
-`check` проверяет локальную схему и показывает revisions; доступность Drive и
-проектных инструментов проверяются при run. В foreground worker создаёт capabilities,
-показывает служебные сообщения в консоли и остаётся работать после завершения jobs.
-Ctrl+C запрашивает завершение после текущего job. Для отладки одного обхода очереди:
+`check` проверяет схему config и revision; наличие act/Docker и доступ к Drive
+проверяются отдельно. Foreground worker создаёт общие capabilities и inbox,
+остаётся работать после PASS/FAIL. Ctrl+C запрашивает завершение после текущего job.
+Для одного обхода: `gdi worker run --config ~/.config/gdi/worker.json --once`.
+Сетевые ретраи не повторяют уже исполненный CI.
 
-```bash
-gdi worker run --config ~/.config/gdi/worker.json --once
-```
-
-Перед запуском установите зависимости **самого проверяемого проекта** в окружении
-host: компилятор, SDK, Python venv и т. п. gdi их автоматически не устанавливает.
-Команда должна выполнять полный CI, согласованный с агентом, а не только быструю
-подпроверку. Изолированный checkout не содержит ваших игнорируемых локальных файлов.
+Legacy config version 1 со списком repositories/stages пока читается для обновления
+старых установок. Он использует прежние per-repository queues и команды host.
+Для новой настройки используйте version 2. Legacy queue не опрашивается новым global
+worker; сначала завершите старые задания, затем переходите на общий root.
 
 ## Systemd user service
 
@@ -150,7 +154,7 @@ ${XDG_STATE_HOME:-$HOME/.local/state}/gdi/<worker-id>/
     ledger.sqlite3
     jobs/<job-id>/build.log, events/, log-chunks/, result.json, artifacts/, checkout/
 ${XDG_CACHE_HOME:-$HOME/.cache}/gdi/<worker-id>/<repository-id>/receiver/
-    .git/gdi-cache/<repository-id>/repository.git
+    .gdi/cache/<repository-id>/repository.git
 ```
 
 Ledger и spool постоянные; не удаляйте их при активных/недоставленных jobs.
