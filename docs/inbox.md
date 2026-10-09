@@ -51,7 +51,7 @@ gdi remote add drive gdrive:gdi/my-project --init
 в commits; добавьте `.gdi/` в `.gitignore`. Push отвергает commit с tracked `.gdi`.
 Установка подключения не изменяет `.git/config`, `.gitignore` или другие файлы проекта.
 
-Первое подключение выбирается по умолчанию для `gdi push`, `gdi fetch` и `gdi pull`.
+Первое подключение выбирается по умолчанию для `gdi push`, `gdi fetch`, `gdi pull` и `gdi log`.
 Сменить его можно через `gdi remote default NAME`. `gdi status` проверяет все
 подключения; `gdi status NAME` — одно. Старый local config v1 и Git exchange v1/v2
 не поддерживаются: сохраните старый config отдельно и пересоздайте подключения.

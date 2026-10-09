@@ -29,6 +29,8 @@ class Session:
         self.running = {}
         self.counts = {}
         self.seconds = {}
+        self.rc_count = 0
+        self.rc_seconds = 0
         self.sequence = 0
         self.handle = None
         self.thread = None
@@ -53,8 +55,8 @@ class Session:
         while not self.stop.wait(2):
             with self.lock:
                 for argv, started in self.running.values():
-                    if argv[0] == 'rclone':
-                        self.show(f"waiting for rclone {argv[1]}: {time.monotonic() - started:.1f}s "
+                    if argv[0] == 'RC' or argv[0] == 'rclone' and argv[1] != 'rcd':
+                        self.show(f"waiting for {argv[0]} {argv[1]}: {time.monotonic() - started:.1f}s "
                                   f"(total {time.monotonic() - self.started:.1f}s)")
 
     def begin_call(self, argv):
@@ -134,9 +136,11 @@ def command_session(command, *, path=None, progress=None):
             duration = time.monotonic() - session.started
             session.event('command_finish', command=command, duration_seconds=duration,
                           exit_code=session.exit_code, error=session.error,
-                          subprocess_counts=session.counts, subprocess_seconds=session.seconds)
-            print(f"gdi: total {duration:.3f}s; rclone {session.counts.get('rclone', 0)} calls, "
+                          subprocess_counts=session.counts, subprocess_seconds=session.seconds,
+                          rc_calls=session.rc_count, rc_seconds=session.rc_seconds)
+            print(f"gdi: total {duration:.3f}s; rclone {session.counts.get('rclone', 0)} processes, "
                   f"{session.seconds.get('rclone', 0):.3f}s" +
+                  f"; RC {session.rc_count} calls, {session.rc_seconds:.3f}s" +
                   (f"; profile {session.path}" if session.path is not None else ''), file=sys.stderr)
         if session.handle is not None:
             session.handle.close()
@@ -155,6 +159,40 @@ def subprocess_call(argv):
     finally:
         if session is not None:
             session.end_call(call, result['result'], result['error'])
+
+
+@contextmanager
+def rc_call(operation, parameters=None):
+    """Record native RC operations separately from processes and Drive HTTP traffic."""
+    session = _active
+    result = {'status': None}
+    started = time.monotonic()
+    error = None
+    call_id = None
+    if session is not None:
+        with session.lock:
+            session.sequence += 1
+            call_id = session.sequence
+            session.running[call_id] = (['RC', operation], started)
+        session.event('rc_start', call_id=call_id, operation=operation,
+                      phase=_phase.get(), parameters=parameters)
+        if session.path is not None:
+            session.show('RC ' + operation + ' (' + _phase.get() + ')')
+    try:
+        yield result
+    except BaseException as exc:
+        error = type(exc).__name__
+        raise
+    finally:
+        if session is not None:
+            duration = time.monotonic() - started
+            with session.lock:
+                session.running.pop(call_id)
+                session.rc_count += 1
+                session.rc_seconds += duration
+                session.event('rc_finish', call_id=call_id, operation=operation,
+                              phase=_phase.get(), duration_seconds=duration,
+                              status=result['status'], error=error)
 
 
 @contextmanager

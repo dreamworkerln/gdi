@@ -40,6 +40,7 @@ gdi pull
 | `gdi remote add NAME URL --init` | Один раз создаёт протокол в пустой папке, сохраняет repository ID локально |
 | `gdi remote add NAME URL [--repository-id ID]` | Подключает существующий remote; без ID доверяет идентичности при первом подключении |
 | `gdi remote default NAME` | Выбирает подключение для коротких команд |
+| `gdi log [NAME] [BRANCH] [-n N] [--json]` | Проверенная история публикаций ветки, новые первыми; по умолчанию 20 записей |
 | `gdi status [NAME] [--json]` | Ветка, HEAD, worktree, подключения и свежий статус публикации без скачивания bundles |
 | `gdi remote list` | Показывает имена, адреса и закреплённые repository IDs |
 | `gdi remote remove NAME` | Удаляет локальные настройки, оставляет удалённые данные и fetched refs |
@@ -61,7 +62,7 @@ gdi pull
 | `gdi -h`, `gdi --help` | Одинаковая справка с примерами использования |
 
 Первое подключение выбирается по умолчанию; смена — `gdi remote default NAME`.
-`gdi push`, `gdi fetch`, `gdi pull` показывают подключение и выбранную ветку.
+`gdi push`, `gdi fetch`, `gdi pull`, `gdi log` показывают подключение и выбранную ветку.
 Каталоги на Drive читаемы: `branches/dev/`, `branches/feature%2Flogin/`.
 По умолчанию push/fetch работают с текущей веткой; pull всегда работает с текущей.
 Справка и версия работают вне repo. Цвет эмблемы включается в терминале,

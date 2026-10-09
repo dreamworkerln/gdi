@@ -17,8 +17,8 @@ commit, постоянный worker пользователя запускает 
 
 Далее описаны команды установленного CLI. Если в контейнере агента GDI нет
 и установить его нельзя, используйте раздел [«Облачный агент без установленного GDI»](#облачный-агент-без-установленного-gdi):
-он описывает получение commit, отправку уже опубликованной версии на CI
-и проверку результата через инструменты Drive, Python и Git без CLI.
+он описывает получение commit, публикацию собственных изменений, отправку версии
+на CI и передачу результата пользователю через инструменты Drive, Python и Git без CLI.
 
 ## Перед первой отправкой
 
@@ -192,6 +192,11 @@ Namespace GitHub из обычного origin закрепляется в reques
 точных bytes. Поиск по тексту или преобразование JSON в Google Docs не заменяют
 эти операции. Сначала проверьте доступные возможности. Если записи на Drive нет,
 агент может читать уже созданное задание, но не должен заявлять, что отправил новое.
+Также нужны Python 3.10+ и Git в среде агента. Описанная ниже публикация не требует
+установленного пакета GDI, rclone, Docker или worker в этой среде: операции Drive
+выполняются доступными инструментами агента. Если нельзя получить/загрузить точные
+бинарные bytes, этот способ недоступен; явно сообщите ограничение и передайте patch
+или архив другим доступным способом, не обещая, что `gdi pull` получит изменения.
 
 Пользователь сообщает общий Drive root, путь проекта внутри root, Repository ID,
 ветку, точный HEAD и Publication ID, worker ID, profile и выбранные workflow/event.
@@ -224,6 +229,303 @@ profile `full`. `gdrive:`/`rclone:` — локальные имена remotes н
    commit более новым tip. Проверка отдельного bundle не заменяет проверку всей
    metadata-цепочки: учитывайте `previous`, отсутствующих предков и конкурирующие
    продолжения по [Git protocol v3](docs/protocol.md).
+
+### Опубликовать собственные изменения без GDI и rclone
+
+Далее — полноценная Git-публикация, которую пользователь получает обычным GDI.
+Для ручного writer используйте **полный bundle**: он позволяет передать всю
+историю выбранной ветки без подготовки incremental prerequisites. Полный bundle
+не обнуляет цепочку публикаций: `previous` остаётся ID прежнего tip этой ветки.
+Не создавайте новый repository ID и не инициализируйте существующую папку заново.
+
+#### 1. Проверить текущую базу на Drive
+
+До создания публикации скачайте свежие `repository.json` и **все manifests выбранной
+ветки** из `PROJECT_PATH/branches/<encoded-branch>/`. Используйте полный listing,
+учитывайте его pagination и обнаруживайте повторяющиеся имена файлов/папок;
+поиск только «последнего» manifest или сортировка по времени не заменяют listing.
+Имена каталогов `%2F` и `%25` здесь буквальные, а не инструкции декодировать путь.
+
+- Repository ID должен совпадать с доверенным ID пользователя, version — 3,
+  object format — SHA-1. При подмене ID остановитесь, не принимайте новый автоматически.
+- Для каждого manifest проверьте SHA256 исходных bytes по имени файла, точную
+  схему protocol v3, repository ID, ref, HEAD, nonce и поля bundle/base/prerequisites.
+  Отклоняйте дубли JSON-ключей, неизвестные поля и metadata больше 1 MiB.
+- Постройте всю цепочку через `previous`: один корень с `previous:null`, не более
+  одного продолжения каждого предыдущего ID, все предки доступны, нет циклов
+  и несвязанных записей. Incremental bases должны указывать на более раннюю
+  публикацию с точным base HEAD; проверяйте все правила [протокола](docs/protocol.md).
+- Сохраните снимок: имена и точные bytes всех manifests, Repository ID и ref.
+  `PREVIOUS_PUBLICATION` — ID единственного tip, `BASE_HEAD` — его HEAD.
+  Обе переменные пусты только при подтверждённо пустой цепочке этой ветки.
+  Отсутствие папки ветки допустимо после успешной проверки repository; ошибки
+  listing, неполный ответ и отсутствие доступа не означают пустую ветку.
+
+Восстановите опубликованную Git-историю по предыдущему разделу. В clone агента
+должен быть точный BASE_HEAD и вся история, необходимая для полного bundle.
+Если агент уже внёс изменения на старой базе, сохраните их и согласуйте с новым
+tip средствами Git в своём временном clone до публикации. Не удаляйте чужие
+manifests ради выбора tip и не заменяйте пользовательскую историю force/reset.
+
+#### 2. Создать commit и проверенный полный bundle
+
+Прочитайте `AGENTS.md`, внесите изменения и выполните доступные проверки.
+Создайте commit только из файлов задачи, используя согласованные данные author.
+Ветка должна быть выбранной веткой пользователя; её новый HEAD — потомок BASE_HEAD.
+Если HEAD уже совпадает с опубликованным tip, переиспользуйте существующий
+Publication ID и переходите к CI/передаче результата, без новой публикации.
+
+Пример в терминале агента; замените значения на проверенные в шаге 1:
+
+```bash
+WORK_DIR="/путь/к/рабочему/my-project"
+cd "$WORK_DIR"
+git status --short
+git add path/to/changed-file
+git -c core.hooksPath=/dev/null commit -m "Fix requested behavior"
+
+export WORK_DIR
+export BRANCH="dev"
+export REPOSITORY_ID="REPOSITORY_ID"
+export PREVIOUS_PUBLICATION="PREVIOUS_PUBLICATION_ID"
+export BASE_HEAD="PREVIOUS_HEAD"
+export PUBLICATION_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gdi-publication.XXXXXX")"
+```
+
+Для новой пустой ветки задайте `PREVIOUS_PUBLICATION=""` и `BASE_HEAD=""`.
+Следующий Python-код запустите в том же окружении. Он ничего не загружает на Drive:
+проверяет Git и создаёт локальные bundle, manifest и summary для следующих шагов.
+Не удаляйте PUBLICATION_DIR до успешной публикации/сохранения данных для retry.
+
+```python
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import tempfile
+import uuid
+
+work = Path(os.environ["WORK_DIR"]).resolve()
+output = Path(os.environ["PUBLICATION_DIR"]).resolve()
+output.mkdir(parents=True, exist_ok=True)
+if any(output.iterdir()):
+    raise SystemExit("Use an empty preparation directory; preserve existing files for upload retry")
+ref = "refs/heads/" + os.environ["BRANCH"]
+repository_id = os.environ["REPOSITORY_ID"]
+previous = os.environ["PREVIOUS_PUBLICATION"] or None
+base_head = os.environ["BASE_HEAD"] or None
+if not re.fullmatch(r"[0-9a-f]{32}", repository_id):
+    raise SystemExit("Use the verified Repository ID, not a placeholder")
+if ((previous is None) != (base_head is None) or
+        previous is not None and not re.fullmatch(r"[0-9a-f]{64}", previous) or
+        base_head is not None and not re.fullmatch(r"[0-9a-f]{40}", base_head)):
+    raise SystemExit("Invalid previous publication/base HEAD")
+
+env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+env["GIT_TERMINAL_PROMPT"] = "0"
+
+def git(*args, cwd=work, allowed=(0,), isolated=False):
+    child_env = dict(env)
+    if isolated:
+        child_env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
+                         GIT_CONFIG_NOSYSTEM="1")
+    result = subprocess.run(["git", "--no-replace-objects", "-c", "core.hooksPath=/dev/null",
+        "-c", "core.fsmonitor=false", "-c", "gc.auto=0", "-c", "maintenance.auto=false",
+        *args], cwd=cwd, env=child_env, capture_output=True, text=True, encoding="utf-8")
+    if result.returncode not in allowed:
+        raise SystemExit(result.stderr.strip() or "Git validation failed")
+    return result.stdout.strip()
+
+git("check-ref-format", ref)
+if git("symbolic-ref", "--quiet", "HEAD") != ref:
+    raise SystemExit("Switch to the agreed branch before preparing the publication")
+if (git("rev-parse", "--is-bare-repository") != "false" or
+        git("rev-parse", "--show-object-format") != "sha1" or
+        git("rev-parse", "--is-shallow-repository") != "false"):
+    raise SystemExit("A full SHA-1 Git worktree is required")
+if git("config", "--get-regexp", r"^(extensions\.partialclone|remote\..*\.promisor)$", allowed=(0, 1)):
+    raise SystemExit("Partial clones are unsupported")
+if git("for-each-ref", "--format=%(refname)", "refs/replace/"):
+    raise SystemExit("Replace refs are unsupported")
+grafts = Path(git("rev-parse", "--git-path", "info/grafts"))
+grafts = grafts if grafts.is_absolute() else work / grafts
+if grafts.exists() and grafts.stat().st_size:
+    raise SystemExit("Git grafts are unsupported")
+head = git("rev-parse", "--verify", ref + "^{commit}")
+if head == base_head:
+    raise SystemExit("HEAD is already published; reuse PREVIOUS_PUBLICATION")
+if base_head is not None:
+    git("merge-base", "--is-ancestor", base_head, head)
+if git("ls-tree", "-r", "--name-only", head, "--", ".gdi"):
+    raise SystemExit("Do not commit local .gdi metadata")
+if any(entry.startswith("160000 ") for entry in git("ls-tree", "-r", "-z", head).split("\0")):
+    raise SystemExit("Submodule payload is not supported")
+if git("grep", "-I", "-l", "-e", "^version https://git-lfs.github.com/spec/v1$",
+       head, "--", allowed=(0, 1)):
+    raise SystemExit("LFS payload is not supported")
+
+bundle = output / "source.bundle"
+git("bundle", "create", str(bundle), ref)
+with bundle.open("rb") as handle:
+    signature = handle.readline(128)
+    if signature not in (b"# v2 git bundle\n", b"# v3 git bundle\n"):
+        raise SystemExit("Unsupported bundle signature")
+    header_size = 0
+    while True:
+        line = handle.readline(1024 * 1024 + 1)
+        header_size += len(line)
+        if not line or header_size > 1024 * 1024 or not line.endswith(b"\n"):
+            raise SystemExit("Invalid bundle header")
+        if line == b"\n":
+            break
+        if line.startswith(b"-"):
+            raise SystemExit("A full bundle must have no prerequisites")
+        if line.startswith(b"@") and (signature != b"# v3 git bundle\n" or
+                                      line != b"@object-format=sha1\n"):
+            raise SystemExit("Unsupported bundle capability")
+if git("bundle", "list-heads", str(bundle)).splitlines() != [head + " " + ref]:
+    raise SystemExit("Bundle must advertise exactly the agreed ref and HEAD")
+
+with tempfile.TemporaryDirectory(prefix="gdi-publication-verify-") as quarantine:
+    git("init", "--bare", "--object-format=sha1", "--template=", cwd=quarantine, isolated=True)
+    git("bundle", "verify", str(bundle), cwd=quarantine, isolated=True)
+    git("-c", "fetch.fsckObjects=true", "fetch", "--no-tags", "--no-write-fetch-head",
+        "--", str(bundle), "+" + ref + ":refs/heads/incoming", cwd=quarantine, isolated=True)
+    if git("rev-parse", "refs/heads/incoming", cwd=quarantine, isolated=True) != head:
+        raise SystemExit("Imported HEAD mismatch")
+    if git("cat-file", "-t", head, cwd=quarantine, isolated=True) != "commit":
+        raise SystemExit("HEAD is not a commit")
+    if base_head is not None:
+        git("merge-base", "--is-ancestor", base_head, head, cwd=quarantine, isolated=True)
+    git("fsck", "--full", "--strict", cwd=quarantine, isolated=True)
+if git("rev-parse", "--verify", ref + "^{commit}") != head:
+    raise SystemExit("Branch changed while preparing the bundle; retry preparation")
+
+checksum = hashlib.sha256()
+with bundle.open("rb") as handle:
+    for block in iter(lambda: handle.read(1024 * 1024), b""):
+        checksum.update(block)
+bundle_sha256 = checksum.hexdigest()
+bundle_bytes = bundle.stat().st_size
+manifest = {"version": 3, "repository_id": repository_id, "ref": ref, "head": head,
+    "bundle_sha256": bundle_sha256, "bundle_bytes": bundle_bytes, "bundle_kind": "full",
+    "base_publication": None, "base_head": None, "prerequisites": [],
+    "previous": previous, "nonce": uuid.uuid4().hex}
+raw = (json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+publication_id = hashlib.sha256(raw).hexdigest()
+branch_directory = ref[len("refs/heads/"):].replace("%", "%25").replace("/", "%2F")
+bundle_target = output / (bundle_sha256 + ".bundle")
+bundle.rename(bundle_target)
+manifest_target = output / (publication_id + ".json")
+manifest_target.write_bytes(raw)
+summary = {"repository_id": repository_id, "ref": ref, "head": head,
+    "previous": previous, "publication_id": publication_id,
+    "bundle_sha256": bundle_sha256, "bundle_bytes": bundle_bytes,
+    "bundle_file": str(bundle_target), "manifest_file": str(manifest_target),
+    "bundle_path": "bundles/" + bundle_target.name,
+    "manifest_path": "branches/" + branch_directory + "/" + manifest_target.name}
+(output / "publication-summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+print(json.dumps(summary, indent=2))
+```
+
+`bundle_kind:"full"`, пустые prerequisites и null base fields обязательны для
+этого рецепта. `previous` при этом равен прежнему tip, а не null, если история
+публикаций уже есть. Поля manifest не дополняйте временем, именем файла или CI job.
+
+#### 3. Опубликовать bundle, затем manifest
+
+Инструменты Drive должны создавать **обычные файлы** с указанными именами и
+точными bytes в существующем проекте. `PROJECT_PATH` ниже — путь внутри общего
+root, не имя локального rclone remote. JSON не преобразовывайте в Google Docs.
+
+1. Снова скачайте identity и всю metadata-цепочку ветки. Сверьте Repository ID,
+   имена и bytes со снимком шага 1. Если remote изменился, не публикуйте manifest:
+   согласуйте новую базу и подготовьте публикацию заново. Проверка одного tip ID
+   не обнаруживает повреждение старых manifests под прежними именами.
+2. Загрузите `bundle_file` как `PROJECT_PATH/<bundle_path>` из summary. Скачайте
+   его обратно, проверьте SHA256 и размер. Если имя уже существует, прочитайте
+   существующие bytes: одинаковые можно переиспользовать, отличающиеся — ошибка.
+   Не перезаписывайте существующие файлы и не создавайте дубли Drive-имён.
+3. Ещё раз проверьте свежую identity и metadata-цепочку перед manifest upload.
+   Загрузите `manifest_file` как `PROJECT_PATH/<manifest_path>` **последним**.
+   Скачайте его обратно и проверьте SHA256, размер и точное совпадение bytes.
+4. Повторно прочитайте всю цепочку, выполните её проверки и убедитесь, что новый
+   Publication ID — единственный tip, а HEAD/ref/Repository ID точно ожидаемые.
+   Только после этого сообщайте об успешной публикации или отправляйте её на CI.
+5. Сохраните summary, manifest bytes и bundle для retry. При потерянном ответе
+   upload сначала найдите файлы по именам и проверьте bytes; продолжайте с той же
+   nonce и Publication ID. Если ваша публикация уже единственный tip, повторный
+   manifest не нужен. Если после неё появился потомок, подтвердите её наличие
+   в проверенной цепочке и сообщите, что tip продвинулся; не перезаписывайте его.
+
+Ошибка до manifest оставляет максимум недоступный через GDI orphan bundle.
+Повреждённый/частичный manifest, конкурирующее продолжение или смена repository ID
+означают отказ, а не успешную передачу. Сохраните данные для диагностики; не удаляйте
+произвольные удалённые manifests. Drive не обеспечивает здесь CAS: даже свежие
+проверки до/после upload не дают распределённой блокировки, поэтому согласуйте
+последовательную запись в одну ветку с пользователем и другими агентами.
+
+#### 4. Уведомить worker или передать публикацию без CI
+
+Для CI используйте следующий раздел с **новыми HEAD и Publication ID**.
+Он публикует `request.json`, `request.ready` и `ci_requested` notification;
+произвольный commit без manifest worker проверять не должен.
+
+Для обычной передачи без CI можно опубликовать `repository_updated` notification
+в общей inbox, как обычный `gdi push`. Оно не запускает CI и не нужно для чтения
+публикации через pull. Все поля обязательны, CI-поля равны null:
+
+```json
+{
+  "inbox_version": 1,
+  "event_id": "FIRST_32_HEX_OF_PUBLICATION_ID",
+  "type": "repository_updated",
+  "repository_id": "REPOSITORY_ID",
+  "repository_path": "PROJECT_PATH",
+  "ref": "refs/heads/BRANCH",
+  "head": "NEW_HEAD",
+  "publication_id": "NEW_PUBLICATION_ID",
+  "worker_id": null,
+  "job_id": null,
+  "request_sha256": null
+}
+```
+
+Сериализуйте через `json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"`,
+затем UTF-8. EVENT_SHA256 — SHA256 этих bytes. Загрузите в общий root как
+`inbox/EVENT_ID-EVENT_SHA256.json`, после принятой Git-публикации. Для retry сохраняйте
+те же bytes/имя; успешно доставленное уведомление заново создавать после его
+потребления worker не требуется. Для запуска CI это уведомление не заменяет
+`ci_requested` из следующего раздела.
+
+#### 5. Передать пользователю готовые команды
+
+Укажите название подключения пользователя, ветку, точный HEAD и Publication ID,
+список изменений и выполненных проверок. При CI также сообщите JOB_ID, profile,
+revision и проверенный исход. Название подключения (например, `drive`) существует
+только у пользователя; инструменты облачного агента работают с самой папкой Drive.
+
+В существующем подключённом clone на совпадающей ветке и с чистым worktree:
+
+```bash
+# Только получить объекты и tracking ref, не меняя текущие файлы:
+gdi fetch drive dev
+# Получить последний опубликованный tip выбранной текущей ветки без CI gate:
+gdi pull drive
+# Получить ровно проверенный PASS выбранного задания:
+gdi pull drive --passed --job JOB_ID --profile full
+```
+
+Выберите подходящую команду; не предлагайте обычный pull как проверенный PASS.
+`dev` — пример выбранной ветки; перед pull пользователь должен находиться на ней.
+Если tip мог продвинуться после передачи и нужен точный HEAD **без CI**, сначала
+`gdi fetch drive dev`, сверка наличия commit и ancestry, затем
+`git merge --ff-only NEW_HEAD` на согласованной ветке с чистым деревом.
+Dirty/divergent дерево разбирается средствами Git: не предлагайте потерю изменений
+через reset/clean. В новом clone сначала подключите уже существующий repository
+через `remote add ... --repository-id ...`, без `--init`.
 
 ### Отправить существующую публикацию на локальный CI
 

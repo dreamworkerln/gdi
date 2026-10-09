@@ -59,8 +59,8 @@ def display(value):
     force = os.environ.get('FORCE_COLOR', '') not in ('', '0')
     color = 'NO_COLOR' not in os.environ and (force or (
         sys.stdout.isatty() and os.environ.get('TERM') != 'dumb'))
-    if value['dirty'] and color:
-        worktree = '\033[31m' + worktree + '\033[0m'
+    if color:
+        worktree = ('\033[31m' if value['dirty'] else '\033[32m') + worktree + '\033[0m'
     print('Worktree: ' + worktree)
     if not value['connections']:
         print('Connections: none; gdi remote add drive <rclone:path> --init')

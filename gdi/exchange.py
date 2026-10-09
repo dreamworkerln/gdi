@@ -179,10 +179,13 @@ class Exchange:
         if self.git.config(f"remote.{name}.url") is not None:
             raise GdiError(f"Git remote {name} conflicts with the gdi tracking namespace")
         transport = self.transport_factory(settings["url"])
-        repository = validate_repository(decode(transport.read("repository.json")))
-        if repository["repository_id"] != repository_id:
-            raise GdiError("repository ID mismatch; remote was replaced or configuration points to another project")
+        self.verify_identity(transport, repository_id)
         return transport, repository_id
+
+    def verify_identity(self, transport, repository_id):
+        repository = validate_repository(decode(transport.read('repository.json')))
+        if repository['repository_id'] != repository_id:
+            raise GdiError('repository ID mismatch; remote was replaced or configuration points to another project')
 
     @timed('publish inbox notification')
     def notify_publication(self, name, publication_id):
@@ -210,7 +213,9 @@ class Exchange:
         prefix = branch_directory(ref) + "/"
         records = {}
         if listing is None:
-            listing = transport.list("branches", recursive=True)
+            selected_listing = getattr(transport, 'publication_listing', None)
+            listing = (selected_listing(ref) if callable(selected_listing)
+                       else transport.list("branches", recursive=True))
         if metadata is None and callable(getattr(transport, 'read_many', None)):
             selected = [item['Path'] for item in listing if not item['IsDir'] and
                         item['Path'].startswith(prefix) and item['Path'].endswith('.json')]
@@ -281,6 +286,28 @@ class Exchange:
         if current is not None or len(seen) != len(records):
             raise GdiError("invalid publication chain: cycle or disconnected records")
         return chain
+
+    @timed('log')
+    def log(self, name, branch=None, *, limit=20):
+        """Fresh, verified publication history without downloading bundles."""
+        if type(limit) is not int or limit < 1:
+            raise GdiError('log count must be a positive integer')
+        branch = branch if branch is not None else self.git.branch()
+        ref = self.git.ref(branch)
+        transport, repository_id = self.connect(name)
+        chain = self.publications(transport, repository_id, ref)
+        records = []
+        subjects = {}
+        for publication_id, data in reversed(chain[-limit:]):
+            head = data['head']
+            if head not in subjects:
+                subjects[head] = (self.git.text('show', '--no-patch', '--format=%s', head)
+                                  if self.git.has_commit(head) else None)
+            records.append({'publication_id': publication_id, 'head': head,
+                            'bundle_kind': data['bundle_kind'], 'bundle_bytes': data['bundle_bytes'],
+                            'subject': subjects[head]})
+        return {'remote': name, 'url': self.remote(name)['url'], 'repository_id': repository_id,
+                'branch': branch, 'total': len(chain), 'publications': records}
 
     def gc(self, name, *, apply=False, keep_checkpoints=2, quiescent=False, report=print):
         from .gc import collect
@@ -370,6 +397,7 @@ class Exchange:
                 cache = self.restore(transport, repository_id, chain)
                 self.git.import_objects(cache.path, tip[1]["head"])
             if head == tip[1]["head"] and (not full or tip[1]["bundle_kind"] == "full"):
+                self.verify_identity(transport, repository_id)
                 self.last_publication = tip[1]
                 self.notify_publication(name, tip[0])
                 return head, tip[0], False
@@ -402,6 +430,7 @@ class Exchange:
             manifest.write_bytes(raw)
             # Recheck before exposing a publication. This detects observed competition,
             # but is not a compare-and-swap or a distributed lock.
+            self.verify_identity(transport, repository_id)
             if self.publications(transport, repository_id, ref) != chain:
                 raise GdiError("remote changed during push; retry after the other publisher finishes")
             with self.verified(bundle, data, ref, cache, tip[1] if tip else None) as quarantine:
@@ -409,9 +438,13 @@ class Exchange:
                     transport.upload(bundle, "bundles/" + data["bundle_sha256"] + ".bundle")
                 directory = "branches/" + branch_directory(ref)
                 with phase('publish manifest'):
+                    # Bundle transfer may outlive a folder replacement. Resolve
+                    # the current URL again before committing metadata to Drive.
+                    self.verify_identity(transport, repository_id)
                     if not getattr(transport, 'creates_parents', False):
                         transport.mkdir(directory)
                     transport.upload(manifest, directory + "/" + publication_id + ".json")
+                self.verify_identity(transport, repository_id)
                 latest = self.publications(transport, repository_id, ref)
                 if not latest or latest[-1][0] != publication_id:
                     raise GdiError("publication uploaded, but remote advanced concurrently; inspect with fetch")

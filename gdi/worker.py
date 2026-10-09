@@ -1,6 +1,8 @@
 """Single-host persistent worker with durable spool and independent log publication."""
 
 import fcntl
+from contextlib import nullcontext
+from functools import wraps
 import logging
 import hashlib
 import re
@@ -27,9 +29,19 @@ LOG = logging.getLogger("gdi.worker")
 CHUNK_BYTES = 256 * 1024
 
 
+def transport_operation(function):
+    @wraps(function)
+    def wrapped(self, *args, **kwargs):
+        with self.transport_session if self.transport_session is not None else nullcontext():
+            return function(self, *args, **kwargs)
+    return wrapped
+
+
 class Worker:
     def __init__(self, config, transport_factory=Rclone):
         self.config = config
+        from .rc_transport import TransportSession
+        self.transport_session = TransportSession(options=config.get('transport')) if transport_factory is Rclone else None
         self.worker_id = config['worker_id']
         self.root = Path(config['state_dir']) / self.worker_id
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -42,12 +54,16 @@ class Worker:
         self.ledger = Ledger(self.root / 'ledger.sqlite3')
         self.shared = config['config_version'] == 2
         self.repositories = {repo['repository_id']: repo for repo in config.get('repositories', [])}
-        self.transport_factory = (lambda url: Rclone(url, options=config['transport'])) if self.shared and transport_factory is Rclone else transport_factory
+        self.transport_factory = self.transport_session if self.transport_session is not None else transport_factory
         self.stop = threading.Event()
 
     def close(self):
-        self.ledger.close()
-        self.lock_file.close()
+        try:
+            if self.transport_session is not None:
+                self.transport_session.close()
+        finally:
+            self.ledger.close()
+            self.lock_file.close()
 
     def transport(self, repo):
         transport = self.transport_factory(repo['remote_url'])
@@ -56,6 +72,7 @@ class Worker:
             raise GdiError("worker repository identity mismatch")
         return transport
 
+    @transport_operation
     def advertise(self):
         if self.shared:
             self.config['execution_profile'] = runner.resolve_profile(self.config['execution_profile'], self.root)
@@ -79,6 +96,7 @@ class Worker:
             upload_json(transport, f'ci/workers/{self.worker_id}/status.json',
                         {'ci_version': 1, 'worker_id': self.worker_id, 'state': 'READY', 'updated_at': now()}, mutable=True)
 
+    @transport_operation
     def discover(self):
         if self.shared:
             return self.discover_inbox()
@@ -352,6 +370,7 @@ class Worker:
         self.acknowledge(row)
         LOG.info('job=%s result=%s published', req['job_id'], result['state'])
 
+    @transport_operation
     def process(self, row):
         req = request(decode(row['raw']), Git(self.root, isolated=True), row['repository_id'])
         if row['route'] is not None:

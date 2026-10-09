@@ -48,6 +48,16 @@ def diagnostics_arguments(command):
                           help='disable progress messages')
 
 
+def positive_count(value):
+    try:
+        count = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError('count must be a positive integer') from exc
+    if count < 1:
+        raise argparse.ArgumentTypeError('count must be a positive integer')
+    return count
+
+
 def parser():
     cli = argparse.ArgumentParser(
         prog="gdi", description="Verified Git bundle exchange through rclone.",
@@ -59,6 +69,7 @@ def parser():
   gdi fetch                                           # import without changing files
   gdi pull                                            # clean worktree, fast-forward
   gdi status                                          # branch, HEAD, connections and publication
+  gdi log                                             # latest publications of the current branch
   gdi cache clear drive                               # clear local verified cache
   gdi push drive --ci --worker user-host --profile full
   gdi ci wait drive JOB_ID --follow                    # watch CI and console
@@ -106,13 +117,18 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
     gc.add_argument("--apply", action="store_true", help="verify retained history from scratch, then delete planned bundles")
     gc.add_argument("--quiescent", action="store_true",
                     help="confirm ALL clients have paused push/fetch/pull/gc; required with --apply, not a distributed lock")
-    for name in ("push", "fetch", "pull"):
+    for name in ("push", "fetch", "pull", "log"):
         command = commands.add_parser(name, help={"push": "publish committed branch history",
-            "fetch": "verify and update a remote-tracking ref", "pull": "fetch current branch and fast-forward only"}[name])
+            "fetch": "verify and update a remote-tracking ref", "pull": "fetch current branch and fast-forward only",
+            "log": "show verified publication history, newest first"}[name])
         diagnostics_arguments(command)
         command.add_argument("remote", nargs="?", help="local gdi remote name (default: selected connection)")
         if name != "pull":
             command.add_argument("branch", nargs="?", help="branch name (default: current branch)")
+        if name == 'log':
+            command.add_argument('-n', '--max-count', type=positive_count, default=20,
+                                 help='show at most N latest publications (default: 20)')
+            command.add_argument('--json', action='store_true', help='write one machine-readable response')
         if name == "push":
             command.add_argument("--full", action="store_true", help="publish a self-contained checkpoint")
             command.add_argument("--checkpoint-every", type=int, default=CHECKPOINT_EVERY,
@@ -185,7 +201,9 @@ def main(argv=None):
         from .diagnostics import command_session
         with command_session(args.command + (' ' + args.operation if hasattr(args, 'operation') else ''),
                              path=getattr(args, 'profile_log', None), progress=getattr(args, 'progress', None)) as diagnostics:
-            code = execute(args)
+            from .rc_transport import TransportSession
+            with TransportSession() as transport_factory:
+                code = execute(args, transport_factory=transport_factory)
             if diagnostics is not None:
                 diagnostics.exit_code = code
             return code
@@ -199,7 +217,7 @@ def main(argv=None):
         return 1
 
 
-def execute(args):
+def execute(args, *, transport_factory=None):
     try:
         selector = None
         if args.command == "push" and args.ci or args.command == "ci" and args.operation == "submit":
@@ -238,10 +256,14 @@ def execute(args):
                     finally:
                         worker.close()
             else:
-                emit(service.action(args.operation), getattr(args, "json", False))
+                value = service.action(args.operation)
+                if args.operation == 'status':
+                    emit(value, args.json)
+                elif value.strip():
+                    print(value.rstrip('\n'))
             return 0
         git = Git.discover()
-        exchange = Exchange(git)
+        exchange = Exchange(git, transport_factory) if transport_factory is not None else Exchange(git)
         if args.command == "ci":
             from .ci import CiClient
             client = CiClient(exchange, args.remote)
@@ -261,7 +283,7 @@ def execute(args):
             emit(value, args.json)
             return 0
         with git.lock():
-            if args.command in ('push', 'fetch', 'pull'):
+            if args.command in ('push', 'fetch', 'pull', 'log'):
                 from .local_config import select
                 args.remote = select(git, args.remote)
                 branch = getattr(args, 'branch', None) or git.branch()
@@ -295,6 +317,22 @@ def execute(args):
                 else:
                     display(value)
                 return int(any(remote['state'] == 'error' for remote in value['connections']))
+            elif args.command == 'log':
+                value = exchange.log(args.remote, args.branch, limit=args.max_count)
+                if args.json:
+                    emit(value, True)
+                elif not value['publications']:
+                    print('No publications for this branch')
+                else:
+                    for entry in value['publications']:
+                        line = (f"{entry['head'][:12]}  {entry['bundle_kind']}  {entry['bundle_bytes']} bytes  "
+                                f"publication {entry['publication_id'][:12]}")
+                        if entry['subject'] is not None:
+                            # Commit subjects can contain terminal control bytes.
+                            subject = ''.join(char if ord(char) >= 32 and ord(char) != 127 else
+                                              f'\\x{ord(char):02x}' for char in entry['subject'])
+                            line += '  ' + subject
+                        print(line)
             elif args.command == "cache":
                 exchange.clear_cache(args.remote)
                 print(f"Cleared local verified-object cache for {args.remote}")

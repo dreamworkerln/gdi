@@ -3,7 +3,7 @@ QUICKSTART.md и docs/worker.md. Ниже сохранены исходные т
 точные действующие команды см. в справке gdi -h и документации, а не в эскизах CLI.
 
 Действующая схема: Git exchange v3 с читаемыми `branches/<encoded-branch>/`,
-собственная `.gdi/config.json` v2 с default remote, короткие push/fetch/pull и status, общая immutable inbox,
+собственная `.gdi/config.json` v2 с default remote, короткие push/fetch/pull/log и status, общая immutable inbox,
 global worker без списка репозиториев и CI из `.github/workflows` точного commit
 через act/Docker. Legacy registered stages относятся только к config/request v1.
 Runtime execution revision включает фактический act/Docker/base images; host workflow
