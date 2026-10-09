@@ -46,7 +46,7 @@ class RcError(GdiError):
 
 
 class RcServer:
-    def __init__(self, *, executable='rclone', timeout=180, trace_path=None, options=None):
+    def __init__(self, *, executable='rclone', timeout=None, trace_path=None, options=None):
         self.executable = executable
         self.timeout = timeout
         self.process = None
@@ -162,7 +162,13 @@ class RcServer:
         self.record({'event': 'rc_start', 'call_id': call_id,
                             'route': route, 'parameters': value})
         started = time.monotonic()
-        connection = UnixHTTP(self.path, self.timeout)
+        # Native transfers send their HTTP response only after the entire copy.
+        # Do not turn the metadata deadline into a size limit for large bundles:
+        # transfer progress/idle deadlines are enforced by rclone itself.
+        timeout = self.timeout
+        if timeout is None and route not in ('/sync/copy', '/operations/copyfile'):
+            timeout = 180
+        connection = UnixHTTP(self.path, timeout)
         status, error = None, None
         try:
             connection.request('GET' if get else 'POST', route,
@@ -252,17 +258,15 @@ class RcTransport(Rclone):
     def publication_listing(self, ref):
         from .branches import branch_directory
         branch = branch_directory(ref)
-        try:
-            rows = self.list('branches/' + branch)
-        except RcError as error:
-            if error.status != 404:
-                raise
-            # Only an absent selected branch is empty. A missing branches root
-            # or duplicate folder names must still fail like the CLI transport.
-            parents = self.list('branches')
-            if any(item['Path'] == branch for item in parents):
-                raise
+        # Check immediate folder names first: listing a duplicate branch folder
+        # directly could silently select just one of its Drive IDs.
+        parents = self.list('branches')
+        selected = [item for item in parents if item['Path'] == branch]
+        if not selected:
             return []
+        if selected[0]['IsDir'] is not True:
+            raise GdiError('publication branch must be a directory')
+        rows = self.list('branches/' + branch)
         return [{**item, 'Path': branch + '/' + item['Path']} for item in rows]
 
     def read_optional(self, relative):

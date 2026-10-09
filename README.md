@@ -17,6 +17,10 @@ Worker/systemd: [docs/worker.md](docs/worker.md). Архитектура: [ARCHI
 состояние проверок и дальнейшие задачи: [TODO.md](TODO.md).
 Профилирование времени команд и журнал всех вызовов rclone: [docs/profiling.md](docs/profiling.md).
 
+На Linux CLI и worker используют временные процессы native rclone RC с ограничением
+жизни операцией, свежей проверкой repository ID и остановкой при гибели родителя.
+`GDI_TRANSPORT=cli` выбирает прежний транспорт для диагностики; форматы данных сохранены.
+
 ```bash
 # В первом локальном Git-репозитории; отдельная пустая папка на Drive.
 gdi remote add drive gdrive:gdi/my-project --init

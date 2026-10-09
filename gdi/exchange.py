@@ -1,8 +1,6 @@
 """Protocol v3: verified full checkpoints and incremental publication chains."""
 
 from contextlib import contextmanager
-import hashlib
-import json
 from pathlib import Path
 import re
 import tempfile
@@ -13,91 +11,19 @@ from .branches import branch_directory
 from .cache import VerifiedCache
 from .transport import Rclone, validate_url
 from .diagnostics import note, phase, timed
+# Keep existing import locations available while sharing the implementation.
+from .publication import (PROTOCOL_VERSION, bundle_prerequisites, decode, digest,
+                          encode, file_digest, hex_value, prepare_publication,
+                          validate_repository, verify_bundle)
 
 
-PROTOCOL_VERSION = 3
 CHECKPOINT_EVERY = 20
-
-
-def digest(data):
-    return hashlib.sha256(data).hexdigest()
-
-
-def file_digest(path):
-    value = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            value.update(block)
-    return value.hexdigest()
-
-
-def encode(value):
-    return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
-
-
-def decode(data):
-    def unique(pairs):
-        result = {}
-        for key, value in pairs:
-            if key in result:
-                raise GdiError(f"duplicate metadata key: {key}")
-            result[key] = value
-        return result
-    if len(data) > 1024 * 1024:
-        raise GdiError("metadata exceeds 1 MiB")
-    try:
-        value = json.loads(data, object_pairs_hook=unique)
-    except (ValueError, UnicodeError, RecursionError) as exc:
-        raise GdiError("invalid metadata JSON") from exc
-    if not isinstance(value, dict):
-        raise GdiError("metadata must be a JSON object")
-    return value
-
-
-def hex_value(value, length):
-    return isinstance(value, str) and re.fullmatch(rf"[0-9a-f]{{{length}}}", value) is not None
 
 
 def remote_name(name):
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", name):
         raise GdiError("remote name must start with an ASCII letter and contain letters, digits, '_' or '-'")
     return name
-
-
-def validate_repository(data):
-    if (set(data) != {"version", "repository_id", "object_format"} or
-            type(data.get("version")) is not int or data["version"] != PROTOCOL_VERSION or
-            not hex_value(data.get("repository_id"), 32) or data.get("object_format") != "sha1"):
-        raise GdiError("unsupported repository metadata: expected protocol v3, SHA-1; recreate the remote in an empty folder")
-    return data
-
-
-def bundle_prerequisites(path):
-    """Read the actual header; a merge may introduce several prerequisites."""
-    prerequisites = []
-    size = 0
-    with Path(path).open("rb") as handle:
-        signature = handle.readline(128)
-        if signature not in (b"# v2 git bundle\n", b"# v3 git bundle\n"):
-            raise GdiError("unsupported Git bundle header")
-        while True:
-            raw = handle.readline(1024 * 1024 + 1)
-            size += len(raw)
-            if not raw or size > 1024 * 1024:
-                raise GdiError("invalid or oversized Git bundle header")
-            if raw == b"\n":
-                break
-            if not raw.endswith(b"\n"):
-                raise GdiError("invalid Git bundle header line")
-            if raw.startswith(b"@"):
-                if signature != b"# v3 git bundle\n" or raw != b"@object-format=sha1\n":
-                    raise GdiError("unsupported bundle capability (only unfiltered SHA-1 is supported)")
-            elif raw.startswith(b"-"):
-                oid = raw[1:].split(b" ", 1)[0].decode("ascii")
-                if not hex_value(oid, 40) or oid in prerequisites:
-                    raise GdiError("invalid or duplicate bundle prerequisite")
-                prerequisites.append(oid)
-    return sorted(prerequisites)
 
 
 class Exchange:
@@ -316,36 +242,7 @@ class Exchange:
 
     @contextmanager
     def verified(self, bundle, publication, ref, cache, previous=None):
-        with tempfile.TemporaryDirectory(prefix="gdi-verify-") as tmp:
-            root = Path(tmp)
-            if file_digest(bundle) != publication["bundle_sha256"]:
-                raise GdiError("bundle SHA256 mismatch")
-            if Path(bundle).stat().st_size != publication["bundle_bytes"]:
-                raise GdiError("bundle size mismatch")
-            prerequisites = bundle_prerequisites(bundle)
-            if prerequisites != publication["prerequisites"]:
-                raise GdiError("bundle prerequisites do not match publication")
-            quarantine = root / "repository"
-            quarantine.mkdir()
-            git = Git(quarantine, isolated=True)
-            git.call("init", "--quiet", "--bare", "--object-format=sha1", "--template=")
-            if publication["bundle_kind"] == "incremental":
-                cache.seed(quarantine)
-                for oid in prerequisites:
-                    if not git.has_commit(oid) or not git.ancestor(oid, publication["base_head"]):
-                        raise GdiError("bundle prerequisite is not in the declared base history")
-            git.call("bundle", "verify", str(bundle))
-            heads = git.call("bundle", "list-heads", str(bundle)).stdout.splitlines()
-            if heads != [publication["head"] + " " + ref]:
-                raise GdiError("bundle ref or exact HEAD does not match publication")
-            git.call("-c", "fetch.fsckObjects=true", "fetch", "--no-tags", "--no-write-fetch-head",
-                     "--", str(bundle), "+" + ref + ":refs/heads/incoming")
-            if git.text("cat-file", "-t", publication["head"]) != "commit":
-                raise GdiError("publication HEAD is not a commit")
-            if previous is not None:
-                if not git.has_commit(previous["head"]) or not git.ancestor(previous["head"], publication["head"]):
-                    raise GdiError("publication history is not a fast-forward")
-            git.check_payload(publication["head"])
+        with verify_bundle(bundle, publication, ref, cache, previous) as quarantine:
             yield quarantine
 
     @timed('restore verified Git objects')
@@ -410,40 +307,26 @@ class Exchange:
             deltas += 1
         is_full = full or tip is None or deltas >= checkpoint_every - 1
         with tempfile.TemporaryDirectory(prefix="gdi-push-") as tmp:
-            bundle = Path(tmp) / "source.bundle"
-            exclusions = [] if is_full else ["^" + tip[1]["head"]]
-            with phase('create/check Git bundle'):
-                self.git.call("bundle", "create", str(bundle), ref, *exclusions)
-                if self.git.call("bundle", "list-heads", str(bundle)).stdout.splitlines() != [head + " " + ref]:
-                    raise GdiError("branch changed while creating bundle; retry push")
-                self.git.call("bundle", "verify", str(bundle))
-            data = {"version": PROTOCOL_VERSION, "repository_id": repository_id, "ref": ref, "head": head,
-                    "bundle_sha256": file_digest(bundle), "previous": tip[0] if tip else None,
-                    "nonce": uuid.uuid4().hex, "bundle_bytes": bundle.stat().st_size,
-                    "bundle_kind": "full" if is_full else "incremental",
-                    "base_publication": None if is_full else tip[0],
-                    "base_head": None if is_full else tip[1]["head"],
-                    "prerequisites": bundle_prerequisites(bundle)}
-            raw = encode(data)
-            publication_id = digest(raw)
-            manifest = Path(tmp) / "publication.json"
-            manifest.write_bytes(raw)
+            prepared = prepare_publication(self.git, repository_id, ref, head, tmp,
+                                           previous=tip, incremental=not is_full)
+            data = prepared.data
+            publication_id = prepared.publication_id
             # Recheck before exposing a publication. This detects observed competition,
             # but is not a compare-and-swap or a distributed lock.
             self.verify_identity(transport, repository_id)
             if self.publications(transport, repository_id, ref) != chain:
                 raise GdiError("remote changed during push; retry after the other publisher finishes")
-            with self.verified(bundle, data, ref, cache, tip[1] if tip else None) as quarantine:
+            with self.verified(prepared.bundle, data, ref, cache, tip[1] if tip else None) as quarantine:
                 with phase('upload Git bundle'):
-                    transport.upload(bundle, "bundles/" + data["bundle_sha256"] + ".bundle")
-                directory = "branches/" + branch_directory(ref)
+                    transport.upload(prepared.bundle, prepared.bundle_relative)
+                directory = prepared.manifest_relative.rpartition('/')[0]
                 with phase('publish manifest'):
                     # Bundle transfer may outlive a folder replacement. Resolve
                     # the current URL again before committing metadata to Drive.
                     self.verify_identity(transport, repository_id)
                     if not getattr(transport, 'creates_parents', False):
                         transport.mkdir(directory)
-                    transport.upload(manifest, directory + "/" + publication_id + ".json")
+                    transport.upload(prepared.manifest, prepared.manifest_relative)
                 self.verify_identity(transport, repository_id)
                 latest = self.publications(transport, repository_id, ref)
                 if not latest or latest[-1][0] != publication_id:

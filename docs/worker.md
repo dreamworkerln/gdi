@@ -45,6 +45,15 @@ Rclone credentials остаются в его конфигурации; gdi их
 не записывайте в worker.json. Передавайте их через systemd EnvironmentFile и
 перечисляйте только имена в `secret_names`. Сам worker config на Drive не отправляется.
 
+На Linux worker использует временный native RC: один процесс для advertise,
+отдельный для discovery и отдельный для обработки каждого задания. Процесс
+закрывается в конце операции, включая ошибку; во время обработки задания его
+использует также publisher логов. FS cache сбрасывается при проверке repository ID,
+поэтому пересоздание папки не сохраняет старую привязку. Linux завершает RC и при
+SIGKILL worker. `transport` задаёт сетевые timeout/retries для RC; для диагностики
+можно задать `GDI_TRANSPORT=cli` в окружении службы и перезапустить её.
+Учёт процессов и RC-обращений описан в [profiling.md](profiling.md).
+
 ## CI берётся из проверяемого commit
 
 По умолчанию выполняются workflows каталога `.github/workflows` для события `push`.

@@ -24,7 +24,7 @@ from gdi.transport import Rclone
 from tests.rc_transport import RcServer, UnixHTTP
 
 
-@unittest.skipUnless(shutil.which('rclone'), 'rclone required')
+@unittest.skipUnless(sys.platform.startswith('linux') and shutil.which('rclone'), 'Linux and rclone required')
 class RcCandidateTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='gdi-rc-test-')
@@ -413,11 +413,17 @@ class RcCandidateTests(unittest.TestCase):
             self.assertEqual(len(self.chain()), 2)
         listings = [call.kwargs for call in api.call_args_list
                     if call.args[0] == 'operations/list']
-        self.assertEqual([item['remote'] for item in listings], ['branches/main'])
-        self.assertFalse(listings[0]['opt']['recurse'])
+        self.assertEqual([item['remote'] for item in listings], ['branches', 'branches/main'])
+        self.assertTrue(all(not item['opt']['recurse'] for item in listings))
         with self.assertRaises(GdiError):
             shutil.rmtree(self.remote / 'branches')
             self.chain()
+
+    def test_duplicate_branch_folder_is_rejected_before_selecting_a_tip(self):
+        row = {'Path': 'branches/main', 'IsDir': True}
+        with patch.object(self.transport, 'api', return_value={'list': [row, row]}):
+            with self.assertRaisesRegex(GdiError, 'duplicate paths'):
+                self.chain()
 
     def test_sigkill_parent_stops_rc_process(self):
         ready = self.root / 'parent-ready.json'
