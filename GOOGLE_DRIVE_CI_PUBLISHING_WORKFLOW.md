@@ -8,6 +8,18 @@ commit, постоянный worker пользователя запускает 
 Настройка host: [INSTALL.md](INSTALL.md), [docs/worker.md](docs/worker.md).
 Человеческий справочник: [QUICKSTART.md](QUICKSTART.md).
 
+## Где выполняются агент и CI
+
+Агент может работать в облачном контейнере провайдера, а постоянный worker —
+на компьютере пользователя. Google Drive связывает эти две среды: агент
+передаёт Git-публикации и CI requests, worker локально выполняет act/Docker
+и публикует консоль, artifacts и result. Рабочий clone пользователя не меняется.
+
+Далее описаны команды установленного CLI. Если в контейнере агента GDI нет
+и установить его нельзя, используйте раздел [«Облачный агент без установленного GDI»](#облачный-агент-без-установленного-gdi):
+он описывает получение commit, отправку уже опубликованной версии на CI
+и проверку результата через инструменты Drive, Python и Git без CLI.
+
 ## Перед первой отправкой
 
 Прочитайте действующие инструкции репозитория. Убедитесь, что задача разрешает
@@ -166,3 +178,174 @@ Execution revision связывает настройки с фактически
 Namespace GitHub из обычного origin закрепляется в request v2 и сохраняется при retry.
 Перед push CLI проверяет синтаксис selector и наличие обычных tracked YAML файлов
 в выбранном commit для global worker. YAML/job/event semantics проверяет act.
+
+## Облачный агент без установленного GDI
+
+Этот вариант рассчитан на агент в контейнере провайдера и уже запущенный worker
+на компьютере пользователя. Агент получает Git-историю и публикует запросы через
+инструменты Google Drive; worker локально выполняет act/Docker и возвращает
+консоль, artifacts и result через тот же Drive. Агенту не нужны локальный Docker,
+служба worker или credentials пользователя.
+
+Нужны инструменты для поиска/listing папок, скачивания исходных bytes обычных
+файлов (включая бинарные `.bundle`/artifacts) и загрузки обычных файлов с сохранением
+точных bytes. Поиск по тексту или преобразование JSON в Google Docs не заменяют
+эти операции. Сначала проверьте доступные возможности. Если записи на Drive нет,
+агент может читать уже созданное задание, но не должен заявлять, что отправил новое.
+
+Пользователь сообщает общий Drive root, путь проекта внутри root, Repository ID,
+ветку, точный HEAD и Publication ID, worker ID, profile и выбранные workflow/event.
+Например, root `gdi`, проект `my-project`, ref `refs/heads/dev`, worker `user-host`,
+profile `full`. `gdrive:`/`rclone:` — локальные имена remotes на компьютере
+пользователя; облачный агент находит саму папку Drive своими инструментами.
+Пути ниже относительны общему root; `PROJECT_PATH` — путь проекта внутри root.
+
+### Получить уже опубликованный commit
+
+1. Скачайте `PROJECT_PATH/repository.json`; проверьте protocol `version:2`,
+   `object_format:"sha1"` и известный Repository ID.
+2. Вычислите SHA256 полного ref, например `refs/heads/dev`, как UTF-8 bytes без LF.
+   Скачайте `PROJECT_PATH/updates/<ref-sha256>/<publication-id>.json`.
+   SHA256 исходных bytes manifest должен совпасть с Publication ID; сверяйте
+   `repository_id`, `ref` и `head` с выбранной публикацией.
+3. Для полного bundle проверьте `bundle_kind:"full"`, `base_publication:null`,
+   `base_head:null` и `prerequisites:[]`. Скачайте
+   `PROJECT_PATH/bundles/<bundle_sha256>.bundle`, проверьте SHA256 и `bundle_bytes`.
+   Публикация может быть incremental: тогда нужны полный checkpoint и цепочка
+   её баз по `base_publication`, применённая по порядку. Не импортируйте дельту
+   в пустой clone; порядок и проверки описаны в [docs/protocol.md](docs/protocol.md).
+4. Проверьте bundle средствами Git в отдельном временном repository, включая
+   фактические prerequisites, полный ref и точный HEAD. Полный bundle проверяется
+   в пустом bare repository; затем восстановите рабочий clone и выбранную ветку.
+   Для дельт проверяйте наличие prerequisites и ancestry к объявленной базе.
+5. Убедитесь, что рабочий HEAD равен выбранному SHA; прочитайте инструкции
+   репозитория, включая `AGENTS.md`, из этого commit. Не подменяйте выбранный
+   commit более новым tip. Проверка отдельного bundle не заменяет проверку всей
+   metadata-цепочки: учитывайте `previous`, отсутствующих предков и конкурирующие
+   продолжения по [Git protocol v2](docs/protocol.md).
+
+### Отправить существующую публикацию на локальный CI
+
+Для этой операции новый bundle не нужен. Новый commit сначала должен стать
+проверенной Git-публикацией по protocol v2; отправка произвольного SHA в CI request
+не заменяет публикацию. Не используйте legacy scripts или `ci/queue` для global
+worker v2. Ниже полностью описана отправка уже существующей публикации.
+
+1. Скачайте `ci/workers/WORKER_ID/capabilities.json` из общего root.
+   Проверьте `ci_version:1`, `inbox_version:1` и worker ID. Возьмите актуальный
+   `profile_revision` из `profiles[PROFILE_ID]`; это 64 lowercase hex.
+   Не выдумывайте revision и не запускайте второй worker в облаке.
+2. Создайте JOB_ID как `uuid.uuid4().hex` (32 lowercase hex) и `created_at` как
+   UTC ISO timestamp с часовым поясом. Подготовьте request с точными полями:
+
+```json
+{
+  "ci_version": 2,
+  "job_id": "JOB_ID",
+  "repository_id": "REPOSITORY_ID",
+  "ref": "refs/heads/BRANCH",
+  "head": "HEAD",
+  "publication_id": "PUBLICATION_ID",
+  "worker_id": "WORKER_ID",
+  "profile_id": "PROFILE_ID",
+  "profile_revision": "PROFILE_REVISION",
+  "created_at": "UTC_TIMESTAMP",
+  "retry_of": null,
+  "workflow": {
+    "path": ".github/workflows",
+    "event": "workflow_dispatch",
+    "job": "",
+    "inputs": {}
+  }
+}
+```
+
+Это шаблон: подставьте проверенные значения, а не буквальные placeholders.
+`workflow` выбирает tracked YAML из указанного commit: `path` — файл или каталог,
+`job:""` — без выбора отдельного job, `inputs` — строки. Выбирайте событие,
+поддерживаемое workflows; `workflow_dispatch` подходит для явного запуска, если
+оно объявлено в YAML. Для поведения push используйте `event:"push"`.
+При известном GitHub origin добавьте необязательное поле `github_repository`
+с `owner/repository` без URL и credentials. Другие поля request не добавляйте.
+
+Все создаваемые JSON сериализуются одинаково:
+
+```python
+def encode(obj):
+    import json
+    return (json.dumps(obj, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+```
+
+3. До upload сохраните локально JOB_ID и точные request bytes. Вычислите
+   REQUEST_SHA256 от этих bytes. Сохраните `request.ready` с точными полями
+   `{"ci_version":2,"job_id":"JOB_ID","request_sha256":"REQUEST_SHA256"}`.
+   Подготовьте canonical bytes уведомления:
+
+```json
+{
+  "inbox_version": 1,
+  "event_id": "JOB_ID",
+  "type": "ci_requested",
+  "repository_id": "REPOSITORY_ID",
+  "repository_path": "PROJECT_PATH",
+  "ref": "refs/heads/BRANCH",
+  "head": "HEAD",
+  "publication_id": "PUBLICATION_ID",
+  "worker_id": "WORKER_ID",
+  "job_id": "JOB_ID",
+  "request_sha256": "REQUEST_SHA256"
+}
+```
+
+4. Вычислите EVENT_SHA256 от точных bytes уведомления. Загрузите обычные файлы
+   строго по порядку, без перезаписи чужих файлов и без преобразования в Docs:
+
+```text
+PROJECT_PATH/ci/jobs/JOB_ID/request.json
+PROJECT_PATH/ci/jobs/JOB_ID/request.ready
+inbox/JOB_ID-EVENT_SHA256.json
+```
+
+Уведомление общей inbox публикуется последним. Перед его публикацией убедитесь,
+что предыдущие файлы доступны с ожидаемыми bytes. При сетевом сбое допубликовывайте
+те же bytes с тем же JOB_ID; не создавайте новый job для повторной загрузки.
+Сохраните/сообщите JOB_ID сразу после отправки. Если локальная сессия потеряна,
+сначала проверьте ранее отправленный job: новый UUID может вызвать повторный CI.
+
+### Читать прогресс и проверить результат
+
+Путь задания: `PROJECT_PATH/ci/jobs/JOB_ID/`. Периодически читайте `status.json`
+и новые `log-chunks/<sequence:08d>-<sha256>.bin`; сохраняйте исходные bytes,
+проверяйте hash имени и порядок sequence с 1 без gaps/дубликатов. Отсутствие
+`result.json` означает, что терминальный результат ещё не опубликован.
+Advisory status и отсутствие прогресса сами по себе не доказывают PASS/FAIL.
+
+После появления `result.json` выполните проверки как клиент GDI:
+
+- Сверьте `ci_version`, job/repository/worker/profile IDs, ref, HEAD,
+  Publication ID и profile revision с request; `request_sha256` должен совпасть
+  с hash сохранённых request bytes. Проверьте связь request.ready с request.
+- Скачайте все объявленные artifacts. Descriptors должны быть уникальными,
+  с `complete:true`, ожидаемыми `bytes` и SHA256. Разрешены `build.log`,
+  `final-status.json` и безопасные `artifacts/<name>`; log и final status обязательны.
+- Сверьте `final-status.json` с result по job ID, run ID, state и request SHA256.
+- Конкатенация всех проверенных log chunks должна совпасть с полным `build.log`
+  по размеру и SHA256. Если файлы ещё недоступны, повторите чтение, не объявляя PASS.
+- PASS требует `exit_code:0`, непустой список stages, хотя бы одну blocking stage
+  и `state:"PASS"`/`exit_code:0` у каждой blocking stage. Проверяйте схему и
+  terminal states по [docs/ci-protocol.md](docs/ci-protocol.md).
+
+Сообщите точный HEAD, JOB_ID, выбранные workflows/profile/revision, итог CI,
+результаты проверок и существенные warnings. При FAIL прочитайте полный log.
+Исправления разрешены только в рамках поставленной задачи: новый commit требует
+новой Git-публикации, затем нового CI request. Явный повтор завершённого задания
+использует новый JOB_ID и `retry_of` со старым ID; timeout ожидания агента не
+отменяет работающий CI. Не отправляйте повтор только из-за задержки upload result.
+
+Worker остаётся запущенным после PASS/FAIL. Облачный агент не создаёт `stop.request`,
+не останавливает службу и не меняет credentials/host config. Пользователь получает
+проверенный commit через свой установленный GDI:
+
+```bash
+gdi pull drive --passed --job JOB_ID --profile full
+```
