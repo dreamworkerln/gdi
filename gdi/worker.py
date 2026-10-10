@@ -60,6 +60,7 @@ class Worker:
         self.repositories = {repo['repository_id']: repo for repo in config.get('repositories', [])}
         self.transport_factory = self.transport_session if self.transport_session is not None else transport_factory
         self.stop = threading.Event()
+        self.queue_length = 0
 
     def close(self):
         try:
@@ -84,12 +85,13 @@ class Worker:
             for path in ('inbox', f'ci/workers/{self.worker_id}'):
                 transport.mkdir(path)
             capabilities = {'ci_version': 1, 'inbox_version': 1, 'cancel_version': 1, 'worker_id': self.worker_id,
-                            'profiles': {'full': self.config['execution_profile']['revision']}}
+                            'profiles': {'full': self.config['execution_profile']['revision']},
+                            'labels': self.config.get('labels', []), 'platforms': sorted(self.config['platforms'])}
             upload_json(transport, f'ci/workers/{self.worker_id}/capabilities.json', capabilities, mutable=True)
-            upload_json(transport, f'ci/workers/{self.worker_id}/status.json',
-                        {'ci_version': 1, 'worker_id': self.worker_id, 'state': 'READY', 'updated_at': now()}, mutable=True)
+            self.heartbeat()
             return
         capabilities = {'ci_version': 1, 'cancel_version': 1, 'worker_id': self.worker_id,
+                        'labels': self.config.get('labels', []),
                         'repositories': {repo['repository_id']: {name: profile['revision'] for name, profile in repo['profiles'].items()}
                                          for repo in self.config['repositories']}}
         for repo in self.config['repositories']:
@@ -97,8 +99,28 @@ class Worker:
             for path in ('ci/queue', 'ci/jobs', f'ci/workers/{self.worker_id}'):
                 transport.mkdir(path)
             upload_json(transport, f'ci/workers/{self.worker_id}/capabilities.json', capabilities, mutable=True)
-            upload_json(transport, f'ci/workers/{self.worker_id}/status.json',
-                        {'ci_version': 1, 'worker_id': self.worker_id, 'state': 'READY', 'updated_at': now()}, mutable=True)
+        self.heartbeat()
+
+    def registry_status(self, job_status=None):
+        revisions = ({'full': self.config['execution_profile']['revision']} if self.shared else
+                     {repo['repository_id']: {name: profile['revision'] for name, profile in repo['profiles'].items()}
+                      for repo in self.config['repositories']})
+        # Publisher threads cannot use the main thread's SQLite connection.
+        # The main loop captures the queue length before processing each row.
+        return {**(job_status or {}), 'ci_version': 1, 'registry_version': 1,
+                'worker_id': self.worker_id, 'state': 'BUSY' if job_status else 'READY',
+                'updated_at': job_status['updated_at'] if job_status else now(),
+                'busy': job_status is not None, 'queue_length': self.queue_length,
+                'profile_revisions': revisions, 'labels': self.config.get('labels', []),
+                **({'platforms': sorted(self.config['platforms'])} if self.shared else {})}
+
+    @transport_operation
+    def heartbeat(self):
+        status = self.registry_status()
+        targets = ([self.transport_factory(self.config['remote_url'])] if self.shared else
+                   [self.transport(repo) for repo in self.config['repositories']])
+        for transport in targets:
+            upload_json(transport, f'ci/workers/{self.worker_id}/status.json', status, mutable=True)
 
     @transport_operation
     def discover(self):
@@ -260,7 +282,7 @@ class Worker:
             status = decode((spool / 'status.json').read_bytes())
             upload_json(transport, prefix + '/status.json', status, mutable=True)
             target = self.transport_factory(self.config['remote_url']) if self.shared else transport
-            upload_json(target, f'ci/workers/{self.worker_id}/status.json', status, mutable=True)
+            upload_json(target, f'ci/workers/{self.worker_id}/status.json', self.registry_status(status), mutable=True)
 
     def check_cancellation(self, transport, row, req):
         path = self.spool(req['job_id']) / 'cancel.json'
@@ -409,8 +431,22 @@ class Worker:
                         'durable cancellation suppresses the original result; owned execution stopped',
                         delivery_spool=destination)
 
+    def check_successor(self, transport, req):
+        if req['retry_of'] is not None:
+            from .scheduling import validate_successor
+            previous = f"ci/jobs/{req['retry_of']}"
+            successor = optional_read(transport, previous + '/successor.json')
+            if successor is not None:
+                old_raw = transport.read(previous + '/request.json')
+                old = request(decode(old_raw), Git(self.root, isolated=True), req['repository_id'])
+                validate_successor(successor, old, old_raw, req)
+                cancel_raw = optional_read(transport, previous + '/cancel.json')
+                if cancel_raw is None or validate_cancellation(cancel_raw, old, old_raw).get('worker_cancellation_supported') is False:
+                    raise GdiError('automatic successor lacks supported durable cancellation')
+
     def deliver(self, repo, row, req, *, cancelled_result=False):
         transport = self.transport(repo)
+        self.check_successor(transport, req)
         spool = self.spool(req['job_id'])
         prefix = f"ci/jobs/{req['job_id']}"
         if not cancelled_result and (spool / 'cancelled/result.json').exists():
@@ -476,6 +512,7 @@ class Worker:
         if repo is None:
             raise GdiError('pending repository was removed from config; restore registration to deliver result')
         transport = self.transport(repo)
+        self.check_successor(transport, req)
         spool = self.spool(req['job_id'])
         if (spool / 'result.json').exists():
             self.deliver(repo, row, req)
@@ -568,13 +605,20 @@ class Worker:
     def tick(self):
         self.discover()
         pending = self.ledger.pending()
-        for row in pending:
+        for index, row in enumerate(pending):
+            self.queue_length = len(pending) - index - 1
             if self.stop.is_set():
                 break
             try:
                 self.process(row)
             except (GdiError, OSError) as exc:
                 LOG.error('job=%s pending state=%s: %s', row['job_id'], self.ledger.get(row['job_id'])['state'], exc)
+        # Advertise liveness in idle as well as after a run. Delivery/cleanup
+        # failures must not advertise a free executor until recovery succeeds.
+        remaining = self.ledger.pending()
+        self.queue_length = len(remaining)
+        if not any(row['state'] in ('RUNNING', 'FINALIZING') for row in remaining):
+            self.heartbeat()
         return bool(pending)
 
     def recover_delivery(self):

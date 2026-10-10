@@ -1,0 +1,12 @@
+{
+  "policy_version": 1,
+  "retry_mode": "repeatable",
+  "queue_timeout_seconds": 900,
+  "heartbeat_timeout_seconds": 600,
+  "worker_fresh_seconds": 300,
+  "max_attempts": 3,
+  "backoff_seconds": 30,
+  "selection": "load",
+  "required_labels": [],
+  "required_platforms": ["ubuntu-latest"]
+}

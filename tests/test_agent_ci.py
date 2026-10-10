@@ -160,7 +160,8 @@ class AgentCiTests(InboxTestCase):
         self.assertFalse(self.ci_events())
         self.transfer(value, 'request', 'ready')
         self.assertEqual(agent_ci.result(self.a, self.plan, self.snapshot('pending', value['job_id']), self.identity),
-                         {'job_id': value['job_id'], 'state': 'PENDING', 'verified': False})
+                         {'job_id': value['job_id'], 'state': 'PENDING', 'verified': False,
+                          'heartbeat': {'updated_at': None, 'age_seconds': None, 'timeout_seconds': 600, 'state': 'missing'}})
 
     def test_explicit_retry_requires_complete_terminal_result_and_creates_new_fixed_id(self):
         worker = self.worker(); value = self.prepare(worker)

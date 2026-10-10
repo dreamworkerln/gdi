@@ -77,10 +77,12 @@ def load_config(path):
     config = decode(Path(path).expanduser().read_bytes())
     if type(config.get("config_version")) is int and config["config_version"] == 2:
         return global_config(config)
-    allowed = {"config_version", "worker_id", "repositories", "poll_active_seconds", "poll_idle_max_seconds", "state_dir", "cache_dir"}
+    allowed = {"config_version", "worker_id", "repositories", "poll_active_seconds", "poll_idle_max_seconds", "state_dir", "cache_dir", "labels"}
     if set(config) - allowed or type(config.get("config_version")) is not int or config["config_version"] != 1:
         raise GdiError("invalid worker config; expected config_version 1")
     identifier(config.get("worker_id"))
+    from .scheduling import labels
+    config['labels'] = labels(config.get('labels', []))
     config["poll_active_seconds"] = seconds(config.get("poll_active_seconds", 30))
     config["poll_idle_max_seconds"] = seconds(config.get("poll_idle_max_seconds", 120))
     if config["poll_idle_max_seconds"] < config["poll_active_seconds"]:
@@ -153,6 +155,8 @@ def load_config(path):
                 if type(artifact["required"]) is not bool:
                     raise GdiError("artifact required must be boolean")
             # Publish only the digest. Secrets belong to inherited host environment, not env.
+            if config['labels']:
+                profile['worker_labels'] = config['labels']
             public = profile
             profile["revision"] = digest(encode(public))
     return config
@@ -160,10 +164,12 @@ def load_config(path):
 
 def global_config(config):
     allowed = {"config_version", "worker_id", "remote_url", "poll_active_seconds", "poll_idle_max_seconds",
-               "state_dir", "cache_dir", "timeout_seconds", "act_executable", "act_version", "docker_executable", "platforms", "secret_names", "artifact_server_port", "artifact_server_addr", "transport"}
+               "state_dir", "cache_dir", "timeout_seconds", "act_executable", "act_version", "docker_executable", "platforms", "secret_names", "artifact_server_port", "artifact_server_addr", "transport", "labels"}
     if set(config) - allowed:
         raise GdiError("invalid global worker config fields; repositories/profiles belong outside worker.json")
     identifier(config.get("worker_id"))
+    from .scheduling import labels
+    config['labels'] = labels(config.get('labels', []))
     validate_url(config.get("remote_url"))
     config["poll_active_seconds"] = seconds(config.get("poll_active_seconds", 30))
     config["poll_idle_max_seconds"] = seconds(config.get("poll_idle_max_seconds", 120))
@@ -188,6 +194,8 @@ def global_config(config):
     config["artifact_server_port"] = workflow["artifact_server_port"]
     config["artifact_server_addr"] = workflow["artifact_server_addr"]
     profile = {"workflow": workflow, "timeout_seconds": config["timeout_seconds"], "env": {}, "artifacts": []}
+    if config['labels']:
+        profile['worker_labels'] = config['labels']
     profile["revision"] = digest(encode(profile))
     config["execution_profile"] = profile
     options = config.setdefault("transport", {})

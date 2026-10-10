@@ -58,11 +58,21 @@ def assert_stable_status_upload(case):
     job_key = next(key for key in case.store.data if key.endswith(job_path))
     worker_key = next(key for key in case.store.data if key.endswith(worker_path))
     case.assertEqual(case.store.data[job_key], initial)
-    case.assertEqual(case.store.data[worker_key], initial)
+    worker_status = decode(case.store.data[worker_key])
+    initial_status = decode(initial)
+    for key, value in initial_status.items():
+        if key != 'state':
+            case.assertEqual(worker_status[key], value)
+    case.assertEqual(worker_status['state'], 'BUSY')
+    case.assertTrue(worker_status['busy'])
+    case.assertEqual(worker_status['registry_version'], 1)
     # The next pass publishes the new heartbeat rather than freezing old status.
     worker.publish_live(transport, row, set())
     case.assertEqual(case.store.data[job_key], source.read_bytes())
-    case.assertEqual(case.store.data[worker_key], source.read_bytes())
+    worker_status = decode(case.store.data[worker_key])
+    for key, value in decode(source.read_bytes()).items():
+        if key != 'state':
+            case.assertEqual(worker_status[key], value)
     case.assertEqual(decode(case.store.data[job_key])['stage'], 'second')
 
 

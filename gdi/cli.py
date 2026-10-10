@@ -146,7 +146,8 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             command.add_argument("--checkpoint-every", type=int, default=CHECKPOINT_EVERY,
                                  help=f"publish a full checkpoint every N updates (default: {CHECKPOINT_EVERY})")
             command.add_argument("--ci", action="store_true", help="submit exact published commit to the host worker")
-            command.add_argument("--worker", help="registered worker ID (required with --ci)")
+            command.add_argument("--worker", help="explicit worker ID; with --ci and no ID, select automatically")
+            command.add_argument('--policy', help='worker selection policy JSON; omit --worker for automatic selection')
             command.add_argument("--profile", default="full", help="CI execution profile (default: full)")
             workflow_arguments(command)
             command.add_argument("--json", action="store_true", help="write one machine-readable response")
@@ -156,17 +157,25 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             command.add_argument("--profile", help="required CI profile; required with --passed")
     ci = commands.add_parser("ci", help="submit jobs, inspect progress and retrieve verified CI results")
     ci_ops = ci.add_subparsers(dest="operation", required=True)
-    for operation in ("submit", "status", "wait", "logs", "retry", "cancel"):
+    for operation in ("submit", "status", "wait", "logs", "retry", "cancel", "workers", "supervise"):
         sub = ci_ops.add_parser(operation)
         diagnostics_arguments(sub)
         sub.add_argument("remote")
         if operation == "submit":
             sub.add_argument("--publication", required=True)
-            sub.add_argument("--worker", required=True)
+            sub.add_argument("--worker", help='explicit worker ID; omitted selects a fresh compatible worker')
             sub.add_argument("--profile", default="full")
             workflow_arguments(sub)
-        else:
+        elif operation != 'workers':
             sub.add_argument("job")
+        if operation in ('submit', 'workers', 'supervise'):
+            sub.add_argument('--policy', required=operation == 'supervise', help='CI scheduling policy JSON')
+        if operation == 'workers':
+            sub.add_argument('--profile', default='full')
+        if operation == 'supervise':
+            sub.add_argument('--watch', action='store_true', help='continue monitoring all attempts until completion or Ctrl+C')
+            sub.add_argument('--interval', type=float, default=30)
+            sub.add_argument('--timeout', type=float, default=3600, help='watch duration; does not cancel on watch timeout')
         if operation == 'retry':
             sub.add_argument('--worker', help='explicit replacement worker; preserve the old job and its log')
         if operation == 'cancel':
@@ -175,6 +184,9 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
         if operation in ("wait", "logs"):
             sub.add_argument("--follow", action="store_true")
             sub.add_argument("--restart", action="store_true", help="replay logs from the beginning instead of the saved follow position")
+        if operation in ('status', 'wait', 'logs'):
+            sub.add_argument('--heartbeat-timeout', type=float, default=600,
+                             help='stale job heartbeat threshold in seconds (default: 600); does not cancel CI')
         if operation == "wait":
             sub.add_argument("--timeout", type=float, default=3600)
         if operation == "logs":
@@ -202,7 +214,7 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             sub.add_argument('--destination', required=True, help='new worktree directory, must not exist')
     agent_ci = agent_ops.add_parser('ci', help='offline CI request and result exchange')
     agent_ci_ops = agent_ci.add_subparsers(dest='ci_operation', required=True)
-    for operation in ('prepare', 'check', 'accept', 'result', 'cancel', 'cancel-check'):
+    for operation in ('prepare', 'check', 'accept', 'result', 'cancel', 'cancel-check', 'workers', 'supervise'):
         sub = agent_ci_ops.add_parser(operation)
         diagnostics_arguments(sub)
         sub.set_defaults(json=True)
@@ -211,7 +223,7 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
         sub.add_argument('--repo', default='.')
         if operation == 'prepare':
             sub.add_argument('--publication', required=True)
-            sub.add_argument('--worker', required=True)
+            sub.add_argument('--worker', help='explicit worker ID; otherwise select using --workers snapshot')
             sub.add_argument('--profile', default='full')
             sub.add_argument('--output', required=True)
             sub.add_argument('--retry-of', help='explicit retry with a new job ID')
@@ -219,12 +231,25 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
         elif operation == 'cancel':
             sub.add_argument('--job', required=True, help='original CI job ID')
             sub.add_argument('--output', required=True, help='durable cancellation plan directory')
+        elif operation == 'supervise':
+            sub.add_argument('--job', required=True, help='initial CI job ID; keep fixed across attempts')
+            sub.add_argument('--output', required=True, help='durable supervisor session directory')
+        elif operation == 'workers':
+            sub.add_argument('--profile', default='full')
         else:
             sub.add_argument('--plan', required=True)
+        if operation in ('prepare', 'workers', 'supervise'):
+            sub.add_argument('--workers', required=operation != 'prepare', help='complete downloaded worker registry snapshot')
+            sub.add_argument('--policy', required=operation == 'supervise', help='CI scheduling policy JSON')
+        if operation == 'result':
+            sub.add_argument('--heartbeat-timeout', type=float, default=600,
+                             help='stale job heartbeat threshold in seconds (default: 600); does not cancel CI')
         if operation == 'accept':
             sub.add_argument('--inbox-proof', required=True, help='complete inbox listing and downloaded event proof')
+        if operation == 'supervise':
+            sub.add_argument('--inbox-proof', help='proof of automatic retry notification; activates the replacement')
         if operation in ('prepare', 'check', 'accept', 'cancel'):
-            sub.add_argument('--capabilities', required=True, help='fresh downloaded worker capabilities JSON')
+            sub.add_argument('--capabilities', required=operation != 'prepare', help='fresh downloaded worker capabilities JSON')
     worker = commands.add_parser("worker", help="host worker and systemd user service (works outside git)")
     worker_ops = worker.add_subparsers(dest="operation", required=True)
     worker_help = {
@@ -261,9 +286,12 @@ def emit(value, machine=False):
 def main(argv=None):
     command_parser = parser()
     args = command_parser.parse_args(argv)
-    if args.command == "push" and (args.ci and (not args.worker or not args.profile) or
-                                  not args.ci and (args.worker or args.profile != "full" or args.workflow or args.event or args.job or args.input)):
-        command_parser.error("--ci requires --worker; CI options require --ci (profile defaults to full)")
+    if args.command == "push" and (args.ci and not args.profile or
+                                  not args.ci and (args.worker or args.policy or args.profile != "full" or args.workflow or args.event or args.job or args.input)):
+        command_parser.error("CI options require --ci (profile defaults to full)")
+    if (args.command == 'push' and args.worker and args.policy or
+            args.command == 'ci' and args.operation == 'submit' and args.worker and args.policy):
+        command_parser.error('--policy applies to automatic selection; omit --worker or use policy pinned_worker')
     if args.command == "pull" and (args.passed and (not args.job or not args.profile) or
                                   not args.passed and (args.job or args.profile)):
         command_parser.error("--passed requires --job and --profile; these options are used together")
@@ -321,9 +349,24 @@ def execute(args, *, transport_factory=None):
                 git = Git.discover(args.repo)
                 if args.ci_operation == 'prepare':
                     with git.lock():
-                        value = agent_ci.prepare(git, args.snapshot, args.repository_id, args.output,
-                                                 args.publication, args.worker, args.profile, args.capabilities,
-                                                 workflow=selected_workflow(args), retry_of=args.retry_of)
+                        if args.worker:
+                            if not args.capabilities:
+                                raise GdiError('--worker requires --capabilities')
+                            value = agent_ci.prepare(git, args.snapshot, args.repository_id, args.output,
+                                                     args.publication, args.worker, args.profile, args.capabilities,
+                                                     workflow=selected_workflow(args), retry_of=args.retry_of)
+                        else:
+                            if not args.workers or args.retry_of:
+                                raise GdiError('automatic prepare requires --workers; automatic timeout retry uses supervise')
+                            value = agent_ci.dispatch(git, args.snapshot, args.repository_id, args.output,
+                                                      args.publication, args.profile, args.workers, args.policy,
+                                                      workflow=selected_workflow(args))
+                elif args.ci_operation == 'workers':
+                    value = agent_ci.workers(args.workers, args.profile, args.policy)
+                elif args.ci_operation == 'supervise':
+                    with git.lock():
+                        value = agent_ci.supervise(git, args.snapshot, args.repository_id, args.output,
+                                                  args.job, args.workers, args.policy, inbox_proof=args.inbox_proof)
                 elif args.ci_operation == 'cancel':
                     value = agent_ci.cancel(git, args.snapshot, args.repository_id, args.output,
                                             args.job, args.capabilities)
@@ -332,6 +375,7 @@ def execute(args, *, transport_factory=None):
                 else:
                     value = getattr(agent_ci, args.ci_operation)(git, args.plan, args.snapshot, args.repository_id,
                         **({'capabilities_path': args.capabilities} if args.ci_operation != 'result' else {}),
+                        **({'heartbeat_timeout': args.heartbeat_timeout} if args.ci_operation == 'result' else {}),
                         **({'inbox_proof': args.inbox_proof} if args.ci_operation == 'accept' else {}))
             else:
                 value = getattr(agent, args.operation)(args.plan, args.snapshot, args.repository_id)
@@ -340,7 +384,8 @@ def execute(args, *, transport_factory=None):
         selector = None
         if args.command == "push" and args.ci or args.command == "ci" and args.operation == "submit":
             from .ci_protocol import identifier
-            identifier(args.worker)
+            if args.worker:
+                identifier(args.worker)
             identifier(args.profile)
             selector = selected_workflow(args)
         if args.command == "worker":
@@ -389,19 +434,35 @@ def execute(args, *, transport_factory=None):
             client = CiClient(exchange, args.remote)
             if args.operation in ("submit", "retry"):
                 with git.lock():
-                    value = (client.submit(args.publication, args.worker, args.profile, workflow=selector) if args.operation == "submit"
-                             else client.retry(args.job, worker_id=args.worker))
+                    if args.operation == 'retry':
+                        value = client.retry(args.job, worker_id=args.worker)
+                    elif args.worker:
+                        value = client.submit(args.publication, args.worker, args.profile, workflow=selector)
+                    else:
+                        from .scheduling import load_policy
+                        value = client.dispatch(args.publication, args.profile, settings=load_policy(args.policy), workflow=selector)
+            elif args.operation == 'workers':
+                from .scheduling import load_policy
+                value = {'workers': client.workers(args.profile, settings=load_policy(args.policy))}
+            elif args.operation == 'supervise':
+                from .scheduling import load_policy
+                value, code = client.supervise_wait(args.job, load_policy(args.policy), watch=args.watch,
+                                                     interval=args.interval, timeout=args.timeout)
+                emit(value, args.json)
+                return code
             elif args.operation == 'cancel':
                 with git.lock():
                     value = client.cancel(args.job, withdraw=args.withdraw)
             elif args.operation == "status":
-                value = client.status(args.job)
+                value = client.status(args.job, heartbeat_timeout=args.heartbeat_timeout)
             elif args.operation == "wait":
-                value, code = client.wait(args.job, timeout=args.timeout, follow=args.follow, restart=args.restart)
+                value, code = client.wait(args.job, timeout=args.timeout, follow=args.follow, restart=args.restart,
+                                          heartbeat_timeout=args.heartbeat_timeout)
                 emit(value, args.json)
                 return code
             else:
-                client.logs(args.job, output=args.output, follow=args.follow, restart=args.restart)
+                client.logs(args.job, output=args.output, follow=args.follow, restart=args.restart,
+                            heartbeat_timeout=args.heartbeat_timeout)
                 return 0
             emit(value, args.json)
             return 0
@@ -466,7 +527,10 @@ def execute(args, *, transport_factory=None):
                     from .ci import CiClient
                     from .workflow import validate_selection
                     client = CiClient(exchange, args.remote)
-                    _, shared, _ = client.execution_settings(args.worker, args.profile, selector)
+                    if args.worker:
+                        _, shared, _ = client.execution_settings(args.worker, args.profile, selector)
+                    else:
+                        shared = True
                     if shared is not None:
                         head = git.oid(git.ref(args.branch or git.branch()))
                         if head is None:
@@ -479,7 +543,11 @@ def execute(args, *, transport_factory=None):
                          "bundle_kind": data["bundle_kind"], "bundle_bytes": data["bundle_bytes"]}
                 if args.ci:
                     from .ci import CiClient
-                    value.update(client.submit(pub, args.worker, args.profile, workflow=selector))
+                    if args.worker:
+                        value.update(client.submit(pub, args.worker, args.profile, workflow=selector))
+                    else:
+                        from .scheduling import load_policy
+                        value.update(client.dispatch(pub, args.profile, settings=load_policy(args.policy), workflow=selector))
                 if args.json:
                     emit(value, True)
                 else:

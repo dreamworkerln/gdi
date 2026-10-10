@@ -111,8 +111,11 @@ gdi ci logs drive JOB_ID --output /tmp/ci-JOB_ID.log
 
 `user-host` — пример: фактический ID на CI host показывает `gdi worker check --json`
 из `~/.config/gdi/worker.json`; служба проверяется отдельно через `gdi worker status`.
-Несколько host могут использовать общий root с разными worker_id. Выбор исполнителя
-явный, автоматического обнаружения, round robin и failover пока нет.
+Несколько host могут использовать общий root с разными worker_id. Без `--worker`
+CI выбирает свежий совместимый host; доступны выбор по загрузке, round robin,
+предпочтительный host с fallback и жёсткая привязка. `gdi ci workers drive --json`
+показывает доступность. Перенос по таймауту включается отдельным `ci supervise`
+с явной политикой повторяемости: [docs/scheduling.md](docs/scheduling.md).
 
 При FAIL агент исправляет код, делает новый commit и повторяет. Worker хранит Git
 cache, выполняет exact SHA в отдельном checkout, публикует stdout+stderr chunks,
@@ -202,8 +205,8 @@ GC не запускается автоматически. Он удаляет �
   Metadata, orphan bundles и локальный кеш накапливаются; фонового GC нет.
 - Drive Changes API/push notifications и CI/local spool retention пока не реализованы.
   Общие immutable уведомления через rclone inbox уже поддерживаются.
-  Отмена и явная замена worker реализованы; автоматические таймауты переноса,
-  обнаружение/выбор workers и координация нагрузки остаются в TODO.
+  Отмена, выбор workers и перенос по таймауту поддерживаются явной политикой supervisor.
+  Для одного job нужен один coordinator; распределённой резервации слотов нет.
 - SHA256 проверяет целостность, а не авторство. Доступ к папке Drive предоставляйте
   доверенным участникам. Подписи публикаций и защита от удаления всей remote-истории
   не реализованы. Не выполняйте обычные Git-команды, меняющие worktree, одновременно с pull.

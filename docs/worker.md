@@ -5,8 +5,9 @@ Worker — постоянный процесс на Linux host пользова�
 Engine. Docker Compose требуется только если его использует сам workflow.
 На каждом host задайте отдельный worker_id. Несколько workers могут читать общий
 root, но выполняют только запросы, адресованные их ID. Два процесса/host с одним
-ID не допускаются: локальный lock не защищает разные компьютеры. Выбор исполнителя
-и замены сейчас явный; автоматическое обнаружение, балансировка и failover — TODO.
+ID не допускаются: локальный lock не защищает разные компьютеры. Клиент выбирает
+исполнителя явно либо по свежему heartbeat/загрузке/меткам. Автоматический перенос
+по таймауту использует отдельную политику [supervisor](scheduling.md).
 
 ## Общая конфигурация
 
@@ -28,6 +29,7 @@ cp "$INSTALL_DIR/examples/worker.json" "$HOME/.config/gdi/worker.json"
 | --- | --- |
 | `config_version: 2` | Общая конфигурация worker |
 | `worker_id` | ASCII ID worker, например `user-host` |
+| `labels` | Необязательные публичные ASCII метки окружения/устройств; default `[]`, непустые входят в revision |
 | `remote_url` | Общий корень обмена rclone, например `gdrive:gdi` |
 | `timeout_seconds` | Общий лимит CI, по умолчанию 3600 |
 | `poll_active_seconds` | Базовая пауза polling и live-публикаций CI, по умолчанию 30 секунд |
@@ -80,6 +82,13 @@ CI создаёт лишние обращения. Ответы `403 User rate l
 после завершения CI. Паузы считаются после сетевой операции, поэтому фактический
 интервал больше на длительность этой операции. Для уменьшения постоянных listings
 в дальнейшем предусмотрены [Drive change notifications](https://developers.google.com/workspace/drive/api/guides/push).
+
+В простое worker также обновляет status на Drive после discovery. Registry heartbeat
+содержит `registry_version: 1`, READY/BUSY, `busy`, известную локальную очередь,
+revisions profiles, метки и platforms. При выполнении эти сведения публикуются
+вместе с захваченным job heartbeat; старое updated_at не обновляется просто из-за
+повторной отправки готового результата. Доступность и ограничения очереди:
+[scheduling.md](scheduling.md).
 
 Совместимость act `0.2.89` с новыми artifact actions и воспроизводимая
 сборка с upstream-патчем описаны в [act-compatibility.md](act-compatibility.md).
@@ -303,7 +312,8 @@ Unit использует `KillMode=mixed`: SIGTERM получает тольк�
 
 Job можно явно повторить через `gdi ci retry` после проверки terminal result
 либо доставки поддерживаемой отмены; `--worker ID` выбирает нового исполнителя.
-Истечение клиентского ожидания и старый heartbeat сами задание не отменяют.
+Обычные wait/logs не отменяют job по таймауту. Автоматическая отмена и замена
+выполняются только запущенным `ci supervise`/`agent ci supervise` с заданной политикой.
 Бесконечный рост локального spool и CI artifacts пока ограничивается обслуживанием
 оператором после получения результатов; автоматической retention policy нет.
 Удаление ledger при сохранённых remote claims требует ручной диагностики и не

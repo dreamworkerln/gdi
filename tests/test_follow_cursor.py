@@ -8,6 +8,22 @@ from tests.test_ci import CiTestCase
 
 
 class FollowCursorTests(CiTestCase):
+    def test_first_follow_poll_reuses_request_but_next_poll_rechecks_ready(self):
+        _, client, req, _ = self.live()
+        prefix = 'ci/jobs/' + req['job_id']
+        def tamper_after_first_poll(_):
+            paths = [call.args[0] for call in reads.call_args_list]
+            self.assertEqual(paths.count(prefix + '/request.json'), 1)
+            self.assertEqual(paths.count(prefix + '/request.ready'), 1)
+            self.store.data[prefix + '/request.ready'] = b'{}'
+        with patch.object(self.store, 'read', wraps=self.store.read) as reads:
+            with patch('gdi.ci.time.sleep', side_effect=tamper_after_first_poll):
+                with self.assertRaisesRegex(GdiError, 'ready/request'):
+                    client.wait(req['job_id'], follow=True, stream=io.StringIO(), timeout=10)
+            paths = [call.args[0] for call in reads.call_args_list]
+            self.assertEqual(paths.count(prefix + '/request.json'), 2)
+            self.assertEqual(paths.count(prefix + '/request.ready'), 2)
+
     def live(self):
         worker = self.worker()
         client, req = self.submit(worker)

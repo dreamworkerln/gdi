@@ -53,3 +53,34 @@ def export_snapshot(root, transport, *, repository_path='project', ref='refs/hea
     path = root / 'snapshot.json'
     path.write_bytes(encode(value))
     return path
+
+
+def export_workers(root, transport, *, page_size=2):
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    def pages(folder):
+        entries = [{'id': 'id-' + folder + '/' + row['Path'], 'name': row['Path'],
+                    'is_dir': row['IsDir'], 'bytes': None if row['IsDir'] else len(transport.read(folder + '/' + row['Path']))}
+                   for row in transport.list(folder)]
+        return [{'page_token': str(offset) if offset else None,
+                 'next_page_token': str(offset + page_size) if offset + page_size < len(entries) else None,
+                 'entries': entries[offset:offset + page_size]}
+                for offset in range(0, max(1, len(entries)), page_size)]
+    value = {'workers_version': 1, 'folder_id': 'id-ci/workers', 'pages': pages('ci/workers'), 'workers': []}
+    for row in transport.list('ci/workers'):
+        if not row['IsDir']:
+            continue
+        folder = 'ci/workers/' + row['Path']
+        item = {'worker_id': row['Path'], 'folder_id': 'id-' + folder, 'pages': pages(folder), 'files': []}
+        for entry in transport.list(folder):
+            if entry['IsDir']:
+                continue
+            target = root / row['Path'] / entry['Path']
+            target.parent.mkdir(exist_ok=True)
+            transport.download(folder + '/' + entry['Path'], target)
+            item['files'].append({'file_id': 'id-' + folder + '/' + entry['Path'],
+                                  'local_path': target.relative_to(root).as_posix()})
+        value['workers'].append(item)
+    path = root / 'workers.json'
+    path.write_bytes(encode(value))
+    return path

@@ -16,6 +16,7 @@ from .ci_protocol import (atomic_write, job_id, marker, request, upload_json,
                           cancellation, validate_cancellation, cancellation_capability)
 from .exchange import decode, digest, encode, file_digest, hex_value
 from .git import GdiError
+from .diagnostics import phase
 
 
 def publication(exchange, transport, repository_id, publication_id):
@@ -117,6 +118,19 @@ class CiResultReader:
             raise GdiError("CI ready/request checksum or job identity mismatch")
         return req, raw
 
+    def live_status(self, req, raw, *, heartbeat_timeout=600, listing=None):
+        """Advisory status with shared freshness diagnostics, never terminal proof."""
+        from .scheduling import heartbeat
+        path = f"ci/jobs/{req['job_id']}/status.json"
+        content = (optional_read(self.transport, path) if listing is None else
+                   self.transport.read(path) if 'status.json' in listing else None)
+        value = decode(content) if content is not None else None
+        if value is not None and (value.get('job_id') != req['job_id'] or
+                value.get('request_sha256') != digest(raw) or
+                value.get('worker_id', req['worker_id']) != req['worker_id']):
+            raise GdiError('CI status/request identity mismatch')
+        return value, heartbeat(value.get('updated_at') if value is not None else None, heartbeat_timeout)
+
     def result_source(self, req, raw, *, listing=None):
         """Cancellation fences ordinary results, including an upload already in flight."""
         prefix = f"ci/jobs/{req['job_id']}"
@@ -144,8 +158,13 @@ class CiResultReader:
             return None
         return prefix, result
 
-    def result(self, jid, *, listing=None):
-        req, raw = self.load_request(jid)
+    def result(self, jid, *, listing=None, _request=None):
+        # A caller can reuse the request/ready pair it verified in this step.
+        # Revalidate result/cancellation after downloading as before; no mutable
+        # status or cross-step request is cached.
+        req, raw = self.load_request(jid) if _request is None else _request
+        if req['job_id'] != job_id(jid):
+            raise GdiError('verified CI request belongs to a different job')
         source = self.result_source(req, raw, listing=listing)
         if source is None:
             return None
@@ -210,9 +229,9 @@ class CiResultReader:
         return self.cancellation_record(req, raw)
 
     def retry_request(self, jid):
-        req, _ = self.load_request(jid)
-        if self.result(jid) is None:
-            cancelled = self.cancellation_requested(jid)
+        req, raw = self.load_request(jid)
+        if self.result(jid, _request=(req, raw)) is None:
+            cancelled = self.cancellation_record(req, raw)
             if cancelled is None:
                 raise GdiError('cannot retry an active job; verify its terminal result or durable cancellation first')
             if cancelled.get('worker_cancellation_supported') is False:
@@ -282,7 +301,8 @@ class CiClient(CiResultReader):
             raise GdiError("workflow selection requires a global inbox worker")
         return revision, shared, selector
 
-    def submit(self, publication_id, worker_id, profile_id="full", *, retry_of=None, workflow=None, github_repository=None):
+    def submit(self, publication_id, worker_id, profile_id="full", *, retry_of=None, workflow=None, github_repository=None,
+               prepared_request=None):
         revision, shared, selector = self.execution_settings(worker_id, profile_id, workflow)
         pub, _ = publication(self.exchange, self.transport, self.repository_id, publication_id)
         namespace = self.git.github_repository() if github_repository is None else github_repository
@@ -296,10 +316,19 @@ class CiClient(CiResultReader):
         if outbox.exists():
             raw = outbox.read_bytes()
             req = request(decode(raw), self.git, self.repository_id)
+            if prepared_request is not None and req != prepared_request:
+                raise GdiError('an existing retry outbox conflicts with the automatic successor')
         else:
-            req = prepare_request(self.git, self.repository_id, publication_id, pub, worker_id,
+            req = prepared_request or prepare_request(self.git, self.repository_id, publication_id, pub, worker_id,
                                   profile_id, revision, shared=shared is not None,
                                   workflow=selector, github_repository=namespace, retry_of=retry_of)
+            request(req, self.git, self.repository_id)
+            if (req['publication_id'] != publication_id or req['worker_id'] != worker_id or
+                    req['profile_id'] != profile_id or req['profile_revision'] != revision or req['retry_of'] != retry_of or
+                    req['head'] != pub['head'] or req['ref'] != pub['ref'] or
+                    req['ci_version'] != (2 if shared is not None else 1) or
+                    (shared is not None and (req['workflow'] != selector or req.get('github_repository', '') != namespace))):
+                raise GdiError('prepared CI request differs from current execution settings')
             raw = encode(req)
             atomic_write(outbox, raw)
         jid = req["job_id"]
@@ -322,6 +351,15 @@ class CiClient(CiResultReader):
             if shared is None:
                 upload_json(self.transport, f"ci/queue/{jid}.json", ready)
             upload_json(self.transport, prefix + "/request.ready", ready)
+            checked, checked_raw = self.load_request(jid)
+            if checked != req or checked_raw != raw:
+                raise GdiError('immutable CI request changed before queue notification')
+            if req['retry_of'] is not None:
+                successor = optional_read(self.transport, f"ci/jobs/{req['retry_of']}/successor.json")
+                if successor is not None:
+                    from .scheduling import validate_successor
+                    old, old_raw = self.load_request(req['retry_of'])
+                    validate_successor(successor, old, old_raw, req)
             if shared is not None:
                 from .inbox import notification, publish
                 from .local_config import repository_path
@@ -330,24 +368,124 @@ class CiClient(CiResultReader):
                 publish(shared, event)
         return req
 
+    def workers(self, profile_id='full', *, settings=None):
+        from .scheduling import discover, inspect_workers, policy
+        registry = discover(self.exchange.transport_factory(self.settings['inbox_root']))
+        return inspect_workers(registry, profile_id, policy(settings))
+
+    def dispatch(self, publication_id, profile_id='full', *, settings=None, workflow=None):
+        from .agent import plan_lock
+        from .scheduling import choose, policy
+        settings = policy(settings)
+        selector = workflow_selection(workflow)
+        namespace = self.git.github_repository()
+        key = digest(encode([publication_id, profile_id, selector, namespace, settings]))
+        with plan_lock(self.root / 'dispatch' / key) as directory:
+            directory.mkdir(parents=True, exist_ok=True)
+            saved = directory / 'request.json'
+            if saved.exists():
+                prepared = request(decode(saved.read_bytes()), self.git, self.repository_id)
+            else:
+                state_path = self.root / 'scheduler.json'
+                previous = decode(state_path.read_bytes()).get('last_worker') if state_path.exists() else None
+                selected = choose(self.workers(profile_id, settings=settings), settings, previous=previous)
+                if selected is None:
+                    raise GdiError('no fresh compatible worker is available; inspect gdi ci workers')
+                revision, shared, selector = self.execution_settings(selected['worker_id'], profile_id, workflow)
+                if revision != selected['profile_revision'] or shared is None:
+                    raise GdiError('worker revision changed during selection; inspect fresh capabilities')
+                pub, _ = publication(self.exchange, self.transport, self.repository_id, publication_id)
+                prepared = prepare_request(self.git, self.repository_id, publication_id, pub, selected['worker_id'],
+                                           profile_id, revision, workflow=selector, github_repository=namespace)
+                # Reuse a preexisting explicit outbox for the same execution.
+                key_fields = [publication_id, selected['worker_id'], profile_id, revision, None, selector]
+                if namespace:
+                    key_fields.append(namespace)
+                outbox = self.root / 'outbox' / (digest(encode(key_fields)) + '.json')
+                if outbox.exists():
+                    prepared = request(decode(outbox.read_bytes()), self.git, self.repository_id)
+                atomic_write(saved, encode(prepared))
+                atomic_write(state_path, encode({'last_worker': prepared['worker_id']}))
+            return self.submit(publication_id, prepared['worker_id'], profile_id, workflow=selector,
+                               github_repository=namespace, prepared_request=prepared)
+
+    def supervise(self, jid, settings):
+        from .agent import plan_lock
+        from .scheduling import Supervisor, discover
+        with plan_lock(self.root / 'supervision' / jid) as directory:
+            supervisor = Supervisor(self, jid, directory, settings)
+            registry = discover(self.exchange.transport_factory(self.settings['inbox_root']))
+            decision = supervisor.decide(registry)
+            active = decision['job_id']
+            if decision['state'] == 'CANCEL_REQUIRED':
+                value = self.cancel(active)
+                if value.get('verified') and value['state'] != 'CANCELLED':
+                    return supervisor.response(value['state'], result=value, verified=True)
+                return supervisor.decide(registry)
+            if decision['state'] != 'RETRY_REQUIRED':
+                return decision
+            req, raw, successor = supervisor.pending_request(decision['worker'])
+            upload_json(self.transport, f'ci/jobs/{active}/successor.json', successor)
+            if self.transport.read(f'ci/jobs/{active}/successor.json') != encode(successor):
+                raise GdiError('automatic successor changed; stop competing coordinators')
+            self.retry_request(active)
+            delivered = self.submit(req['publication_id'], req['worker_id'], req['profile_id'],
+                                    retry_of=active, workflow=req.get('workflow'),
+                                    github_repository=req.get('github_repository', ''), prepared_request=req)
+            if delivered != req:
+                raise GdiError('automatic retry delivery differs from saved request')
+            supervisor.activate(req)
+            return supervisor.response('REASSIGNED', worker_id=req['worker_id'], retry_of=active)
+
+    def supervise_wait(self, jid, settings, *, watch=False, interval=30, timeout=3600):
+        from .worker_config import seconds
+        seconds(interval); seconds(timeout)
+        if watch and interval < 30:
+            raise GdiError('supervisor polling interval must be at least 30 seconds')
+        deadline = time.monotonic() + timeout
+        previous = None
+        while True:
+            # Git's shared worktree lock also serializes local selectors with
+            # push/GC while a step publishes cancellation or a replacement.
+            with self.git.lock():
+                value = self.supervise(jid, settings)
+            if value.get('verified'):
+                result = value.get('result', value)
+                return value, 0 if result['state'] == 'PASS' else 1
+            if value['state'] == 'ATTEMPTS_EXHAUSTED':
+                return value, 1
+            if not watch:
+                return value, 0
+            summary = (value['job_id'], value['state'], tuple(value['attempts']))
+            if summary != previous:
+                print(f"[{value['job_id']}] {value['state']} attempts={len(value['attempts'])}", file=sys.stderr, flush=True)
+                previous = summary
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return {**value, 'state': 'WATCH_TIMEOUT'}, 124
+            time.sleep(min(interval, remaining))
 
 
-    def status(self, jid):
-        result = self.result(jid)
+
+    def status(self, jid, *, _request=None, heartbeat_timeout=600):
+        from .worker_config import seconds
+        seconds(heartbeat_timeout)
+        req, raw = self.load_request(jid) if _request is None else _request
+        if req['job_id'] != job_id(jid):
+            raise GdiError('CI status/request job identity mismatch')
+        result = self.result(jid, _request=(req, raw))
         if result is not None:
             return {**result, "verified": True}
-        req, raw = self.load_request(jid)
-        cancelled = self.cancellation_requested(jid)
+        cancelled = self.cancellation_record(req, raw)
+        listing = files(self.transport, f"ci/jobs/{jid}")
+        live, freshness = self.live_status(req, raw, heartbeat_timeout=heartbeat_timeout, listing=listing)
         if cancelled is not None:
             return {**req, 'state': 'CANCEL_REQUESTED', 'verified': False,
+                    'heartbeat': freshness,
                     'worker_cancellation_supported': cancelled.get('worker_cancellation_supported', True)}
-        listing = files(self.transport, f"ci/jobs/{jid}")
-        if "status.json" not in listing:
-            return {**req, "state": "QUEUED", "verified": False}
-        value = decode(self.transport.read(f"ci/jobs/{jid}/status.json"))
-        if value.get("job_id") != jid or value.get("request_sha256") != digest(raw):
-            raise GdiError("CI status/request identity mismatch")
-        return {**value, "verified": False}
+        if live is None:
+            return {**req, "state": "QUEUED", "verified": False, 'heartbeat': freshness}
+        return {**live, "verified": False, 'heartbeat': freshness}
 
 
 
@@ -364,9 +502,12 @@ class CiClient(CiResultReader):
         return len(chunks)
 
     @contextmanager
-    def cursor_session(self, jid, *, restart=False):
+    def cursor_session(self, jid, *, restart=False, _request=None):
         """One follower per job; only flushed, verified chunks advance the cursor."""
-        req, raw = self.load_request(jid)
+        with phase('verify CI request'):
+            req, raw = self.load_request(jid) if _request is None else _request
+            if req['job_id'] != job_id(jid):
+                raise GdiError('CI cursor/request job identity mismatch')
         directory = self.root / 'follow'
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / (jid + '.json')
@@ -409,36 +550,52 @@ class CiClient(CiResultReader):
             consumed.append(name)
             atomic_write(path, encode(state))
 
-    def wait(self, jid, *, timeout=3600, follow=False, stream=None, interval=2, restart=False):
+    def wait(self, jid, *, timeout=3600, follow=False, stream=None, interval=2, restart=False, heartbeat_timeout=600):
         from .worker_config import seconds
         if timeout is not None:
             seconds(timeout)
         seconds(interval)
+        seconds(heartbeat_timeout)
         if restart and not follow:
             raise GdiError('--restart requires --follow')
         stream = stream or sys.stderr
         deadline, last = (time.monotonic() + timeout if timeout is not None else None), None
-        with self.cursor_session(jid, restart=restart) if follow else nullcontext(None) as cursor:
+        first_poll = True
+        initial_request = None
+        if follow:
+            with phase('read CI request'):
+                initial_request = self.load_request(jid)
+        with self.cursor_session(jid, restart=restart, _request=initial_request) if follow else nullcontext(None) as cursor:
             while True:
-                value = self.status(jid)
+                with phase('read CI status') if first_poll else nullcontext():
+                    value = self.status(jid, _request=initial_request if first_poll else None,
+                                        heartbeat_timeout=heartbeat_timeout)
                 if follow:
-                    summary = (value.get('state'), value.get('stage'), value.get('updated_at'))
+                    freshness = value.get('heartbeat', {})
+                    summary = (value.get('state'), value.get('stage'), value.get('updated_at'), freshness.get('state'))
                     if summary != last:
-                        print(f"[{jid}] {summary[0]} stage={summary[1]} heartbeat={summary[2]}", file=stream, flush=True)
+                        age = freshness.get('age_seconds')
+                        diagnostic = (f" heartbeat_status={summary[3].upper()}" +
+                                      (f" age={age:.1f}s" if age is not None else '') +
+                                      f" threshold={heartbeat_timeout:g}s" if summary[3] else '')
+                        print(f"[{jid}] {summary[0]} stage={summary[1]} heartbeat={summary[2]}{diagnostic}", file=stream, flush=True)
                         last = summary
-                    self.follow_saved(jid, cursor, stream)
+                    with phase('read CI log chunks') if first_poll else nullcontext():
+                        self.follow_saved(jid, cursor, stream)
+                first_poll = False
                 if value.get('verified'):
                     return value, 0 if value['state'] == 'PASS' else 1
                 if deadline is not None and time.monotonic() >= deadline:
                     return {'job_id': jid, 'state': 'WAIT_TIMEOUT', 'verified': False}, 124
                 time.sleep(interval if deadline is None else min(interval, max(0, deadline - time.monotonic())))
 
-    def logs(self, jid, *, output=None, follow=False, restart=False):
-        self.load_request(jid)
+    def logs(self, jid, *, output=None, follow=False, restart=False, heartbeat_timeout=600):
+        from .worker_config import seconds
+        seconds(heartbeat_timeout)
         if restart and (not follow or output):
             raise GdiError('--restart requires --follow')
         if output:
-            result, code = self.wait(jid)
+            result, code = self.wait(jid, heartbeat_timeout=heartbeat_timeout)
             if code == 124:
                 raise GdiError("job is still running; use logs --follow or wait again")
             source = self.root / "results" / jid / "build.log"
@@ -446,8 +603,9 @@ class CiClient(CiResultReader):
             shutil.copyfile(source, Path(output))
             return
         if follow:
-            self.wait(jid, follow=True, stream=sys.stdout, timeout=None, restart=restart)
+            self.wait(jid, follow=True, stream=sys.stdout, timeout=None, restart=restart, heartbeat_timeout=heartbeat_timeout)
         else:
+            self.load_request(jid)
             self.follow(jid, 0, sys.stdout)
 
     def withdraw(self, req, raw):

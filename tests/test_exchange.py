@@ -733,9 +733,14 @@ class ProtocolAndCliTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as raised:
                 main(arguments)
             self.assertEqual(raised.exception.code, 0)
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
-            main(["push", "drive", "--ci"])
+        with patch('gdi.cli.execute', side_effect=AssertionError('parser test must not execute a command')), \
+                contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            # --ci without --worker now means automatic selection. Never run an
+            # executable command in this parser-only test's real working tree.
+            main(["push", "drive", "--ci", "--unsupported-gdi-option"])
         self.assertEqual(raised.exception.code, 2)
+        from gdi.cli import parser
+        self.assertIsNone(parser().parse_args(['push', 'drive', '--ci']).worker)
 
     def test_help_and_version_aliases_work_without_repository_or_transport(self):
         outputs = {}

@@ -87,6 +87,26 @@ Job `status.json` и worker `status.json` mutable advisory. Поля job status:
 Events сохраняют такой snapshot при смене state/stage в `events/<sequence:08d>.json`;
 heartbeat увеличивает sequence, но не создаёт event, поэтому gaps в **events** допустимы.
 
+Расширенный worker status имеет `registry_version: 1`, `state: READY|BUSY`, `busy`,
+`queue_length`, `profile_revisions`, `labels`, `platforms` (shared inbox).
+Busy snapshot сохраняет job/run/request identity и timestamp захваченного job heartbeat;
+idle snapshot имеет свежий timestamp без job identity. Политика доступности и переноса:
+[scheduling.md](scheduling.md). Старые worker snapshots годятся для диагностики,
+но не подтверждают доступность для автоматического выбора.
+
+Клиент вычисляет диагностический `heartbeat` (состояние свежести, возраст, порог)
+для незавершённого status/result; registry inspection добавляет `reason_code` и
+детали несовместимости. Это поля ответов tools, они не записываются в wire
+status/request/result. Устаревший heartbeat не является terminal state или
+доказательством остановки исполнения.
+
+Автоматическая замена использует дополнительный immutable
+`ci/jobs/OLD_JOB_ID/successor.json`: `successor_version:1`, исходные `job_id` и
+`request_sha256`, `policy_sha256` и полный точный новый `request`. Worker и клиент
+сверяют predecessor identity, durable cancellation и точный successor request.
+Этот файл фиксирует proposal до новой inbox, сохраняя прежнюю схему request v1/v2;
+он не является CAS. Сохраняйте исходные requests/cancellations и историю попыток.
+
 Консоль — объединённые stdout+stderr, bytes без преобразований. Для act это JSON lines;
 в результате одна blocking-стадия `github-actions`, детализация jobs/steps — в log. Publisher пишет
 `log-chunks/<sequence:08d>-<sha256>.bin`, начиная с 1 без gaps. Один chunk не больше

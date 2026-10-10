@@ -398,7 +398,9 @@ class RcCandidateTests(unittest.TestCase):
             self.assertFalse(worker.tick())
             self.assertIsNone(worker.transport_session.server)
             self.assertFalse(worker.tick())
-        self.assertEqual(len(created), 3)
+        # One advertise session and one session each for discovery and the idle
+        # heartbeat in each tick. Every session is closed after its operation.
+        self.assertEqual(len(created), 5)
         for server in created:
             self.assertIsNotNone(server.process.poll())
             self.assertFalse(server.directory.exists())

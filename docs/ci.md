@@ -33,7 +33,8 @@
 На выбранном CI host выполните `gdi worker check --json`: фактический worker_id
 берётся из `~/.config/gdi/worker.json`. Для другого пути используйте `--config PATH`.
 Замените им `user-host` в примерах, а службу проверьте через `gdi worker status`.
-Разные host общего root используют разные IDs; автоматического выбора worker нет.
+Разные host общего root используют разные IDs. Без `--worker` клиент выбирает
+свежий совместимый host; выбор и opt-in перенос описаны в [scheduling.md](scheduling.md).
 
 ```bash
 gdi -v
@@ -124,6 +125,27 @@ gdi ci logs drive JOB_ID --output /tmp/gdi-JOB_ID.log
 Status и logs возвращают 0 при успешном чтении независимо от исхода CI.
 При сетевой ошибке ожидание можно продолжить тем же ID. Advisory `status.json`
 не доказывает PASS и может отставать; терминальным доказательством служит проверенный result.
+
+Незавершённый `ci status` содержит объект `heartbeat`: `state` (`fresh`, `stale`,
+`missing`, `invalid`, `clock_skew`), `updated_at`, `age_seconds` и `timeout_seconds`.
+Возраст равный порогу уже считается устаревшим. Default для job — 600 секунд:
+
+```bash
+gdi ci status drive JOB_ID --heartbeat-timeout 120 --json
+gdi ci logs drive JOB_ID --follow --heartbeat-timeout 120
+```
+
+Follow выводит, например, `heartbeat_status=STALE age=620.0s threshold=600s`,
+включая переход в STALE без изменения удалённого timestamp. `missing` означает,
+что heartbeat ещё не опубликован; `invalid` — ошибку timestamp; `clock_skew` —
+часы worker впереди клиента более чем на 30 секунд. Для clock_skew выводится
+`clock_ahead_seconds`, возраст остаётся null. Проверенный terminal result не
+помечается устаревшим по прежнему advisory heartbeat.
+
+STALE не меняет RUNNING на terminal state, не доказывает остановку и не запускает
+отмену/retry. Причиной может быть потеря сети, остановка host или задержка публикации.
+При ошибке чтения Drive команда сообщает ошибку, а не придумывает свежесть.
+Перенос по таймауту выполняет отдельно запущенный [supervisor](scheduling.md).
 
 ## Итерации до PASS
 

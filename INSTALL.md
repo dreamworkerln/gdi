@@ -515,8 +515,9 @@ cp "$INSTALL_DIR/examples/worker.json" "$HOME/.config/gdi/worker.json"
 У разных host одного root должны быть разные worker_id. Фактическое значение
 из этого config показывает `gdi worker check --json` (либо с `--config PATH`);
 состояние службы проверяется отдельно через `gdi worker status`.
-Новые CI-запросы получают этот ID через `--worker`; автоматического выбора host
-по состоянию Drive сейчас нет. Старые capabilities/READY не подтверждают,
+Новые CI-запросы получают этот ID через `--worker`; без него клиент выбирает
+свежий совместимый host. Выбор/политика переноса: [docs/scheduling.md](docs/scheduling.md).
+Старые capabilities/READY не подтверждают,
 что компьютер включён. Паузы polling worker по умолчанию — 30–120 секунд,
 timeout исполнения 3600 секунд — отдельная настройка.
 Списка проектов, веток и команд CI в этом файле нет.

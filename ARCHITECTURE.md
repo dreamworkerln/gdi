@@ -59,10 +59,14 @@ Revision — SHA256 общих параметров и фактического 
 Push использует существующую последовательную модель одного writer на ref с
 обнаружением конфликтующих продолжений metadata chain. CI: один назначенный worker
 на request, одно исполнение одновременно в процессе worker. Несколько host общего
-root имеют разные worker_id; клиент явно выбирает исполнителя. Локальный flock
+root имеют разные worker_id; клиент выбирает исполнителя явно либо по свежим
+capabilities/heartbeat, окружению и нагрузке. Локальный flock
 не допускает два экземпляра с одним worker ID/state directory на одном host.
-Immutable claim не является распределённой блокировкой; exactly-once и multi-worker
-координация не заявляются. Read/write доступ к папке Drive означает доверие участнику;
+Immutable claim не является распределённой блокировкой; exactly-once не заявляется.
+Supervisor сохраняет отмену, цепочку попыток и immutable successor до новой inbox;
+конфликты независимых coordinators вызывают отказ. Политики, агентские snapshots
+и границы координации: [docs/scheduling.md](docs/scheduling.md).
+Read/write доступ к папке Drive означает доверие участнику;
 SHA256 проверяет целостность, не авторство.
 
 ## CLI и принятие результата
@@ -223,6 +227,5 @@ CI snapshot перепроверяется после восстановлени
 исправленный commit → PASS и точный pull проверяются без Google credentials.
 Реальный Google Drive/host service проверяется отдельно в разрешённом окружении.
 
-Следующие этапы: CI retention/local spool quotas, автоматическая отмена и замена
-по таймауту, обнаружение/выбор workers, оптимизация listings/changes API, координация нагрузки,
+Следующие этапы: CI retention/local spool quotas, оптимизация listings/changes API,
 дальнейшая изоляция исполнения. Ограничения и оставшиеся проверки: [TODO.md](TODO.md).
