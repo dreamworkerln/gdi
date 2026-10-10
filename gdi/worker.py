@@ -271,7 +271,7 @@ class Worker:
         with git.lock():
             pub, chain = publication(exchange, transport, repo['repository_id'], req['publication_id'])
             if pub['head'] != req['head'] or pub['ref'] != req['ref']:
-                raise GdiError('CI request does not match Git publication')
+                raise GdiError('CI request does not match git publication')
             cache = exchange.restore(transport, repo['repository_id'], chain)
             if not cache.git.has_commit(req['head']) or not cache.git.ancestor(req['head'], chain[-1][1]['head']):
                 raise GdiError('requested commit is not reachable from verified history')

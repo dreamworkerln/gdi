@@ -64,7 +64,7 @@ def set_default(git, name):
 def save(git, data):
     from .ci_protocol import atomic_write
     if git.call("ls-files", "--", ".gdi").stdout:
-        raise GdiError(".gdi is local metadata and must not be tracked by Git")
+        raise GdiError(".gdi is local metadata and must not be tracked by git")
     atomic_write(git.gdi_dir() / "config.json", encode(data))
 
 

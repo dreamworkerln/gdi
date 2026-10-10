@@ -87,7 +87,7 @@ def prepare(checkout, profile, spool, req, *, cache_dir=None):
             argv += [flag, name + "=" + value]
     for name, value in sorted(profile["env"].items()):
         if name in {"GITHUB_REF", "SHA_REF", "GITHUB_REPOSITORY", "GITHUB_REPOSITORY_OWNER"}:
-            raise GdiError("workflow env cannot override the verified Git identity")
+            raise GdiError("workflow env cannot override the verified git identity")
         argv += ["--env", name + "=" + value]
     for name in workflow["secrets"]:
         argv += ["--secret", name]

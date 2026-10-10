@@ -52,7 +52,7 @@ class Exchange:
         if name in settings["remotes"]:
             raise GdiError(f"gdi remote {name} already exists")
         if self.git.config(f"remote.{name}.url") is not None:
-            raise GdiError(f"Git remote {name} already uses this tracking namespace; choose another name")
+            raise GdiError(f"git remote {name} already uses this tracking namespace; choose another name")
         if expected_id is not None and not hex_value(expected_id, 32):
             raise GdiError("repository ID must be 32 lowercase hexadecimal characters")
         if initialize and expected_id is not None:
@@ -100,7 +100,7 @@ class Exchange:
         settings = self.remote(name)
         repository_id = settings["repository_id"]
         if self.git.config(f"remote.{name}.url") is not None:
-            raise GdiError(f"Git remote {name} conflicts with the gdi tracking namespace")
+            raise GdiError(f"git remote {name} conflicts with the gdi tracking namespace")
         transport = self.transport_factory(settings["url"])
         self.verify_identity(transport, repository_id)
         return transport, repository_id
@@ -185,7 +185,7 @@ class Exchange:
         with verify_bundle(bundle, publication, ref, cache, previous) as quarantine:
             yield quarantine
 
-    @timed('restore verified Git objects')
+    @timed('restore verified git objects')
     def restore(self, transport, repository_id, chain):
         """Find a verified local base or the latest full checkpoint, then replay."""
         cache = VerifiedCache(self.git, repository_id)
@@ -242,7 +242,7 @@ class Exchange:
             if self.publications(transport, repository_id, ref) != chain:
                 raise GdiError("remote changed during push; retry after the other publisher finishes")
             with self.verified(prepared.bundle, data, ref, cache, tip[1] if tip else None) as quarantine:
-                with phase('upload Git bundle'):
+                with phase('upload git bundle'):
                     transport.upload(prepared.bundle, prepared.bundle_relative)
                 directory = prepared.manifest_relative.rpartition('/')[0]
                 with phase('publish manifest'):
@@ -293,5 +293,5 @@ class Exchange:
             # could change. Ordinary Git processes must not mutate this worktree concurrently.
             self.git.call("merge", "--ff-only", "--no-autostash", head)
         if self.git.branch() != before[0] or self.git.oid("HEAD") != head:
-            raise GdiError("unexpected branch/HEAD after fast-forward; inspect concurrent Git activity")
+            raise GdiError("unexpected branch/HEAD after fast-forward; inspect concurrent git activity")
         return head, publication_id, tracking

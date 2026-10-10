@@ -84,16 +84,16 @@ def bundle_prerequisites(path):
     with Path(path).open("rb") as handle:
         signature = handle.readline(128)
         if signature not in (b"# v2 git bundle\n", b"# v3 git bundle\n"):
-            raise GdiError("unsupported Git bundle header")
+            raise GdiError("unsupported git bundle header")
         while True:
             raw = handle.readline(1024 * 1024 + 1)
             size += len(raw)
             if not raw or size > 1024 * 1024:
-                raise GdiError("invalid or oversized Git bundle header")
+                raise GdiError("invalid or oversized git bundle header")
             if raw == b"\n":
                 break
             if not raw.endswith(b"\n"):
-                raise GdiError("invalid Git bundle header line")
+                raise GdiError("invalid git bundle header line")
             if raw.startswith(b"@"):
                 if signature != b"# v3 git bundle\n" or raw != b"@object-format=sha1\n":
                     raise GdiError("unsupported bundle capability (only unfiltered SHA-1 is supported)")
@@ -171,7 +171,7 @@ def prepare_publication(git, repository_id, ref, head, directory, *, previous=No
     bundle, manifest = root / 'source.bundle', root / 'publication.json'
     if any(path.exists() or path.is_symlink() for path in (bundle, manifest)):
         raise GdiError('publication output already exists; reuse its artifacts or choose a new directory')
-    with phase('create/check Git bundle'):
+    with phase('create/check git bundle'):
         exclusions = ['^' + previous[1]['head']] if incremental else []
         git.call('bundle', 'create', str(bundle), ref, *exclusions)
         if git.call('bundle', 'list-heads', str(bundle)).stdout.splitlines() != [head + ' ' + ref]:

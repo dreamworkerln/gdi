@@ -461,7 +461,7 @@ class ExchangeTests(ExchangeTestCase):
     def test_unfinished_merge_refuses_pull(self):
         self.published()
         (self.b.path / ".git/MERGE_HEAD").write_text(self.first + "\n")
-        with self.assertRaisesRegex(GdiError, "unfinished Git operation"):
+        with self.assertRaisesRegex(GdiError, "unfinished git operation"):
             self.eb.pull("drive")
 
     def series(self, count, *, checkpoint_every=20):

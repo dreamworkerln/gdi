@@ -70,9 +70,9 @@ def nonnegative_count(value):
 
 def parser():
     cli = argparse.ArgumentParser(
-        prog="gdi", description="Verified Git bundle exchange through rclone.",
+        prog="gdi", description="Verified git bundle exchange through rclone.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""Quick start (run exchange commands inside a Git worktree):
+        epilog="""Quick start (run exchange commands inside a git worktree):
   gdi remote add drive gdrive:gdi/my-project --init   # empty Drive folder, once
   gdi push                                            # publish committed branch HEAD
   gdi remote add drive gdrive:gdi/my-project          # join from another clone
@@ -118,7 +118,7 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
     status.add_argument("--json", action="store_true", help="write one machine-readable response")
     cache = commands.add_parser("cache", help="manage the disposable local verified-object cache")
     cache_operations = cache.add_subparsers(dest="operation", required=True)
-    clear = cache_operations.add_parser("clear", help="clear a remote's local cache without changing Git refs or remote files")
+    clear = cache_operations.add_parser("clear", help="clear a remote's local cache without changing git refs or remote files")
     diagnostics_arguments(clear)
     clear.add_argument("remote")
     gc = commands.add_parser("gc", help="plan removal of obsolete remote bundles (dry run by default)")
@@ -176,7 +176,7 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             sub.add_argument("--output", help="save the verified complete binary log after completion")
         else:
             sub.add_argument("--json", action="store_true")
-    agent = commands.add_parser('agent', help='offline connector exchange (Python and Git only)')
+    agent = commands.add_parser('agent', help='offline connector exchange (Python and git only)')
     agent_ops = agent.add_subparsers(dest='operation', required=True)
     for operation in ('snapshot', 'prepare', 'check', 'accept', 'clone'):
         sub = agent_ops.add_parser(operation)
@@ -185,7 +185,7 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
         sub.add_argument('--snapshot', required=True, help='complete connector snapshot JSON')
         sub.add_argument('--repository-id', required=True, help='trusted identity supplied independently')
         if operation == 'prepare':
-            sub.add_argument('--repo', default='.', help='target Git worktree (default: current directory)')
+            sub.add_argument('--repo', default='.', help='target git worktree (default: current directory)')
             sub.add_argument('--branch', help='branch name (default: current branch)')
             sub.add_argument('--output', required=True, help='durable plan directory; reuse for retries')
             sub.add_argument('--full', action='store_true', help='prepare a full bundle instead of an incremental')
@@ -217,7 +217,7 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             sub.add_argument('--inbox-proof', required=True, help='complete inbox listing and downloaded event proof')
         if operation in ('prepare', 'check', 'accept'):
             sub.add_argument('--capabilities', required=True, help='fresh downloaded worker capabilities JSON')
-    worker = commands.add_parser("worker", help="host worker and systemd user service (works outside Git)")
+    worker = commands.add_parser("worker", help="host worker and systemd user service (works outside git)")
     worker_ops = worker.add_subparsers(dest="operation", required=True)
     worker_help = {
         'logs': 'show or follow the systemd user service journal',

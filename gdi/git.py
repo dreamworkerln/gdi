@@ -74,10 +74,10 @@ class Git:
     def discover(cls, path="."):
         git = cls(path)
         if git.text("rev-parse", "--is-bare-repository") != "false":
-            raise GdiError("gdi requires a Git worktree; bare user repositories are unsupported")
+            raise GdiError("gdi requires a git worktree; bare user repositories are unsupported")
         git.path = Path(git.text("rev-parse", "--show-toplevel"))
         if git.text("rev-parse", "--show-object-format") != "sha1":
-            raise GdiError("gdi supports only Git SHA-1 repositories")
+            raise GdiError("gdi supports only git SHA-1 repositories")
         if git.text("rev-parse", "--is-shallow-repository") != "false":
             raise GdiError("shallow repositories are unsupported; obtain the full history first")
         partial = git.call("config", "--get-regexp", r"^(extensions\.partialclone|remote\..*\.promisor)$",
@@ -90,7 +90,7 @@ class Git:
         if not grafts.is_absolute():
             grafts = git.path / grafts
         if grafts.exists() and grafts.stat().st_size:
-            raise GdiError("Git grafts are unsupported")
+            raise GdiError("git grafts are unsupported")
         return git
 
     @contextmanager
@@ -163,7 +163,7 @@ class Git:
             if not path.is_absolute():
                 path = self.path / path
             if path.exists():
-                raise GdiError(f"unfinished Git operation ({name}); complete it before pull")
+                raise GdiError(f"unfinished git operation ({name}); complete it before pull")
 
     def ancestor(self, old, new):
         return self.call("merge-base", "--is-ancestor", old, new, allowed=(0, 1)).returncode == 0
@@ -177,7 +177,7 @@ class Git:
         pointers = self.call("grep", "-I", "-l", "-e",
                              "^version https://git-lfs.github.com/spec/v1$", oid, "--", allowed=(0, 1))
         if pointers.returncode == 0:
-            raise GdiError("Git LFS pointers are unsupported (bundle has no LFS payload)")
+            raise GdiError("git LFS pointers are unsupported (bundle has no LFS payload)")
 
     def import_objects(self, repository, oid):
         self.call("-c", "fetch.fsckObjects=true", "fetch", "--no-tags",
