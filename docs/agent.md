@@ -226,14 +226,36 @@ GDI проверит hashes и полную цепочку. `repository.json` и
 не означает согласия запускать CI. Worker, act и Docker находятся на компьютере
 пользователя. Агент только готовит и передаёт immutable файлы.
 
-Скачайте свежие `ci/workers/WORKER_ID/capabilities.json` из **общего root**, получите
+Перед подготовкой определите фактический `worker_id` и общий Drive root по worker
+config доступного CI host или сведениям его владельца. Сохраните ID в переменной
+`WORKER_ID`; это ID исполнителя, независимый от имени рабочего репозитория.
+Имена вроде `user-host`
+в примерах других документов требуют замены фактическим ID. GDI использует явно
+переданный `--worker` и автоматически работающего исполнителя не выбирает.
+
+В общем root могут оставаться каталоги прежних workers. Наличие
+`ci/workers/WORKER_ID/capabilities.json` само по себе не подтверждает, что этот worker
+сейчас запущен. Для диагностики скачайте его свежий `status.json`: старый `RUNNING`
+с неизменным `updated_at` не доказывает текущее исполнение. Статус `READY` также
+не заменяет проверку службы на host. Если нужный ID неизвестен или сведения
+противоречат друг другу, уточните его у владельца host перед отправкой запроса.
+
+```bash
+WORKER_ID="фактический_worker_id_из_config_CI_host"
+```
+
+Скачайте свежие `ci/workers/$WORKER_ID/capabilities.json` из **общего root**, получите
 свежий снимок проекта с проверенной публикацией. Workflows должны присутствовать
 в точном опубликованном commit; локальная ветка может быть уже впереди него.
+Сохраните скачанный файл как `$EXCHANGE_DIR/capabilities.json`; поле `worker_id`
+в нём должно совпадать с `$WORKER_ID`. Используйте capabilities этого же worker
+при prepare, check и accept. Revision выбранного профиля GDI берёт из этого файла;
+скачивание неизменившегося файла прежнего worker не делает его окружение актуальным.
 
 ```bash
 python3 -m gdi agent ci prepare --repo "$WORK_DIR" \
   --snapshot "$EXCHANGE_DIR/published/snapshot.json" --repository-id "$REPOSITORY_ID" \
-  --publication PUBLICATION_ID --worker user-host --profile full \
+  --publication PUBLICATION_ID --worker "$WORKER_ID" --profile full \
   --capabilities "$EXCHANGE_DIR/capabilities.json" \
   --output "$EXCHANGE_DIR/ci-plan"
 ```
@@ -243,6 +265,11 @@ python3 -m gdi agent ci prepare --repo "$WORK_DIR" \
 profile revision, ref/HEAD и Publication ID. Порядок: **request → ready → inbox**.
 Повтор prepare с тем же планом сохраняет job ID/bytes. Изменение capabilities
 требует нового явного запроса; при простой задержке worker новый job не создавайте.
+Другой worker пропускает адресованное чужому ID событие inbox. Если выбран неверный
+ID или изменилась revision, сохраните прежний план и запрос, затем выполните новый
+prepare в отдельном каталоге с правильным ID и свежими capabilities. Не меняйте
+worker ID или revision вручную в уже опубликованных immutable файлах. Перезапуск
+worker с другим ID не перенаправляет существующее задание.
 
 1. Загрузите request.json, затем request.ready в `PROJECT_PATH/ci/jobs/JOB_ID/`.
 2. Скачайте оба обратно, свежие capabilities и metadata проекта. Дополните снимок
@@ -280,6 +307,11 @@ profile revision, ref/HEAD и Publication ID. Порядок: **request → read
 
    Если worker уже забрал событие, проверьте результат/прогресс существующего job;
    исчезновение уведомления не означает сбой запроса. Не создавайте новый job.
+
+`safe_to_upload_inbox: true` подтверждает проверку запроса перед загрузкой inbox,
+а `state: accepted` — проверку его передачи в inbox. Эти ответы не означают, что
+worker уже получил задание или начал CI. Проверяйте дальнейший прогресс именно
+у worker с ID из плана и у соответствующего job.
 
 ## Проверить результат CI
 
