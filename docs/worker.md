@@ -164,8 +164,11 @@ systemctl --user edit gdi-worker.service
 Например, `[Service]` и `EnvironmentFile=/абсолютный/путь/worker.env` для локальных
 секретов/настроек. Содержимое файла не отправляется в capabilities. В нём можно
 задать `RCLONE_CONFIG=/абсолютный/путь/rclone.conf`, если используется нестандартный
-config. Затем `systemctl --user daemon-reload` и `systemctl --user restart gdi-worker.service`.
-При изменении worker.json также перезапустите службу: профили читаются при старте.
+config. Затем выполните `gdi worker restart`: команда делает daemon-reload и перезапускает
+службу. Новый процесс перечитывает worker.json, окружение и установленный Python-код.
+При editable install достаточно изменить исходники и вызвать `gdi worker restart`;
+при обычной установке сначала обновите пакет. Если изменился путь к Python или config,
+повторите `gdi worker install --config ...` перед restart.
 
 Для работы без открытой login-сессии владелец host может включить linger:
 
@@ -232,7 +235,8 @@ Heartbeat/status загружается из отдельного неизмен
 локального status.json во время передачи не вызывало checksum mismatch.
 Статусы job и worker за один проход используют одни и те же bytes снимка.
 
-При остановке `gdi worker stop` worker не берёт новые jobs и заканчивает текущий.
+При остановке `gdi worker stop` или перезапуске `gdi worker restart` worker не берёт
+новые jobs и заканчивает текущий.
 Unit использует `KillMode=mixed`: SIGTERM получает только worker, чтобы act и
 его дочерние процессы могли закончить текущий CI. Systemd ждёт до 120 секунд,
 затем убивает всю control group. На следующем старте

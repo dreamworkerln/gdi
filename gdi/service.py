@@ -56,6 +56,9 @@ def action(operation):
         return run(['systemctl', '--user', 'enable', '--now', UNIT]).stdout
     if operation == 'stop':
         return run(['systemctl', '--user', 'stop', UNIT]).stdout
+    if operation == 'restart':
+        run(['systemctl', '--user', 'daemon-reload'])
+        return run(['systemctl', '--user', 'restart', UNIT]).stdout
     result = run(['systemctl', '--user', 'show', UNIT, '--property=ActiveState,SubState,ExecMainStatus,UnitFileState'])
     return dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
 

@@ -83,6 +83,7 @@ def parser():
   gdi cache clear drive                               # clear local verified cache
   gdi push drive --ci --worker user-host --profile full
   gdi ci wait drive JOB_ID --follow                    # watch CI and console
+  gdi worker restart                                  # reload worker config and code
   gdi worker logs --follow                            # watch worker service journal
   gdi gc drive                                        # preview remote cleanup
   gdi gc drive --apply --quiescent                    # all clients must be paused
@@ -218,9 +219,13 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             sub.add_argument('--capabilities', required=True, help='fresh downloaded worker capabilities JSON')
     worker = commands.add_parser("worker", help="host worker and systemd user service (works outside Git)")
     worker_ops = worker.add_subparsers(dest="operation", required=True)
-    for operation in ("check", "run", "install", "start", "status", "stop", "logs"):
-        sub = worker_ops.add_parser(operation, **({'help': 'show or follow the systemd user service journal'}
-                                                 if operation == 'logs' else {}))
+    worker_help = {
+        'logs': 'show or follow the systemd user service journal',
+        'restart': 'reload service definition and restart worker to read updated config and code',
+    }
+    for operation in ("check", "run", "install", "start", "restart", "status", "stop", "logs"):
+        sub = worker_ops.add_parser(operation, **({'help': worker_help[operation]}
+                                                 if operation in worker_help else {}))
         diagnostics_arguments(sub)
         if operation in ("check", "run", "install"):
             sub.add_argument("--config", default="~/.config/gdi/worker.json")
@@ -262,7 +267,8 @@ def main(argv=None):
         from .diagnostics import command_session
         with command_session(args.command + (' ' + args.operation if hasattr(args, 'operation') else ''),
                              path=getattr(args, 'profile_log', None), progress=getattr(args, 'progress', None)) as diagnostics:
-            if args.command == 'agent' or (args.command == 'worker' and args.operation == 'logs'):
+            if args.command == 'agent' or (args.command == 'worker' and args.operation in
+                                          ('start', 'restart', 'status', 'stop', 'logs')):
                 code = execute(args)
             else:
                 from .rc_transport import TransportSession

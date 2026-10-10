@@ -59,7 +59,7 @@ gdi pull
 | `gdi ci retry NAME JOB_ID [--json]` | Явный повтор завершённой проверки, новый job ID |
 | `gdi pull [NAME] --passed --job ID --profile full` | Fast-forward именно на SHA выбранного проверенного PASS |
 | `gdi worker check/run/install --config PATH` | Проверка config, foreground worker, явная установка user service |
-| `gdi worker start/status/stop` | Управление постоянной systemd user service |
+| `gdi worker start/restart/status/stop` | Управление постоянной systemd user service; restart перечитывает config и код |
 | `gdi worker logs [-f] [-n N] [-b]` | Последние 100 сообщений службы; follow, число строк, текущая загрузка |
 | `gdi fetch [NAME] [BRANCH]` | Восстанавливает недостающую историю, обновляет `refs/remotes/NAME/BRANCH` |
 | `gdi pull [NAME]` | Получает текущую ветку и применяет только fast-forward |
