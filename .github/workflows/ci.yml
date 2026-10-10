@@ -1,5 +1,8 @@
 name: gdi CI
 on: [push, pull_request, workflow_dispatch]
+env:
+  # The distro's rclone 1.60.1 cannot serve RC over a Unix socket.
+  RCLONE_VERSION: '1.75.1'
 jobs:
   tests:
     runs-on: ubuntu-latest
@@ -11,7 +14,11 @@ jobs:
       - name: Install integration tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y rclone
+          sudo apt-get install -y unzip
+          curl -fL "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip" -o /tmp/rclone.zip
+          unzip -q /tmp/rclone.zip -d /tmp/gdi-rclone
+          sudo install -m 755 "/tmp/gdi-rclone/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
+          rclone version
           curl -fL https://github.com/nektos/act/releases/download/v0.2.89/act_Linux_x86_64.tar.gz -o /tmp/act.tar.gz
           mkdir -p /tmp/gdi-act
           tar -xzf /tmp/act.tar.gz -C /tmp/gdi-act act
@@ -30,7 +37,11 @@ jobs:
       - name: Install tools and runner image
         run: |
           sudo apt-get update
-          sudo apt-get install -y rclone
+          sudo apt-get install -y unzip
+          curl -fL "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip" -o /tmp/rclone.zip
+          unzip -q /tmp/rclone.zip -d /tmp/gdi-rclone
+          sudo install -m 755 "/tmp/gdi-rclone/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
+          rclone version
           curl -fL https://github.com/nektos/act/releases/download/v0.2.89/act_Linux_x86_64.tar.gz -o /tmp/act.tar.gz
           mkdir -p /tmp/gdi-act
           tar -xzf /tmp/act.tar.gz -C /tmp/gdi-act act

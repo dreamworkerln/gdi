@@ -76,7 +76,8 @@ class AgentTests(ExchangeTestCase):
         import os, shutil
         (self.a.path / 'large.bin').write_bytes(os.urandom(256 * 1024))
         self.a.call('add', 'large.bin')
-        self.a.call('commit', '-qm', 'large base')
+        self.a.call('-c', 'user.name=Gdi Test', '-c', 'user.email=gdi@example.invalid',
+                    'commit', '-qm', 'large base')
         self.ea.push('drive')
         base_head = self.a.oid('HEAD')
         head = self.commit(self.a, 'small TODO change')

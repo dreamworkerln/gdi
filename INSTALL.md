@@ -50,8 +50,10 @@ sudo apt install git python3-venv python3-pip curl unzip ca-certificates
 
 ### Установка rclone
 
-Если `rclone version` уже работает, используйте установленный rclone. Для установки
-можно взять пакет дистрибутива:
+На Linux native RC transport использует Unix-сокет. Rclone 1.60.1 из пакетов Ubuntu
+его не поддерживает; проверенная версия для gdi и CI — 1.75.1. Проверьте
+`rclone version` перед использованием установленного rclone. Пакет дистрибутива
+подходит, если он содержит версию с поддержкой Unix-сокетов:
 
 ```bash
 sudo apt install rclone
