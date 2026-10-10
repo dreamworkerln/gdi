@@ -467,7 +467,9 @@ def execute(args, *, transport_factory=None):
                 if args.json:
                     emit(value, True)
                 else:
-                    print(f"{'Published' if created else 'Already published'} {head}\nPublication: {pub}")
+                    from .terminal import colorize
+                    message = 'Published' if created else colorize('Already published', 33)
+                    print(f"{message} {head}\nPublication: {pub}")
                     print(f"Bundle: {data['bundle_kind']}, {data['bundle_bytes']} bytes")
                     if args.ci:
                         print(f"CI job: {value['job_id']}\nWorker/profile: {value['worker_id']}/{value['profile_id']}")

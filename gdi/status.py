@@ -1,10 +1,8 @@
 """Fresh publication status without downloading bundles or changing Git refs."""
 
-import os
-import sys
-
 from .git import GdiError
 from .local_config import load
+from .terminal import colorize
 
 
 def inspect(exchange, name=None):
@@ -56,11 +54,7 @@ def display(value):
     print('Branch: ' + (value['branch'] or '(detached HEAD)'))
     print('HEAD: ' + (value['head'] or '(no commits)'))
     worktree = 'changes present' if value['dirty'] else 'clean'
-    force = os.environ.get('FORCE_COLOR', '') not in ('', '0')
-    color = 'NO_COLOR' not in os.environ and (force or (
-        sys.stdout.isatty() and os.environ.get('TERM') != 'dumb'))
-    if color:
-        worktree = ('\033[31m' if value['dirty'] else '\033[32m') + worktree + '\033[0m'
+    worktree = colorize(worktree, 31 if value['dirty'] else 32)
     print('Worktree: ' + worktree)
     if not value['connections']:
         print('Connections: none; gdi remote add drive <rclone:path> --init')
@@ -72,8 +66,8 @@ def display(value):
         print(f"Connection: {remote['name']}{' (default)' if remote['default'] else ''} — {remote['url']}")
         print('  Repository ID: ' + remote['repository_id'])
         state = descriptions[remote['state']]
-        if color and remote['state'] == 'ahead':
-            state = '\033[33m' + state + '\033[0m'
+        if remote['state'] in ('ahead', 'published'):
+            state = colorize(state, 33)
         print('  State: ' + state)
         if remote['publication_id']:
             print('  Published HEAD: ' + remote['published_head'])
