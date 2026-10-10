@@ -69,6 +69,8 @@ jobs:
           test "$REPOSITORY" = example/fixture
           test "$OWNER" = example
           test "$SECRET" = fixture-value
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git show HEAD:file.txt)" = "$(cat file.txt)"
           test "$(cat file.txt)" = fixed
       - name: Optional failure
         continue-on-error: true

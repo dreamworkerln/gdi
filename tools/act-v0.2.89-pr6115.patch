@@ -1,0 +1,142 @@
+From 34fc9c523f2ea43ff90f720b4d2b001a00c91dca Mon Sep 17 00:00:00 2001
+From: Roy Teeuwen <roy@teeuwen.be>
+Date: Sun, 14 Jun 2026 21:11:25 +0200
+Subject: [PATCH] fix(artifacts): support upload-artifact@v7 /
+ download-artifact@v8
+
+The v4 artifact server rejected requests from newer @actions/upload-artifact
+releases for two independent reasons:
+
+1. parseProtbufBody used a strict protojson.Unmarshal, which fails on any
+   field absent from act's vendored protobuf. upload-artifact@v7 adds a
+   `mime_type` field to the artifact requests, producing
+   `Error decode request body: unknown field "mime_type"`. Decoding with
+   DiscardUnknown ignores fields act doesn't consume and keeps the server
+   forward-compatible with future optional additions.
+
+2. verifySignature decoded the `sig` query parameter with base64.URLEncoding,
+   which requires `=` padding. The Azure storage SDK used by upload-artifact@v7
+   for blob upload strips the padding when it re-serializes the signed URL to
+   append comp/blockid, so the strict decode failed silently and the HMAC check
+   rejected the upload with `Error unauthorized`. Decoding with RawURLEncoding
+   after trimming any `=` accepts both the padded (v4-era) and unpadded (v7+)
+   forms.
+
+Both changes only relax parsing, so older clients are unaffected; verified
+end-to-end with v4<->v4 and v7<->v8 upload/download round-trips. Adds
+regression tests for both cases.
+
+Signed-off-by: Roy Teeuwen <roy@teeuwen.be>
+---
+ pkg/artifacts/artifacts_v4.go | 15 +++++++--
+ pkg/artifacts/server_test.go  | 57 +++++++++++++++++++++++++++++++++++
+ 2 files changed, 70 insertions(+), 2 deletions(-)
+
+diff --git a/pkg/artifacts/artifacts_v4.go b/pkg/artifacts/artifacts_v4.go
+index 9cbe0b3c863..eacbbcc31b4 100644
+--- a/pkg/artifacts/artifacts_v4.go
++++ b/pkg/artifacts/artifacts_v4.go
+@@ -219,7 +219,13 @@ func (r artifactV4Routes) verifySignature(ctx *ArtifactContext, endp string) (in
+ 	sig := ctx.Req.URL.Query().Get("sig")
+ 	expires := ctx.Req.URL.Query().Get("expires")
+ 	artifactName := ctx.Req.URL.Query().Get("artifactName")
+-	dsig, _ := base64.URLEncoding.DecodeString(sig)
++	// Newer @actions/upload-artifact releases (v7+) upload blob content with
++	// the Azure storage SDK, which strips the `=` base64 padding from the `sig`
++	// query value when it re-serializes the signed URL to append comp/blockid.
++	// v4-era clients keep the padding. RawURLEncoding + TrimRight decodes both
++	// the padded and unpadded forms, so the signature check works across every
++	// supported artifact-action version.
++	dsig, _ := base64.RawURLEncoding.DecodeString(strings.TrimRight(sig, "="))
+ 	taskID, _ := strconv.ParseInt(rawTaskID, 10, 64)
+ 
+ 	expecedsig := r.buildSignature(endp, expires, artifactName, taskID)
+@@ -244,7 +250,12 @@ func (r *artifactV4Routes) parseProtbufBody(ctx *ArtifactContext, req protorefle
+ 		ctx.Error(http.StatusInternalServerError, "Error decode request body")
+ 		return false
+ 	}
+-	err = protojson.Unmarshal(body, req)
++	// DiscardUnknown keeps the artifact server forward-compatible with newer
++	// @actions/upload-artifact releases that add optional request fields the
++	// vendored protobuf doesn't know about yet (e.g. mime_type in v7+). act
++	// doesn't consume those fields, so silently dropping them is safe and
++	// avoids hard-failing the upload with `unknown field "..."`.
++	err = protojson.UnmarshalOptions{DiscardUnknown: true}.Unmarshal(body, req)
+ 	if err != nil {
+ 		log.Errorf("Error decode request body: %v", err)
+ 		ctx.Error(http.StatusInternalServerError, "Error decode request body")
+diff --git a/pkg/artifacts/server_test.go b/pkg/artifacts/server_test.go
+index 0591fbb9987..384f56f3874 100644
+--- a/pkg/artifacts/server_test.go
++++ b/pkg/artifacts/server_test.go
+@@ -6,6 +6,7 @@ import (
+ 	"fmt"
+ 	"net/http"
+ 	"net/http/httptest"
++	"net/url"
+ 	"os"
+ 	"path"
+ 	"path/filepath"
+@@ -317,6 +318,62 @@ func runTestJobFile(ctx context.Context, t *testing.T, tjfi TestJobFileInfo) {
+ 	})
+ }
+ 
++func TestCreateArtifactV4IgnoresUnknownFields(t *testing.T) {
++	assert := assert.New(t)
++
++	var memfs = fstest.MapFS(map[string]*fstest.MapFile{})
++
++	router := httprouter.New()
++	RoutesV4(router, "artifact/server/path", writeMapFS{memfs}, memfs)
++
++	// `mime_type` is sent by @actions/upload-artifact v7+ but isn't part of
++	// act's vendored protobuf. The server must ignore it instead of failing
++	// the upload with `unknown field "mime_type"`.
++	body := `{"workflow_run_backend_id":"1","workflow_job_run_backend_id":"1","name":"test","version":4,"mime_type":"application/zip"}`
++	req, _ := http.NewRequest("POST", "http://localhost"+path.Join(ArtifactV4RouteBase, "CreateArtifact"), strings.NewReader(body))
++	rr := httptest.NewRecorder()
++
++	router.ServeHTTP(rr, req)
++
++	assert.Equal(http.StatusOK, rr.Code)
++
++	response := CreateArtifactResponse{}
++	err := json.Unmarshal(rr.Body.Bytes(), &response)
++	assert.Nil(err)
++	assert.True(response.Ok)
++}
++
++func TestUploadArtifactV4AcceptsUnpaddedSignature(t *testing.T) {
++	assert := assert.New(t)
++
++	var memfs = fstest.MapFS(map[string]*fstest.MapFile{})
++
++	router := httprouter.New()
++	RoutesV4(router, "artifact/server/path", writeMapFS{memfs}, memfs)
++
++	// Build a genuine signed upload URL the same way the server does. The HMAC
++	// secret and inputs match what the router's verifySignature recomputes, so a
++	// well-formed request authorizes regardless of AppURL.
++	signer := artifactV4Routes{prefix: ArtifactV4RouteBase, AppURL: "localhost"}
++	signedURL := signer.buildArtifactURL("UploadArtifact", "test", 1)
++
++	// The Azure storage SDK in @actions/upload-artifact v7+ strips the `=`
++	// base64 padding from the `sig` query value when it re-serializes the URL.
++	// Reproduce that and confirm the server still authorizes the block upload.
++	parsed, err := url.Parse(signedURL)
++	assert.Nil(err)
++	q := parsed.Query()
++	q.Set("sig", strings.TrimRight(q.Get("sig"), "="))
++	q.Set("comp", "block")
++	parsed.RawQuery = q.Encode()
++
++	uploadReq, _ := http.NewRequest("PUT", parsed.String(), strings.NewReader("content"))
++	uploadRR := httptest.NewRecorder()
++	router.ServeHTTP(uploadRR, uploadReq)
++
++	assert.Equal(http.StatusCreated, uploadRR.Code)
++}
++
+ func TestMkdirFsImplSafeResolve(t *testing.T) {
+ 	baseDir := "/foo/bar"
+ 

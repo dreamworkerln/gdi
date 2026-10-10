@@ -81,8 +81,8 @@ def load_config(path):
     if set(config) - allowed or type(config.get("config_version")) is not int or config["config_version"] != 1:
         raise GdiError("invalid worker config; expected config_version 1")
     identifier(config.get("worker_id"))
-    config["poll_active_seconds"] = seconds(config.get("poll_active_seconds", 5))
-    config["poll_idle_max_seconds"] = seconds(config.get("poll_idle_max_seconds", 60))
+    config["poll_active_seconds"] = seconds(config.get("poll_active_seconds", 30))
+    config["poll_idle_max_seconds"] = seconds(config.get("poll_idle_max_seconds", 120))
     if config["poll_idle_max_seconds"] < config["poll_active_seconds"]:
         raise GdiError("poll_idle_max_seconds must be >= poll_active_seconds")
     for key, kind in (("state_dir", "state"), ("cache_dir", "cache")):
@@ -165,8 +165,8 @@ def global_config(config):
         raise GdiError("invalid global worker config fields; repositories/profiles belong outside worker.json")
     identifier(config.get("worker_id"))
     validate_url(config.get("remote_url"))
-    config["poll_active_seconds"] = seconds(config.get("poll_active_seconds", 5))
-    config["poll_idle_max_seconds"] = seconds(config.get("poll_idle_max_seconds", 60))
+    config["poll_active_seconds"] = seconds(config.get("poll_active_seconds", 30))
+    config["poll_idle_max_seconds"] = seconds(config.get("poll_idle_max_seconds", 120))
     if config["poll_idle_max_seconds"] < config["poll_active_seconds"]:
         raise GdiError("poll_idle_max_seconds must be >= poll_active_seconds")
     for key, kind in (("state_dir", "state"), ("cache_dir", "cache")):

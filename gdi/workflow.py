@@ -67,6 +67,26 @@ def prepare(checkout, profile, spool, req, *, cache_dir=None):
     uploads.mkdir(exist_ok=True)
     cache_dir = Path(cache_dir) if cache_dir is not None else spool.parent / "act-cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
+    # act's --env NAME sets an empty value rather than reading os.environ.
+    # Its YAML env file accepts JSON strings without dotenv interpolation.
+    # Keep proxy credentials outside argv, checkout and published artifacts.
+    proxy_names = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                   "http_proxy", "https_proxy", "all_proxy")
+    proxy_env = {name: os.environ[name] for name in (*proxy_names, "NO_PROXY", "no_proxy")
+                 if name in os.environ and name not in profile["env"]
+                 and name.swapcase() not in profile["env"]}
+    if any(os.environ.get(name) or profile["env"].get(name) for name in proxy_names):
+        entries = list(dict.fromkeys(item.strip()
+                       for source in ("NO_PROXY", "no_proxy")
+                       for item in os.environ.get(source, '').split(',') if item.strip()))
+        for address in ("localhost", "127.0.0.1", "::1", workflow["artifact_server_addr"]):
+            if address not in entries:
+                entries.append(address)
+        for name in ("NO_PROXY", "no_proxy"):
+            if not any(alias in profile["env"] for alias in ("NO_PROXY", "no_proxy")):
+                proxy_env[name] = ','.join(entries)
+    proxy_file = spool / 'worker-proxy-env.yaml'
+    atomic_write(proxy_file, encode(proxy_env))
     argv = [executable, workflow["event"], "--directory", str(checkout.path),
             "--workflows", str(path), "--no-recurse", "--eventpath", str(event_path),
             "--artifact-server-path", str(uploads), "--artifact-server-port", str(workflow["artifact_server_port"]),
@@ -74,9 +94,10 @@ def prepare(checkout, profile, spool, req, *, cache_dir=None):
             "--action-cache-path", str(cache_dir),
             "--cache-server-path", str(cache_dir / 'cache-server'),
             "--cache-server-addr", workflow["artifact_server_addr"], "--cache-server-port", "0",
-            "--env-file", os.devnull, "--secret-file", os.devnull,
+            "--env-file", str(proxy_file), "--secret-file", os.devnull,
             "--var-file", os.devnull, "--input-file", os.devnull,
             "--json", "--rm", "--pull=false", "--bind=false", "--reuse=false", "--no-skip-checkout=false",
+            "--use-gitignore=false",
             "--dryrun=false", "--list=false", "--graph=false", "--watch=false", "--validate=false",
             "--job", workflow["job"], "--env", "GITHUB_REF=" + req["ref"],
             "--env", "SHA_REF=" + req["head"]]

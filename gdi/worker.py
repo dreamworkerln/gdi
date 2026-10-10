@@ -259,7 +259,7 @@ class Worker:
                 self.publish_live(transport, row, sent)
             except (GdiError, OSError) as exc:
                 LOG.warning('job=%s live upload pending: %s', row['job_id'], exc)
-            done.wait(1)
+            done.wait(self.config['poll_active_seconds'])
 
     def checkout(self, repo, transport, req):
         receiver = Path(self.config['cache_dir']) / self.worker_id / repo['repository_id'] / 'receiver'
@@ -282,6 +282,9 @@ class Worker:
             checkout = Git(destination, isolated=True)
             checkout.call('init', '--quiet', '--object-format=sha1', '--template=')
             checkout.import_objects(cache.path, req['head'])
+            # act copies files rather than empty directories. Keep a real ref
+            # so .git/refs survives the copy and git works inside the container.
+            checkout.call('update-ref', req['ref'], req['head'])
             checkout.call('checkout', '--quiet', '--detach', req['head'])
             if checkout.oid('HEAD') != req['head']:
                 raise GdiError('checkout HEAD mismatch')

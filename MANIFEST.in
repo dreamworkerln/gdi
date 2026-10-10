@@ -9,3 +9,4 @@ include QUICKSTART.md
 recursive-include examples *.json
 
 recursive-include .github/workflows *.yml *.yaml
+recursive-include tools *.patch

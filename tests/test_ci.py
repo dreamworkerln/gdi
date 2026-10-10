@@ -47,6 +47,17 @@ class CiTestCase(ExchangeTestCase):
 
 
 class CiTests(CiTestCase):
+    def test_isolated_checkout_keeps_requested_ref_and_git_metadata(self):
+        worker = self.worker()
+        client, req = self.submit(worker)
+        worker.tick()
+        checkout = Git(worker.spool(req['job_id']) / 'checkout', isolated=True)
+        self.assertEqual(checkout.oid('HEAD'), req['head'])
+        self.assertEqual(checkout.oid(req['ref']), req['head'])
+        self.assertTrue((checkout.path / '.git' / req['ref']).is_file())
+        self.assertEqual(checkout.call('symbolic-ref', '--quiet', 'HEAD', allowed=(0, 1)).returncode, 1)
+        self.assertEqual(client.status(req['job_id'])['state'], 'PASS')
+
     def test_full_cycle_fail_fix_pass_and_exact_pass_pull(self):
         worker = self.worker(self.config([sys.executable, '-c',
             "from pathlib import Path; print('CONSOLE'); assert Path('file.txt').read_text().strip() == 'fixed', 'expected fixed' "]))
@@ -174,7 +185,9 @@ class CiTests(CiTestCase):
         self.assertEqual(client.status(req['job_id'])['state'], 'PASS')
 
     def test_live_progress_before_ci_completes(self):
-        worker = self.worker(self.config([sys.executable, '-c', "import time; print('EARLY',flush=True); time.sleep(2.5); print('LATE')"]))
+        config = self.config([sys.executable, '-c', "import time; print('EARLY',flush=True); time.sleep(2.5); print('LATE')"])
+        config['poll_active_seconds'] = .1
+        worker = self.worker(config)
         client, req = self.submit(worker)
         errors = []
         # Ledger remains owned by this thread, publisher runs separately as in production.
