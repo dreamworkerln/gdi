@@ -179,9 +179,18 @@ loginctl show-user "$USER" -p Linger
 ## Два разных лога
 
 ```bash
-journalctl --user -u gdi-worker.service -b
-journalctl --user -u gdi-worker.service -f
+gdi worker logs
+gdi worker logs --boot -n 200
+gdi worker logs --follow
+gdi worker logs -f -n 0
 ```
+
+По умолчанию показываются последние 100 сообщений. `-n`/`--lines` меняет их число,
+`-b`/`--boot` выбирает текущую загрузку системы. `-f`/`--follow` показывает новые
+сообщения по мере поступления; `-n 0` пропускает старые записи. Ctrl+C завершает
+просмотр и дочерний journalctl, worker продолжает работать. Команда работает
+вне Git-репозитория, не требует worker config и использует user journal
+`journalctl --user -u gdi-worker.service --no-pager`.
 
 В journal: запуск службы, job ID, этапы, диагностика сети и публикации.
 Полная stdout+stderr консоль CI сохраняется отдельно в job `build.log`, а также

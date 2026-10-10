@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import sys
+import subprocess
 
 from .git import GdiError, run
 
@@ -57,3 +58,28 @@ def action(operation):
         return run(['systemctl', '--user', 'stop', UNIT]).stdout
     result = run(['systemctl', '--user', 'show', UNIT, '--property=ActiveState,SubState,ExecMainStatus,UnitFileState'])
     return dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+
+
+def logs(*, lines=100, follow=False, boot=False):
+    """Stream the user service journal directly, including journalctl errors."""
+    if type(lines) is not int or lines < 0:
+        raise GdiError('log line count must be a nonnegative integer')
+    args = ['journalctl', '--user', '--unit=' + UNIT, '--no-pager', '--lines=' + str(lines)]
+    if boot:
+        args.append('--boot')
+    if follow:
+        args.append('--follow')
+    from .diagnostics import subprocess_call
+    with subprocess_call(args) as timing:
+        try:
+            with subprocess.Popen(args) as process:
+                try:
+                    code = process.wait()
+                except KeyboardInterrupt:
+                    process.terminate()
+                    process.wait()
+                    raise
+        except FileNotFoundError as exc:
+            raise GdiError('journalctl not found in PATH') from exc
+        timing['result'] = subprocess.CompletedProcess(args, code, stdout='', stderr='')
+    return code if code >= 0 else 128 - code

@@ -8,10 +8,11 @@ import shutil
 import tempfile
 
 from .branches import branch_directory
+from .cache import VerifiedObjects
 from .ci_protocol import atomic_write
 from .git import GdiError, Git
 from .inbox import filename, notification
-from .publication import (decode, digest, encode, file_digest, hex_value,
+from .publication import (CHECKPOINT_EVERY, full_checkpoint, decode, digest, encode, file_digest, hex_value,
                           prepare_publication, verify_bundle, validate_manifest)
 from .snapshot import Snapshot, local_file, metadata_file
 
@@ -93,7 +94,7 @@ def publication_plan(directory, expected_id):
     value = load_plan(directory, expected_id)
     keys = {'plan_version', 'kind', 'repository_id', 'repository_path', 'ref', 'head',
             'publication_id', 'base_chain', 'base_head', 'files', 'state', 'checked_snapshot'}
-    if (set(value) != keys or value['state'] not in ('prepared', 'bundle_checked', 'accepted') or
+    if (set(value) not in (keys, keys | {'local_base'}) or value['state'] not in ('prepared', 'bundle_checked', 'accepted') or
             not hex_value(value['head'], 40) or not hex_value(value['publication_id'], 64) or
             not isinstance(value['base_chain'], list) or
             any(not hex_value(identity, 64) for identity in value['base_chain']) or
@@ -106,8 +107,20 @@ def publication_plan(directory, expected_id):
     previous = value['base_chain'][-1] if value['base_chain'] else None
     if (digest(raw) != value['publication_id'] or encode(data) != raw or
             any(data.get(key) != value[key] for key in ('repository_id', 'ref', 'head')) or
-            data.get('previous') != previous or data.get('bundle_kind') != 'full'):
+            data.get('previous') != previous):
         raise GdiError('saved publication metadata differs from plan')
+    if data['bundle_kind'] == 'incremental':
+        base = value.get('local_base')
+        if (data['base_publication'] != previous or data['base_head'] != value['base_head'] or
+                not isinstance(base, dict) or set(base) != {'local_path', 'sha256', 'bytes'} or
+                base['local_path'] != 'base.bundle' or not hex_value(base['sha256'], 64) or
+                type(base['bytes']) is not int or base['bytes'] <= 0):
+            raise GdiError('invalid incremental publication base')
+        bundle = local_file(directory, base['local_path'])
+        if bundle.stat().st_size != base['bytes'] or file_digest(bundle) != base['sha256']:
+            raise GdiError('saved base bundle checksum/size mismatch')
+    elif 'local_base' in value:
+        raise GdiError('full publication must not contain an incremental base')
     paths = {'bundle': 'bundles/' + data['bundle_sha256'] + '.bundle',
              'manifest': 'branches/' + branch_directory(value['ref']) + '/' + value['publication_id'] + '.json'}
     event = notification(expected_id, value['repository_path'], data, value['publication_id'])
@@ -119,6 +132,41 @@ def publication_plan(directory, expected_id):
         if value['files'][key] != file_plan(local_file(directory, local), local, target):
             raise GdiError('saved publication destination differs from plan')
     return value, data
+
+
+def save_local_base(git, repository_id, ref, head, directory):
+    """Keep a self-contained base using local objects; no old Drive bundles needed."""
+    with tempfile.TemporaryDirectory(prefix='gdi-agent-base-') as tmp:
+        repository = Path(tmp) / 'repository'
+        repository.mkdir()
+        base = Git(repository, isolated=True)
+        base.call('init', '--quiet', '--bare', '--object-format=sha1', '--template=')
+        base.import_objects(git.path, head)
+        base.call('update-ref', ref, head)
+        publication = prepare_publication(base, repository_id, ref, head, Path(tmp) / 'publication')
+        target = directory / 'base.bundle'
+        shutil.copyfile(publication.bundle, target)
+        return {'local_path': target.name, 'sha256': file_digest(target), 'bytes': target.stat().st_size}
+
+
+@contextmanager
+def verify_planned_bundle(directory, value, data, bundle):
+    previous = {'head': value['base_head']} if value['base_head'] else None
+    if data['bundle_kind'] == 'full':
+        with verify_bundle(bundle, data, value['ref'], previous=previous) as quarantine:
+            yield quarantine
+    else:
+        base = value['local_base']
+        metadata = {'bundle_kind': 'full', 'head': value['base_head'],
+                    'bundle_sha256': base['sha256'], 'bundle_bytes': base['bytes'], 'prerequisites': []}
+        with verify_bundle(local_file(directory, base['local_path']), metadata, value['ref']) as repository:
+            # Lend only objects reachable from the exact base, never bonus objects
+            # in a full pack that could hide missing objects in the new delta.
+            git = Git(repository, isolated=True)
+            git.call('repack', '-a', '-d')
+            git.call('prune', '--expire=now')
+            with verify_bundle(bundle, data, value['ref'], cache=VerifiedObjects(repository), previous=previous) as quarantine:
+                yield quarantine
 
 
 def verdict(directory, value):
@@ -142,6 +190,7 @@ def verdict(directory, value):
             **({'safe_to_upload_bundle': state != 'accepted', 'safe_to_upload_manifest': state == 'bundle_checked',
                 'safe_to_upload_notification': state == 'accepted',
                 'expected_previous_publication': value['base_chain'][-1] if value['base_chain'] else None,
+                'bundle_kind': decode(metadata_file(local_file(directory, 'publication.json')))['bundle_kind'],
                 'expected_new_tip': value['publication_id']} if publication else
                {'safe_to_upload_request': state == 'prepared', 'safe_to_upload_ready': state == 'prepared',
                 'safe_to_upload_inbox': state == 'request_checked'})}
@@ -160,9 +209,11 @@ def same_base(snapshot, value):
         raise GdiError('publication base HEAD changed')
 
 
-def prepare(git, snapshot_path, expected_id, output, branch=None):
+def prepare(git, snapshot_path, expected_id, output, branch=None, *, full=False,
+            checkpoint_every=CHECKPOINT_EVERY):
     ref = git.ref(branch if branch is not None else git.branch())
     snapshot = Snapshot(snapshot_path, expected_id, ref=ref)
+    is_full = full_checkpoint(snapshot.chain, full=full, checkpoint_every=checkpoint_every)
     head = git.oid(ref)
     if head is None:
         raise GdiError('branch has no committed HEAD')
@@ -177,15 +228,14 @@ def prepare(git, snapshot_path, expected_id, output, branch=None):
                 raise GdiError('remote changed; prepare a new plan after reconciling history')
             return verdict(directory, value)
         tip = snapshot.chain[-1] if snapshot.chain else None
-        if tip and head == tip[1]['head']:
+        if tip and head == tip[1]['head'] and (not full or tip[1]['bundle_kind'] == 'full'):
             git.check_payload(head)
             return {'state': 'already_published', 'repository_id': expected_id, 'ref': ref,
                     'head': head, 'publication_id': tip[0], 'files': {}, 'next_step': 'none',
                     'safe_to_upload_bundle': False, 'safe_to_upload_manifest': False}
         def build(temporary):
-            publication = prepare_publication(git, expected_id, ref, head, temporary, previous=tip)
-            with verify_bundle(publication.bundle, publication.data, ref, previous=tip[1] if tip else None):
-                pass
+            publication = prepare_publication(git, expected_id, ref, head, temporary, previous=tip,
+                                              incremental=not is_full)
             event = notification(expected_id, snapshot.repository_path, publication.data, publication.publication_id)
             atomic_write(temporary / 'notification.json', encode(event))
             value = {'plan_version': 1, 'kind': 'publication', 'repository_id': expected_id,
@@ -196,6 +246,10 @@ def prepare(git, snapshot_path, expected_id, output, branch=None):
                                'manifest': file_plan(publication.manifest, 'publication.json', snapshot.repository_path + '/' + publication.manifest_relative),
                                'notification': file_plan(temporary / 'notification.json', 'notification.json', 'inbox/' + filename(event))},
                      'state': 'prepared', 'checked_snapshot': None}
+            if not is_full:
+                value['local_base'] = save_local_base(git, expected_id, ref, tip[1]['head'], temporary)
+            with verify_planned_bundle(temporary, value, publication.data, publication.bundle):
+                pass
             save_plan(temporary, value)
         persist_directory(directory, build)
         value, _ = publication_plan(directory, expected_id)
@@ -210,7 +264,7 @@ def check(output, snapshot_path, expected_id):
         if value['state'] == 'accepted':
             raise GdiError('publication was already accepted; use accept with a fresh snapshot')
         bundle = snapshot.require_file('bundles/' + data['bundle_sha256'] + '.bundle', data['bundle_sha256'], data['bundle_bytes'])
-        with verify_bundle(bundle, data, value['ref'], previous={'head': value['base_head']} if value['base_head'] else None):
+        with verify_planned_bundle(directory, value, data, bundle):
             pass
         value.update(state='bundle_checked', checked_snapshot=snapshot.fingerprint)
         save_plan(directory, value)
@@ -228,7 +282,7 @@ def accept(output, snapshot_path, expected_id):
         if snapshot.read(path) != metadata_file(local_file(directory, 'publication.json')):
             raise GdiError('uploaded manifest differs from saved bytes')
         bundle = snapshot.require_file('bundles/' + data['bundle_sha256'] + '.bundle', data['bundle_sha256'], data['bundle_bytes'])
-        with verify_bundle(bundle, data, value['ref'], previous={'head': value['base_head']} if value['base_head'] else None):
+        with verify_planned_bundle(directory, value, data, bundle):
             pass
         value.update(state='accepted', checked_snapshot=snapshot.fingerprint)
         save_plan(directory, value)

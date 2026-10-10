@@ -72,6 +72,118 @@ class AgentTests(ExchangeTestCase):
         with self.assertRaisesRegex(GdiError, 'must not exist'):
             agent.clone(snap, self.identity, self.root / 'clone')
 
+    def test_small_delta_is_self_contained_and_accepted_by_native_pull(self):
+        import os, shutil
+        (self.a.path / 'large.bin').write_bytes(os.urandom(256 * 1024))
+        self.a.call('add', 'large.bin')
+        self.a.call('commit', '-qm', 'large base')
+        self.ea.push('drive')
+        base_head = self.a.oid('HEAD')
+        head = self.commit(self.a, 'small TODO change')
+        before = self.snapshot('before')
+        output = self.root / 'delta-plan'
+        value = agent.prepare(self.a, before, self.identity, output)
+        full = agent.prepare(self.a, before, self.identity, self.root / 'full-plan', full=True)
+        metadata = decode((output / 'publication.json').read_bytes())
+        self.assertEqual(value['bundle_kind'], 'incremental')
+        self.assertEqual(metadata['base_head'], base_head)
+        self.assertEqual(metadata['base_publication'], value['expected_previous_publication'])
+        self.assertTrue(metadata['prerequisites'])
+        self.assertLess(value['files']['bundle']['bytes'], full['files']['bundle']['bytes'] // 20)
+        self.assertEqual(agent.prepare(self.a, before, self.identity, output, full=True), value)
+        self.assertNotIn('local_base', value['files'])
+        # check/accept must survive removal of the source and its verified cache.
+        shutil.rmtree(self.a.path)
+        self.transfer(value, 'bundle')
+        bundle_path = 'bundles/' + metadata['bundle_sha256'] + '.bundle'
+        def downloaded_snapshot(name):
+            manifests = [path for path in self.store.data if path.startswith('branches/main/')]
+            return export_snapshot(self.root / name, self.store,
+                include=['', 'branches', 'branches/main', 'bundles'],
+                downloads=['repository.json', bundle_path] + manifests)
+        checked = agent.check(output, downloaded_snapshot('bundle'), self.identity)
+        self.assertTrue(checked['safe_to_upload_manifest'])
+        self.transfer(value, 'manifest')
+        self.assertEqual(agent.accept(output, downloaded_snapshot('manifest'), self.identity)['state'], 'accepted')
+        self.assertEqual(self.eb.pull('drive')[0], head)
+        self.assertEqual((self.b.path / 'large.bin').stat().st_size, 256 * 1024)
+
+    def test_incremental_base_damage_and_wrong_base_do_not_grant_permission(self):
+        self.ea.push('drive')
+        self.commit(self.a, 'second')
+        output = self.root / 'plan'
+        value = agent.prepare(self.a, self.snapshot('before'), self.identity, output)
+        self.transfer(value, 'bundle')
+        snap = self.snapshot('bundle', bundles=True)
+        base = output / 'base.bundle'
+        raw = base.read_bytes()
+        damaged = raw[:-1] + bytes([raw[-1] ^ 1])
+        base.write_bytes(damaged)
+        with self.assertRaisesRegex(GdiError, 'base bundle checksum'):
+            agent.check(output, snap, self.identity)
+        # Even a rewritten local checksum cannot replace the declared base with another ref/HEAD.
+        self.a.call('bundle', 'create', str(self.root / 'wrong.bundle'), 'refs/heads/main')
+        base.write_bytes((self.root / 'wrong.bundle').read_bytes())
+        plan = decode((output / 'plan.json').read_bytes())
+        saved = copy.deepcopy(plan)
+        plan['local_base'].update(sha256=digest(base.read_bytes()), bytes=base.stat().st_size)
+        (output / 'plan.json').write_bytes(encode(plan))
+        with self.assertRaisesRegex(GdiError, 'exact HEAD'):
+            agent.check(output, snap, self.identity)
+        self.assertEqual(decode((output / 'plan.json').read_bytes())['state'], 'prepared')
+        base.write_bytes(raw)
+        (output / 'plan.json').write_bytes(encode(saved))
+        self.assertTrue(agent.check(output, snap, self.identity)['safe_to_upload_manifest'])
+
+    def test_checkpoint_cadence_forced_full_and_existing_full_plan_retry(self):
+        self.ea.push('drive')
+        for number, expected in enumerate(('incremental', 'full', 'incremental')):
+            self.commit(self.a, f'change {number}')
+            output = self.root / f'plan-{number}'
+            before = self.snapshot(f'before-{number}')
+            value = agent.prepare(self.a, before, self.identity, output, checkpoint_every=2)
+            self.assertEqual(value['bundle_kind'], expected)
+            self.transfer(value, 'bundle', 'manifest')
+            snap = self.snapshot(f'after-{number}', bundles=True)
+            self.assertEqual(agent.accept(output, snap, self.identity)['state'], 'accepted')
+            self.assertEqual(self.eb.fetch('drive')[0], self.a.oid('HEAD'))
+        # Promote an already-published incremental tip to a full checkpoint, like push --full.
+        output = self.root / 'forced'
+        value = agent.prepare(self.a, self.snapshot('force'), self.identity, output, full=True)
+        self.assertEqual(value['bundle_kind'], 'full')
+        self.assertNotIn('local_base', decode((output / 'plan.json').read_bytes()))
+        self.assertEqual(agent.prepare(self.a, self.snapshot('force-retry'), self.identity, output), value)
+        self.transfer(value, 'bundle')
+        self.assertTrue(agent.check(output, self.snapshot('forced-bundle', bundles=True), self.identity)['safe_to_upload_manifest'])
+        self.transfer(value, 'manifest')
+        self.assertEqual(agent.accept(output, self.snapshot('forced-manifest', bundles=True), self.identity)['state'], 'accepted')
+        with self.assertRaisesRegex(GdiError, 'positive integer'):
+            agent.prepare(self.a, self.snapshot('invalid'), self.identity, self.root / 'invalid', checkpoint_every=0)
+
+    def test_extra_objects_in_local_base_cannot_hide_an_incomplete_delta(self):
+        self.ea.push('drive')
+        head = self.commit(self.a, 'second')
+        before = self.snapshot('before')
+        output = self.root / 'delta'
+        value = agent.prepare(self.a, before, self.identity, output)
+        full = agent.prepare(self.a, before, self.identity, self.root / 'full', full=True)
+        base = output / 'base.bundle'
+        base_pack = base.read_bytes().split(b'\n\n', 1)[1]
+        # A full pack may contain valid but unreachable objects beyond its advertised HEAD.
+        full_bytes = Path(full['files']['bundle']['local_path']).read_bytes()
+        base.write_bytes(full_bytes.replace((head + ' refs/heads/main').encode(),
+                                           (value['base_head'] + ' refs/heads/main').encode(), 1))
+        value['local_base'].update(sha256=digest(base.read_bytes()), bytes=base.stat().st_size)
+        # Advertise the new HEAD, but omit all its new objects from the delta pack.
+        delta_header = Path(value['files']['bundle']['local_path']).read_bytes().split(b'\n\n', 1)[0]
+        incomplete = self.root / 'incomplete.bundle'
+        incomplete.write_bytes(delta_header + b'\n\n' + base_pack)
+        data = decode((output / 'publication.json').read_bytes())
+        data.update(bundle_sha256=digest(incomplete.read_bytes()), bundle_bytes=incomplete.stat().st_size)
+        with self.assertRaises(GdiError):
+            with agent.verify_planned_bundle(output, value, data, incomplete):
+                self.fail('an incomplete delta borrowed unpublished objects from its base')
+
     def test_cli_is_json_and_can_run_from_source_against_another_repo(self):
         stream = io.StringIO()
         with patch.dict('os.environ', {'GDI_TRANSPORT': 'invalid-but-unused'}), contextlib.redirect_stdout(stream):

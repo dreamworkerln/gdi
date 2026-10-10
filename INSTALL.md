@@ -560,7 +560,7 @@ Check проверяет схему, run проверяет соединение
 gdi worker install --config ~/.config/gdi/worker.json
 gdi worker start
 gdi worker status
-journalctl --user -u gdi-worker.service -f
+gdi worker logs --follow
 ```
 
 Install создаёт user unit с абсолютными Python/config paths, Start делает enable
@@ -572,7 +572,10 @@ sudo loginctl enable-linger "$USER"
 loginctl show-user "$USER" -p Linger
 ```
 
-Диагностика worker идёт в journalctl. Полная консоль каждого CI сохраняется в
+Диагностика worker идёт в journalctl: `gdi worker logs` показывает последние
+100 сообщений, `gdi worker logs --follow` следит за новыми. `-n 200` задаёт число
+сообщений, `--boot` выбирает текущую загрузку системы. Ctrl+C останавливает
+просмотр и не останавливает службу. Полная консоль каждого CI сохраняется в
 отдельном `build.log` и публикуется через Drive. Агент читает её командами ниже.
 После PASS/FAIL служба остаётся работать. Команда `gdi worker stop` запрещает новые
 jobs и даёт текущему завершиться; через 120 секунд systemd вправе остановить всю

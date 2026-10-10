@@ -217,13 +217,16 @@ gdi pull drive --passed --job JOB_ID --profile full
 | Посмотреть подключение и Repository ID | `gdi remote list` |
 | Посмотреть службу | `gdi worker status` |
 | Подробное состояние службы и последние сообщения | `systemctl --user status gdi-worker.service` |
-| Лог службы за текущую загрузку | `journalctl --user -u gdi-worker.service -b` |
-| Следить за логом службы | `journalctl --user -u gdi-worker.service -f` |
+| Последние 100 сообщений службы | `gdi worker logs` |
+| Последние 200 сообщений за текущую загрузку | `gdi worker logs --boot -n 200` |
+| Следить за логом службы | `gdi worker logs --follow` |
+| Следить только за новыми сообщениями | `gdi worker logs -f -n 0` |
 | Остановить службу | `gdi worker stop` |
 | Запустить службу | `gdi worker start` |
 | Перезапустить после изменения config/окружения | `systemctl --user restart gdi-worker.service` |
 | Помощь / версия с эмблемой | `gdi -h` / `gdi -v` |
 
+`worker logs` работает вне Git-репозитория; Ctrl+C останавливает только просмотр.
 `worker stop` перестаёт принимать новые задания и ждёт завершения текущего CI
 и доставки результатов. Unit использует `KillMode=mixed`: SIGTERM получает worker,
 а act продолжает текущий запуск. По умолчанию systemd ждёт до **120 секунд**, затем

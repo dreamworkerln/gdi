@@ -60,6 +60,7 @@ gdi pull
 | `gdi pull [NAME] --passed --job ID --profile full` | Fast-forward именно на SHA выбранного проверенного PASS |
 | `gdi worker check/run/install --config PATH` | Проверка config, foreground worker, явная установка user service |
 | `gdi worker start/status/stop` | Управление постоянной systemd user service |
+| `gdi worker logs [-f] [-n N] [-b]` | Последние 100 сообщений службы; follow, число строк, текущая загрузка |
 | `gdi fetch [NAME] [BRANCH]` | Восстанавливает недостающую историю, обновляет `refs/remotes/NAME/BRANCH` |
 | `gdi pull [NAME]` | Получает текущую ветку и применяет только fast-forward |
 | `gdi cache clear NAME` | Удаляет только локальный кеш проверенных объектов этого repository ID |
@@ -118,7 +119,11 @@ cache, выполняет exact SHA в отдельном checkout, публик
 gdi pull drive --passed --job JOB_ID --profile full
 ```
 
-Worker diagnostics: `journalctl --user -u gdi-worker.service -f`.
+Диагностика worker: `gdi worker logs` показывает последние 100 сообщений журнала службы,
+`gdi worker logs --follow` следит за новыми. `-n 200` меняет число сообщений,
+`--boot` ограничивает текущей загрузкой системы. Ctrl+C завершает просмотр;
+worker продолжает работать. Команда работает вне Git-репозитория и использует
+`journalctl --user -u gdi-worker.service` без pager.
 CI консоль: `gdi ci logs`/`wait --follow`. Команды CI берутся из `.github/workflows` проверяемого commit.
 `--workflow`, `--event`, `--job`, `--input KEY=VALUE` выбирают проверку при submit.
 Worker исполняет доверенные workflows; act имеет доступ к Docker Engine.

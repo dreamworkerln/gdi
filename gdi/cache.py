@@ -7,10 +7,24 @@ import shutil
 from .git import GdiError, Git
 
 
-class VerifiedCache:
+class VerifiedObjects:
+    """Immutable objects already checked in an isolated repository."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+
+    def seed(self, quarantine):
+        raw = os.fsencode(self.path / "objects")
+        quoted = b'"' + b"".join(
+            (f"\\{byte:03o}".encode("ascii") if byte < 32 or byte >= 127 or byte in (34, 92)
+             else bytes([byte])) for byte in raw) + b'"\n'
+        (Path(quarantine) / "objects/info/alternates").write_bytes(quoted)
+
+
+class VerifiedCache(VerifiedObjects):
     def __init__(self, owner, repository_id):
         self.root = owner.gdi_dir() / "cache" / repository_id
-        self.path = self.root / "repository.git"
+        super().__init__(self.root / "repository.git")
         self.git = Git(self.path, isolated=True)
 
     def initialize(self):
@@ -52,8 +66,4 @@ class VerifiedCache:
         # Borrow only immutable objects while this gdi operation holds the local
         # repository lock. Quarantine refs/config/index remain private. Git fetch
         # copies accepted new objects back; no alternates are retained in the cache.
-        raw = os.fsencode(self.path / "objects")
-        quoted = b'"' + b"".join(
-            (f"\\{byte:03o}".encode("ascii") if byte < 32 or byte >= 127 or byte in (34, 92)
-             else bytes([byte])) for byte in raw) + b'"\n'
-        (Path(quarantine) / "objects/info/alternates").write_bytes(quoted)
+        super().seed(quarantine)

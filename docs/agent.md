@@ -141,9 +141,17 @@ python3 -m gdi agent clone --snapshot "$EXCHANGE_DIR/source/snapshot.json" \
    `local_path`, `target_folder`, `target_name`, `sha256`, `bytes`;
    `upload_order`, `expected_previous_publication`, `expected_new_tip` и `next_step`.
    `target_folder` — логический путь **от общего Drive root**, не Drive folder ID.
-   Найдите/создайте эти папки коннектором. Эта версия готовит full bundle;
-   canonical JSON, nonce, SHA256, ветки и quarantine совпадают с обычным push.
+   Найдите/создайте эти папки коннектором. `bundle_kind` показывает выбранный тип:
+   по умолчанию передаётся incremental от опубликованного tip. Первая публикация
+   и периодический checkpoint используют full, как обычный push: после 19 дельт
+   создаётся новый full. `--full` принудительно выбирает полный bundle;
+   `--checkpoint-every N` меняет период checkpoints.
+   Canonical JSON, nonce, SHA256, ветки и quarantine совпадают с обычным push.
+   Для проверки дельты GDI сохраняет `base.bundle` из локальной Git-истории внутри
+   плана. Это локальный файл: загружайте только перечисленное в `files`.
+   Старые bundles с Drive для prepare/check/accept скачивать не требуется.
    Если HEAD уже опубликован, ответ `already_published` не требует загрузок.
+   Исключение — `--full` для уже опубликованной дельты: создаётся полный checkpoint.
 3. Загрузите bundle, скачайте его обратно. Обновите metadata и снимок с полным
    listing `bundles` и downloaded bundle. Выполните:
 
@@ -155,8 +163,9 @@ python3 -m gdi agent clone --snapshot "$EXCHANGE_DIR/source/snapshot.json" \
    Только успешный ответ `safe_to_upload_manifest: true` разрешает следующую загрузку.
    Bundle проверяется по bytes/размеру/SHA256 и в quarantine; база должна оставаться
    ровно прежней. Разрешение относится к этому снимку и не блокирует конкурентный push.
-4. Загрузите manifest последним. Скачайте его обратно и свежую **полную** цепочку
-   выбранной ветки. В новом снимке также сохраните listing/download bundle:
+4. Загрузите manifest последним. Скачайте его обратно и получите свежий **полный**
+   listing выбранной ветки. В новом снимке сохраните ранее скачанные manifests
+   и проверенный bundle вместе со свежими listings:
 
    ```bash
    python3 -m gdi agent accept --plan "$EXCHANGE_DIR/publication-plan" \
@@ -174,8 +183,42 @@ python3 -m gdi agent clone --snapshot "$EXCHANGE_DIR/source/snapshot.json" \
    из нужного Git-репозитория на согласованной ветке/подключении.
 
 Повтор prepare с тем же каталогом плана и неизменным HEAD возвращает прежние bytes.
+Параметры full/checkpoint применяются только при создании нового плана; retry
+существующего плана сохраняет выбранный тип bundle, bytes и nonce.
 Повтор check/accept проверяет новый снимок. Проверяемые bundles не требуют скачивания
 остального репозитория; скачанные bytes можно оставить локально для следующего accept.
+
+### Минимальный обмен с коннектором
+
+Рабочая последовательность: commit → prepare → upload bundle → check → upload manifest
+→ accept. Upload-probe и ручное повторение проверок GDI не нужны.
+
+- Перед prepare получите свежий `repository.json` и полные listings проекта,
+  `branches`, выбранной ветки и `bundles`. Скачайте manifests, которых ещё нет локально;
+  listing `bundles` используется для поиска подготовленного имени перед upload.
+- После upload bundle скачайте обратно только этот bundle. Обновите
+  `repository.json` и все перечисленные listings, включая `bundles`.
+  Он нужен для проверки дубликатов; остальные bundle-файлы скачивать не требуется.
+- После upload manifest скачайте обратно только этот manifest. Ещё раз обновите
+  `repository.json` и полные listings проекта, `branches`, выбранной ветки и `bundles`.
+  Ранее проверенный bundle и неизменные manifests используйте из локальных файлов.
+
+Каждый свежий listing получайте со всеми страницами один раз за этап; этот же
+listing используйте для поиска файла, проверки имён и сборки снимка. Если коннектор
+поддерживает пакетное получение независимых listings/downloads, группируйте их.
+Перед upload используйте точное имя из плана и полный listing папки назначения.
+Если файл уже существует, скачайте и сравните SHA256/размер, затем переиспользуйте
+совпадающие bytes. При дубликатах или отличающихся bytes остановитесь; потеря ответа
+upload требует повторной проверки существующего файла, а не создания ещё одного.
+Сохранённые Drive folder IDs используйте после проверки связей со свежим listing
+родителя. Переиспользовать bytes можно только для прежних immutable имён/IDs/размеров;
+GDI проверит hashes и полную цепочку. `repository.json` и mutable CI metadata получайте
+заново, а не из старого локального снимка.
+
+Для нового снимка скопируйте сохранённые downloads в его каталог обычной копией
+или hardlink: пути `..` и symlinks не поддерживаются. Свежие listings обязательны
+даже при локальном переиспользовании bytes: они выявляют удаление, дубликаты и
+конкурирующую публикацию. При изменениях следуйте ошибке GDI и обновите снимок.
 
 ## Подготовить запрос CI
 

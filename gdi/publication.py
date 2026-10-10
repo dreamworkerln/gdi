@@ -15,6 +15,19 @@ from .git import GdiError, Git
 
 
 PROTOCOL_VERSION = 3
+CHECKPOINT_EVERY = 20
+
+
+def full_checkpoint(chain, *, full=False, checkpoint_every=CHECKPOINT_EVERY):
+    """Choose the same checkpoint cadence for online and connector publications."""
+    if type(checkpoint_every) is not int or checkpoint_every < 1:
+        raise GdiError('checkpoint interval must be a positive integer')
+    deltas = 0
+    for _, data in reversed(chain):
+        if data['bundle_kind'] == 'full':
+            break
+        deltas += 1
+    return full or not chain or deltas >= checkpoint_every - 1
 
 
 def digest(data):

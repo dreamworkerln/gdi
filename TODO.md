@@ -30,11 +30,13 @@
 - [x] Снимки коннектора с реальными Drive IDs, всеми страницами и дубликатами;
   локальная проверка repository identity, manifests и полной цепочки без rclone.
   Свежесть и полноту получения с Drive обеспечивает агент через коннектор.
-- [x] Gdi agent prepare/check/accept: full bundle и manifest общим ядром,
+- [x] Gdi agent prepare/check/accept: full/incremental bundle и manifest общим ядром,
   quarantine, сохранённый JSON-план с paths/names/bytes/SHA256 и порядком загрузок.
   Повторы сохраняют bytes/nonce, изменение базы и подмена данных вызывают отказ.
   Manifest разрешается после проверки загруженного bundle; accept подтверждает
   точные bytes и единственный tip. Проверен приём обычными fetch/pull.
+  Выбор checkpoints общий с push; --full и --checkpoint-every. Локальный base.bundle
+  сохраняет проверенную базу дельты без скачивания старых bundles с Drive.
 - [x] Gdi agent clone восстанавливает новый рабочий репозиторий из скачанных
   checkpoint/prerequisite bundles с проверкой SHA256, ref/HEAD и ancestry.
   Запуск из исходников требует только Python и Git, без setuptools/pip.
@@ -46,6 +48,8 @@
 - [x] Инструкция использует команды GDI вместо самостоятельных Python-рецептов;
   описаны снимки, bootstrap исходников GDI, передача файлов и проверка результата.
   docs/agent.md — основной документ агента; docs/ci.md — CI через CLI с rclone.
+  Описан минимальный обмен: без probe и повторных проверок вручную, с переиспользованием
+  immutable downloads между этапами и свежими полными listings.
 
 ### Обмен Git и CLI
 
@@ -113,8 +117,10 @@
   явный retry завершённого задания с новым ID.
 - [x] Постоянный worker, последовательное исполнение,
   foreground и systemd user service.
-- [x] Worker check/run/install/start/status/stop;
+- [x] Worker check/run/install/start/status/stop/logs;
   успешные start/stop не печатают пустой JSON-ответ.
+  Logs выводит журнал user service напрямую: --follow, --lines и --boot;
+  Ctrl+C завершает просмотр и journalctl, служба продолжает работать.
 - [x] Изолированный checkout точного SHA; пользовательский worktree не изменяется.
 - [x] Worker cache и восстановление нужного commit после bundle GC.
 - [x] Runtime-проверка act/Docker/images и execution revision,

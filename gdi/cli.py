@@ -58,6 +58,16 @@ def positive_count(value):
     return count
 
 
+def nonnegative_count(value):
+    try:
+        count = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError('count must be a nonnegative integer') from exc
+    if count < 0:
+        raise argparse.ArgumentTypeError('count must be a nonnegative integer')
+    return count
+
+
 def parser():
     cli = argparse.ArgumentParser(
         prog="gdi", description="Verified Git bundle exchange through rclone.",
@@ -73,6 +83,7 @@ def parser():
   gdi cache clear drive                               # clear local verified cache
   gdi push drive --ci --worker user-host --profile full
   gdi ci wait drive JOB_ID --follow                    # watch CI and console
+  gdi worker logs --follow                            # watch worker service journal
   gdi gc drive                                        # preview remote cleanup
   gdi gc drive --apply --quiescent                    # all clients must be paused
 
@@ -176,6 +187,9 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             sub.add_argument('--repo', default='.', help='target Git worktree (default: current directory)')
             sub.add_argument('--branch', help='branch name (default: current branch)')
             sub.add_argument('--output', required=True, help='durable plan directory; reuse for retries')
+            sub.add_argument('--full', action='store_true', help='prepare a full bundle instead of an incremental')
+            sub.add_argument('--checkpoint-every', type=positive_count, default=CHECKPOINT_EVERY,
+                             help=f'prepare a full checkpoint every N updates (default: {CHECKPOINT_EVERY})')
         if operation in ('check', 'accept'):
             sub.add_argument('--plan', required=True, help='saved plan directory')
         if operation == 'clone':
@@ -204,8 +218,9 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             sub.add_argument('--capabilities', required=True, help='fresh downloaded worker capabilities JSON')
     worker = commands.add_parser("worker", help="host worker and systemd user service (works outside Git)")
     worker_ops = worker.add_subparsers(dest="operation", required=True)
-    for operation in ("check", "run", "install", "start", "status", "stop"):
-        sub = worker_ops.add_parser(operation)
+    for operation in ("check", "run", "install", "start", "status", "stop", "logs"):
+        sub = worker_ops.add_parser(operation, **({'help': 'show or follow the systemd user service journal'}
+                                                 if operation == 'logs' else {}))
         diagnostics_arguments(sub)
         if operation in ("check", "run", "install"):
             sub.add_argument("--config", default="~/.config/gdi/worker.json")
@@ -215,6 +230,11 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             sub.add_argument("--json", action="store_true")
         if operation == "check":
             sub.add_argument("--runtime", action="store_true", help="verify actual act/Docker/images and show execution revision")
+        if operation == 'logs':
+            sub.add_argument('-f', '--follow', action='store_true', help='follow new entries until Ctrl+C; worker keeps running')
+            sub.add_argument('-n', '--lines', type=nonnegative_count, default=100,
+                             help='show the last N entries (default: 100; 0 shows only new entries with --follow)')
+            sub.add_argument('-b', '--boot', action='store_true', help='show only entries from the current boot')
     return cli
 
 
@@ -242,7 +262,7 @@ def main(argv=None):
         from .diagnostics import command_session
         with command_session(args.command + (' ' + args.operation if hasattr(args, 'operation') else ''),
                              path=getattr(args, 'profile_log', None), progress=getattr(args, 'progress', None)) as diagnostics:
-            if args.command == 'agent':
+            if args.command == 'agent' or (args.command == 'worker' and args.operation == 'logs'):
                 code = execute(args)
             else:
                 from .rc_transport import TransportSession
@@ -252,7 +272,8 @@ def main(argv=None):
                 diagnostics.exit_code = code
             return code
     except KeyboardInterrupt:
-        print("gdi: interrupted; the remote job is not cancelled", file=sys.stderr)
+        print("gdi: log following stopped" if args.command == 'worker' and args.operation == 'logs'
+              else "gdi: interrupted; the remote job is not cancelled", file=sys.stderr)
         return 130
     except (GdiError, OSError, UnicodeError) as exc:
         if getattr(args, "json", False):
@@ -277,7 +298,8 @@ def execute(args, *, transport_factory=None):
             elif args.operation == 'prepare':
                 git = Git.discover(args.repo)
                 with git.lock():
-                    value = agent.prepare(git, args.snapshot, args.repository_id, args.output, args.branch)
+                    value = agent.prepare(git, args.snapshot, args.repository_id, args.output, args.branch,
+                                          full=args.full, checkpoint_every=args.checkpoint_every)
             elif args.operation == 'clone':
                 value = agent.clone(args.snapshot, args.repository_id, args.destination)
             elif args.operation == 'ci':
@@ -304,6 +326,8 @@ def execute(args, *, transport_factory=None):
             selector = selected_workflow(args)
         if args.command == "worker":
             from . import service
+            if args.operation == 'logs':
+                return service.logs(lines=args.lines, follow=args.follow, boot=args.boot)
             from .worker_config import load_config
             if args.operation in ("check", "run", "install"):
                 config = load_config(args.config)
@@ -457,7 +481,8 @@ def execute(args, *, transport_factory=None):
                         print(f"{args.command}: {tracking} -> {head}\nPublication: {pub}")
         return 0
     except KeyboardInterrupt:
-        print("gdi: interrupted; the remote job is not cancelled", file=sys.stderr)
+        print("gdi: log following stopped" if args.command == 'worker' and args.operation == 'logs'
+              else "gdi: interrupted; the remote job is not cancelled", file=sys.stderr)
         return 130
     except (GdiError, OSError, UnicodeError) as exc:
         if getattr(args, "json", False):

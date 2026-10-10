@@ -12,12 +12,9 @@ from .cache import VerifiedCache
 from .transport import Rclone, validate_url
 from .diagnostics import note, phase, timed
 # Keep existing import locations available while sharing the implementation.
-from .publication import (PROTOCOL_VERSION, bundle_prerequisites, decode, digest,
+from .publication import (PROTOCOL_VERSION, CHECKPOINT_EVERY, full_checkpoint, bundle_prerequisites, decode, digest,
                           encode, file_digest, hex_value, prepare_publication,
                           validate_repository, verify_bundle, validate_publications, bundle_sequence)
-
-
-CHECKPOINT_EVERY = 20
 
 
 def remote_name(name):
@@ -233,12 +230,7 @@ class Exchange:
                 return head, tip[0], False
             if not self.git.ancestor(tip[1]["head"], head):
                 raise GdiError("push is not a fast-forward; fetch/pull and reconcile history first")
-        deltas = 0
-        for _, data in reversed(chain):
-            if data["bundle_kind"] == "full":
-                break
-            deltas += 1
-        is_full = full or tip is None or deltas >= checkpoint_every - 1
+        is_full = full_checkpoint(chain, full=full, checkpoint_every=checkpoint_every)
         with tempfile.TemporaryDirectory(prefix="gdi-push-") as tmp:
             prepared = prepare_publication(self.git, repository_id, ref, head, tmp,
                                            previous=tip, incremental=not is_full)
