@@ -244,8 +244,11 @@ class Worker:
                 transport.upload(path, prefix + '/' + name)
                 sent.add(name)
         if (spool / 'status.json').exists():
-            transport.update_advisory(spool / 'status.json', prefix + '/status.json')
+            # Heartbeats replace this pathname while rclone is still reading/hash-
+            # checking it. Upload one captured value from a private stable file;
+            # use that same snapshot for the per-job and per-worker status.
             status = decode((spool / 'status.json').read_bytes())
+            upload_json(transport, prefix + '/status.json', status, mutable=True)
             target = self.transport_factory(self.config['remote_url']) if self.shared else transport
             upload_json(target, f'ci/workers/{self.worker_id}/status.json', status, mutable=True)
 

@@ -128,6 +128,8 @@
 - [x] Таймауты, остановка process groups и очистка контейнеров конкретного job.
 - [x] Проверка исходников после CI, required artifacts и защита от symlink escape.
 - [x] Live console, heartbeat, immutable log chunks/events и полный binary log.
+  Live upload статуса использует неизменяемый снимок вместо меняющегося status.json;
+  статусы job/worker согласованы, обновление heartbeat не меняет источник rclone.
 - [x] Проверка результата и artifacts, сверка chunks с полным логом до принятия PASS.
 - [x] Pull --passed применяет ровно SHA выбранного проверенного PASS, ff-only.
 - [x] SQLite ledger, persistent spool, atomic writes/fsync,
