@@ -71,7 +71,10 @@ def display(value):
     for remote in value['connections']:
         print(f"Connection: {remote['name']}{' (default)' if remote['default'] else ''} — {remote['url']}")
         print('  Repository ID: ' + remote['repository_id'])
-        print('  State: ' + descriptions[remote['state']])
+        state = descriptions[remote['state']]
+        if color and remote['state'] == 'ahead':
+            state = '\033[33m' + state + '\033[0m'
+        print('  State: ' + state)
         if remote['publication_id']:
             print('  Published HEAD: ' + remote['published_head'])
             print('  Publication: ' + remote['publication_id'])
