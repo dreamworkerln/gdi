@@ -1,7 +1,8 @@
 # CI protocol v1/v2 — gdi 0.3
 
 Отдельный от [Git protocol v3](protocol.md) namespace `ci/`. Один назначенный
-worker на общий root; legacy v1 — на repository remote. Все job IDs/run IDs — 32 lowercase hex, Git SHA — 40,
+worker на запрос; несколько workers общего root используют разные worker_id.
+Legacy v1 — на repository remote. Все job IDs/run IDs — 32 lowercase hex, Git SHA — 40,
 publication IDs/profile revisions/SHA256 — 64. Worker/profile IDs: ASCII letters,
 digits, `_`, `-`, до 64 символов. JSON UTF-8, canonical encoding как у Git metadata;
 duplicate keys и metadata больше 1 MiB отвергаются. Неизвестные request/result fields
@@ -10,7 +11,7 @@ duplicate keys и metadata больше 1 MiB отвергаются. Неизв
 ## Общая inbox и request v2
 
 Новый worker config version 2 публикует capabilities **в общем root**:
-`{ci_version:1, inbox_version:1, worker_id, profiles:{full:revision}}`.
+`{ci_version:1, inbox_version:1, cancel_version:1, worker_id, profiles:{full:revision}}`.
 Списка репозиториев нет. Revision закрепляет общие параметры и фактическое окружение
 исполнения: SHA256/version act, host actrc hashes, Docker daemon/version и local base image IDs.
 Пути проектов берутся из immutable notifications общей `inbox`; schema, checksum,
@@ -61,7 +62,7 @@ Advisory status/events пока используют status schema version 1.
 профиль с совпавшей revision; иначе terminal REJECTED.
 
 Capabilities: `ci/workers/<worker-id>/capabilities.json`:
-`{ci_version:1, worker_id, repositories:{repository_id:{profile_id:revision}}}`.
+`{ci_version:1, cancel_version:1, worker_id, repositories:{repository_id:{profile_id:revision}}}`.
 Snapshot mutable. Profile revision вычисляется из нормализованного config; сам config
 и его env values на Drive не публикуются.
 
@@ -76,7 +77,7 @@ Worker проверяет обе ссылки и request. Отсутствие r
 
 Claim `worker.running.json` immutable: `ci_version`, `job_id`, `run_id`, `worker_id`,
 `request_sha256`. Ledger сохраняется до claim upload. Claim чужого run не перехватывается.
-Это не CAS, один worker назначается оператором.
+Это не CAS: worker закреплён в request, claims разных run не перехватываются.
 
 ## Status, events и streaming
 
@@ -131,10 +132,50 @@ Exit 0 без завершённого успешного job не приним�
 | TIMEOUT | Host лимит исполнения превышен, группа процессов остановлена |
 | INTERRUPTED | После сбоя исход исполнения неопределён; требуется явный retry |
 | REJECTED | Профиль отсутствует или revision не совпадает |
+| CANCELLED | Worker учёл durable отмену и остановил собственное исполнение |
 
 Агент принимает terminal result только после проверок identity/hash/size всех
 artifacts, final status и полного streaming log. Клиентский `verified` не является
 полем remote result. Upload pending — локальное состояние доставки, не CI FAIL.
+
+## Отмена и поздние результаты
+
+`ci/jobs/<job-id>/cancel.json` — immutable canonical JSON:
+`{cancel_version:1, repository_id, job_id, worker_id, request_sha256}`.
+Он привязан к точным bytes исходного request. Клиент проверяет поддержку
+`cancel_version:1` исходным worker, готовит файл через gdi, загружает и проверяет
+read-back. Доставка marker означает CANCEL_REQUESTED, не подтверждённую остановку.
+Проверенный конечный результат, полученный до подготовки отмены, возвращается
+без создания marker. Параллельные отмена/завершение разрешаются консервативно:
+появившаяся поддерживаемая отмена блокирует обычный результат этой попытки.
+
+Worker сохраняет marker локально до остановки. Проверки выполняются до старта,
+во время CI, при возобновлении доставки, между загрузками artifacts и до/после
+загрузки result. Сбой проверки не считается отсутствием отмены. Клиент тоже
+повторяет проверку после скачивания artifacts; уже проверенный immutable marker
+сохраняется локально и не отменяется последующим исчезновением файла на Drive.
+
+Если result ещё не подготовлен, CANCELLED публикуется обычным порядком. Если он
+уже записан, исходные result/log/artifacts не перезаписываются: собственные
+процессы/контейнеры останавливаются, а подтверждение отмены публикуется в
+`ci/jobs/<job-id>/cancelled/`. Эта папка содержит обычную схему result со state
+CANCELLED, собственные build.log/final-status.json и log-chunks. Descriptor paths
+считаются относительно этой папки, identity/request_sha256/run_id сохраняются.
+Result здесь также загружается последним и проверяется полным общим валидатором;
+существующий claim должен соответствовать run_id. Клиент выбирает этот результат
+только вместе с проверенной отменой. Без подтверждения возвращается
+CANCEL_REQUESTED, verified:false; обычный поздний PASS не применяется через
+pull --passed. Все clients, проверяющие отменённые задания, должны поддерживать
+эту проверку; старые clients могут игнорировать новый cancel marker.
+
+`ci cancel --withdraw` позволяет убрать точное уведомление старого worker без
+поддержки отмены. В marker добавляется только в этом случае
+`worker_cancellation_supported:false`; такой marker не подтверждает остановку,
+не блокирует проверенный обычный результат и не разрешает retry активного CI.
+Request/ready/claim/история не удаляются. Для поддерживаемого worker retry
+разрешается по проверенной отмене либо terminal result и сохраняет связь retry_of.
+Недоступность host не доказывает остановку offline CI; повторяемость задания
+учитывается отдельно. Автоматические таймауты/переназначение и retention — TODO.
 
 ## Recovery и GC
 
@@ -143,11 +184,15 @@ Ledger PUBLISHED фиксируется после read-back проверки re
 `ci/queue/<job-id>.json`. Crash между этими действиями исправляется
 при discovery, без исполнения. Request/ready/claim/chunks/result остаются в архиве.
 
-При RUNNING/FINALIZING без durable result нет автоматического rerun: INTERRUPTED.
-Сохранившийся result допубликовывается независимо от прежнего ledger state. Повреждение
+При RUNNING/FINALIZING без durable result нет автоматического rerun:
+INTERRUPTED либо CANCELLED при проверенной отмене.
+Сохранившийся result допубликовывается независимо от прежнего ledger state,
+после проверки отмены; при отмене доставляется отдельный CANCELLED. Повреждение
 локального закрытого artifact/chunk блокирует доставку и не вызывает повтор CI.
 
-Apply-GC bundles отказывает при legacy queue pointer или неполном/nonterminal job v1/v2. Completed
+Apply-GC bundles отказывает при legacy queue pointer, неполном/nonterminal job v1/v2
+или неподтверждённой поддерживаемой отмене. Поздний обычный PASS не снимает защиту;
+подтверждение cancelled/result.json учитывается с его marker и artifacts. Completed
 CI artifacts не удаляются. Все clients и worker должны быть остановлены; snapshot
 checks не заменяют распределённый lock. Retention CI namespace пока не реализован.
 

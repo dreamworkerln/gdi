@@ -12,7 +12,8 @@ import tempfile
 import time
 
 from .ci_protocol import (atomic_write, job_id, marker, request, upload_json,
-                          validate_result, verify_file, workflow_selection, capability_revision, prepare_request)
+                          validate_result, verify_file, workflow_selection, capability_revision, prepare_request,
+                          cancellation, validate_cancellation, cancellation_capability)
 from .exchange import decode, digest, encode, file_digest, hex_value
 from .git import GdiError
 
@@ -116,13 +117,39 @@ class CiResultReader:
             raise GdiError("CI ready/request checksum or job identity mismatch")
         return req, raw
 
-    def result(self, jid, *, listing=None):
-        req, raw = self.load_request(jid)
-        prefix = f"ci/jobs/{jid}"
+    def result_source(self, req, raw, *, listing=None):
+        """Cancellation fences ordinary results, including an upload already in flight."""
+        prefix = f"ci/jobs/{req['job_id']}"
         listing = files(self.transport, prefix) if listing is None else listing
+        cancelled = self.cancellation_record(req, raw, listing=listing)
+        if cancelled is not None:
+            directories = {item['Path'] for item in self.transport.list(prefix) if item['IsDir']}
+            content = (optional_read(self.transport, prefix + '/cancelled/result.json')
+                       if 'cancelled' in directories else None)
+            if content is not None:
+                result = validate_result(decode(content), req, digest(raw))
+                if result['state'] != 'CANCELLED':
+                    raise GdiError('CI cancelled delivery must have state CANCELLED')
+                claim = optional_read(self.transport, prefix + '/worker.running.json')
+                if claim is not None and decode(claim) != {
+                        'ci_version': 1, 'job_id': req['job_id'], 'run_id': result['run_id'],
+                        'worker_id': req['worker_id'], 'request_sha256': digest(raw)}:
+                    raise GdiError('CI cancelled delivery does not match the execution claim')
+                return prefix + '/cancelled', result
         if "result.json" not in listing:
             return None
         result = validate_result(decode(self.transport.read(prefix + "/result.json")), req, digest(raw))
+        if (cancelled is not None and cancelled.get('worker_cancellation_supported') is not False
+                and result['state'] != 'CANCELLED'):
+            return None
+        return prefix, result
+
+    def result(self, jid, *, listing=None):
+        req, raw = self.load_request(jid)
+        source = self.result_source(req, raw, listing=listing)
+        if source is None:
+            return None
+        prefix, result = source
         local = self.root / "results" / jid
         local.mkdir(parents=True, exist_ok=True)
         for desc in result["artifacts"]:
@@ -142,17 +169,60 @@ class CiResultReader:
         # Validate the immutable streaming sequence against the final full binary log.
         chunk_hash = hashlib.sha256()
         size = 0
-        for path, checksum in self.chunks(jid):
-            data = self.chunk(jid, path, checksum)
+        cancelled_delivery = prefix.endswith('/cancelled')
+        for path, checksum in self.chunks(jid, cancelled_delivery=cancelled_delivery):
+            data = self.chunk(jid, path, checksum, cancelled_delivery=cancelled_delivery)
             chunk_hash.update(data); size += len(data)
         log = next(item for item in result["artifacts"] if item["path"] == "build.log")
         if size != log["bytes"] or chunk_hash.hexdigest() != log["sha256"]:
             raise GdiError("CI log chunks are incomplete or differ from the final log")
+        # Refresh after downloading: a cancellation can arrive while verifying artifacts.
+        current = self.result_source(req, raw)
+        if current is None:
+            return None
+        if current[0] != prefix:
+            return self.result(jid)
+        if current[1] != result:
+            raise GdiError('immutable CI result changed during verification')
         atomic_write(local / "result.json", encode(result))
         return result
 
-    def chunks(self, jid):
+    def cancellation_record(self, req, raw, *, listing=None):
+        path = f"ci/jobs/{req['job_id']}/cancel.json"
+        content = (optional_read(self.transport, path) if listing is None else
+                   self.transport.read(path) if 'cancel.json' in listing else None)
+        saved = self.root / 'verified-cancellations' / (req['job_id'] + '.json')
+        if saved.exists():
+            previous = saved.read_bytes()
+            value = validate_cancellation(previous, req, raw)
+            if content is not None and content != previous:
+                raise GdiError('immutable CI cancellation changed after verification')
+            # An observed immutable cancellation cannot be revoked by deletion.
+            return value
+        if content is None:
+            return None
+        value = validate_cancellation(content, req, raw)
+        atomic_write(saved, content)
+        return value
+
+    def cancellation_requested(self, jid):
+        req, raw = self.load_request(jid)
+        return self.cancellation_record(req, raw)
+
+    def retry_request(self, jid):
+        req, _ = self.load_request(jid)
+        if self.result(jid) is None:
+            cancelled = self.cancellation_requested(jid)
+            if cancelled is None:
+                raise GdiError('cannot retry an active job; verify its terminal result or durable cancellation first')
+            if cancelled.get('worker_cancellation_supported') is False:
+                raise GdiError('legacy queue withdrawal does not confirm execution cancellation; wait for a verified terminal result')
+        return req
+
+    def chunks(self, jid, *, cancelled_delivery=False):
         prefix = f"ci/jobs/{job_id(jid)}"
+        if cancelled_delivery:
+            prefix += '/cancelled'
         if "log-chunks" not in {item["Path"] for item in self.transport.list(prefix) if item["IsDir"]}:
             return []
         entries = self.transport.list(prefix + "/log-chunks")
@@ -167,12 +237,13 @@ class CiResultReader:
             raise GdiError("CI log chunk sequence contains gaps or duplicates")
         return [(path, checksum) for _, path, checksum in paths]
 
-    def chunk(self, jid, name, checksum):
-        target = self.root / "chunks" / jid / name
+    def chunk(self, jid, name, checksum, *, cancelled_delivery=False):
+        relative = jid + ('/cancelled' if cancelled_delivery else '')
+        target = self.root / "chunks" / relative / name
         target.parent.mkdir(parents=True, exist_ok=True)
         if not target.exists() or digest(target.read_bytes()) != checksum:
             pending = target.with_suffix(".pending")
-            self.transport.download(f"ci/jobs/{jid}/log-chunks/{name}", pending)
+            self.transport.download(f"ci/jobs/{relative}/log-chunks/{name}", pending)
             if digest(pending.read_bytes()) != checksum:
                 raise GdiError("CI log chunk checksum mismatch")
             os.replace(pending, target)
@@ -240,6 +311,9 @@ class CiClient(CiResultReader):
         if "result.json" in existing:
             self.result(jid)
             return req
+        if 'cancel.json' in existing:
+            self.cancellation_requested(jid)
+            return req
         with tempfile.TemporaryDirectory(prefix="gdi-submit-") as temporary:
             source = Path(temporary) / "request.json"
             source.write_bytes(raw)
@@ -263,6 +337,10 @@ class CiClient(CiResultReader):
         if result is not None:
             return {**result, "verified": True}
         req, raw = self.load_request(jid)
+        cancelled = self.cancellation_requested(jid)
+        if cancelled is not None:
+            return {**req, 'state': 'CANCEL_REQUESTED', 'verified': False,
+                    'worker_cancellation_supported': cancelled.get('worker_cancellation_supported', True)}
         listing = files(self.transport, f"ci/jobs/{jid}")
         if "status.json" not in listing:
             return {**req, "state": "QUEUED", "verified": False}
@@ -372,11 +450,61 @@ class CiClient(CiResultReader):
         else:
             self.follow(jid, 0, sys.stdout)
 
-    def retry(self, jid):
-        req, _ = self.load_request(jid)
-        if self.result(jid) is None:
-            raise GdiError("cannot retry an active job; wait for a verified terminal result")
-        return self.submit(req["publication_id"], req["worker_id"], req["profile_id"], retry_of=jid,
+    def withdraw(self, req, raw):
+        """Remove only this request's queue notification after persisting cancellation."""
+        if req['ci_version'] == 2:
+            from .inbox import filename, notification, read
+            from .local_config import repository_path
+            root = self.exchange.transport_factory(self.settings['inbox_root'])
+            event = notification(self.repository_id,
+                                 repository_path(self.settings['inbox_root'], self.settings['url']),
+                                 req, req['publication_id'], req, raw)
+            name = filename(event)
+            if name in files(root, 'inbox'):
+                if read(root, name) != event:
+                    raise GdiError('CI withdrawal inbox/request identity mismatch')
+                root.delete_notification('inbox/' + name)
+        else:
+            path = f"ci/queue/{req['job_id']}.json"
+            content = optional_read(self.transport, path)
+            if content is not None:
+                if decode(content) != marker(req, raw):
+                    raise GdiError('CI withdrawal queue/request identity mismatch')
+                self.transport.delete_queue(path)
+
+    def cancel(self, jid, *, withdraw=False):
+        completed = self.result(jid)
+        if completed is not None:
+            return {**completed, 'verified': True}
+        req, raw = self.load_request(jid)
+        target = (self.exchange.transport_factory(self.settings['inbox_root'])
+                  if req['ci_version'] == 2 else self.transport)
+        content = optional_read(target, f"ci/workers/{req['worker_id']}/capabilities.json")
+        caps = decode(content) if content is not None else None
+        supported = True
+        try:
+            cancellation_capability(caps, req['worker_id'])
+        except GdiError:
+            supported = False
+            if not withdraw:
+                raise
+        existing = self.cancellation_requested(jid)
+        content = encode(existing if existing is not None else cancellation(req, raw, supported=supported))
+        path = self.root / 'cancellations' / (jid + '.json')
+        atomic_write(path, content)
+        self.transport.upload(path, f'ci/jobs/{jid}/cancel.json')
+        validate_cancellation(self.transport.read(f'ci/jobs/{jid}/cancel.json'), req, raw)
+        if withdraw:
+            self.withdraw(req, raw)
+        value = self.status(jid)
+        if withdraw:
+            value.update(queue_withdrawn=True,
+                         worker_cancellation_supported=decode(content).get('worker_cancellation_supported', True))
+        return value
+
+    def retry(self, jid, *, worker_id=None):
+        req = self.retry_request(jid)
+        return self.submit(req["publication_id"], worker_id or req["worker_id"], req["profile_id"], retry_of=jid,
                            workflow=req.get("workflow"), github_repository=req.get("github_repository", ""))
 
     def pull_passed(self, jid, profile):

@@ -71,10 +71,16 @@ systemctl --user status gdi-worker.service
 `RCLONE_CONFIG` настраиваются через unit override/EnvironmentFile.
 Подробности и работа после выхода из аккаунта через linger: [docs/worker.md](docs/worker.md).
 
-На общий root запускайте **один активный worker**. Два host с одинаковым worker ID
-не защищены локальным lock от одновременного исполнения; координации нескольких
-worker и автоматического failover пока нет. Общая inbox всех проектов опрашивается
+Каждый host общего root должен иметь **свой worker_id**. Два host с одинаковым ID
+не защищены локальным lock от одновременного исполнения. Запрос адресуется явно
+одному worker; автоматического выбора и failover пока нет. Общая inbox опрашивается
 без обхода папок репозиториев.
+
+Фактический ID host показывает `gdi worker check --json`, из
+`~/.config/gdi/worker.json`; для другого пути добавьте `--config PATH`.
+Это проверка config, состояние службы смотрите через `gdi worker status`.
+Заменяйте `user-host` в CI-примерах этим ID. В простое старые capabilities и
+READY на Drive не доказывают, что компьютер сейчас включён.
 
 ## Передать ветку без CI
 
@@ -210,7 +216,9 @@ gdi pull drive --passed --job JOB_ID --profile full
 | Смотреть консоль по мере выполнения | `gdi ci logs drive JOB_ID --follow` |
 | Воспроизвести консоль с начала | `gdi ci logs drive JOB_ID --follow --restart` |
 | Снова ждать тот же job после Ctrl+C | `gdi ci wait drive JOB_ID --follow` |
-| Явно повторить завершённый CI на том же commit | `gdi ci retry drive JOB_ID --json` |
+| Отменить CI | `gdi ci cancel drive JOB_ID --json` |
+| Явно повторить завершённый или отменяемый CI на том же commit | `gdi ci retry drive JOB_ID --json` |
+| После проверенной отмены создать замену на другом host | `gdi ci retry drive JOB_ID --worker OTHER_WORKER_ID --json` |
 | Отправить commits без CI | `gdi push drive` |
 | Скачать историю, не менять файлы | `gdi fetch drive` |
 | Получить последний commit без проверки CI | `gdi pull drive` |
@@ -264,11 +272,24 @@ result будет доставлен без повторного исполне�
 | TIMEOUT | CI превысил лимит host; проверить зависание и `timeout_seconds` в worker.json |
 | INTERRUPTED | Worker перезапустился во время CI; изучить лог и явно выполнить `ci retry` |
 | REJECTED | Проверить настройки и версию среды worker в journal; после исправления повторить `push --ci` |
+| CANCEL_REQUESTED | Отмена на Drive; worker ещё не подтвердил остановку, offline host подтвердит после возвращения |
+| CANCELLED | Остановка подтверждена проверенным результатом; при необходимости явно создать новую попытку |
 | Ошибка сети | Повторить ту же команду; для готового результата worker повторяет загрузку без повторного CI |
 
 Повтор `push --ci` для той же публикации при неизменённых настройках CI возвращает
 прежний job ID при сохранённом локальном outbox. Новый запуск на том же commit —
 через `ci retry`.
+
+Отмена требует поддержки исходным worker; обновите gdi на host и клиентах и
+перезапустите свободный worker перед использованием. `ci retry --worker ID`
+допускается по проверенному terminal result либо доставленной поддерживаемой
+отмене; отказ не обходят удалением файлов на Drive. Поздний результат отменённой
+попытки блокируется, оригиналы сохраняются, подтверждение может находиться в
+`ci/jobs/JOB_ID/cancelled/`. Для старого worker `ci cancel --withdraw` снимает
+точное уведомление, но не доказывает остановку и не разрешает retry активного CI.
+Автоматический перенос по таймауту и очистка spool пока не реализованы.
+Подробности — [docs/ci.md](docs/ci.md); команды агента — [docs/agent.md](docs/agent.md).
+
 Не удаляйте ledger/spool worker для «разблокировки»: они нужны для восстановления.
 При задержке результата смотрите journal службы: завершение CI и доставка/проверка
 файлов на Drive — отдельные этапы. Замеры и статус реальных проверок: [TODO.md](TODO.md).

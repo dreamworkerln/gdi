@@ -156,7 +156,7 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             command.add_argument("--profile", help="required CI profile; required with --passed")
     ci = commands.add_parser("ci", help="submit jobs, inspect progress and retrieve verified CI results")
     ci_ops = ci.add_subparsers(dest="operation", required=True)
-    for operation in ("submit", "status", "wait", "logs", "retry"):
+    for operation in ("submit", "status", "wait", "logs", "retry", "cancel"):
         sub = ci_ops.add_parser(operation)
         diagnostics_arguments(sub)
         sub.add_argument("remote")
@@ -167,6 +167,11 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             workflow_arguments(sub)
         else:
             sub.add_argument("job")
+        if operation == 'retry':
+            sub.add_argument('--worker', help='explicit replacement worker; preserve the old job and its log')
+        if operation == 'cancel':
+            sub.add_argument('--withdraw', action='store_true',
+                             help='also remove this obsolete queue notification; does not confirm stopping a legacy/offline worker')
         if operation in ("wait", "logs"):
             sub.add_argument("--follow", action="store_true")
             sub.add_argument("--restart", action="store_true", help="replay logs from the beginning instead of the saved follow position")
@@ -197,7 +202,7 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             sub.add_argument('--destination', required=True, help='new worktree directory, must not exist')
     agent_ci = agent_ops.add_parser('ci', help='offline CI request and result exchange')
     agent_ci_ops = agent_ci.add_subparsers(dest='ci_operation', required=True)
-    for operation in ('prepare', 'check', 'accept', 'result'):
+    for operation in ('prepare', 'check', 'accept', 'result', 'cancel', 'cancel-check'):
         sub = agent_ci_ops.add_parser(operation)
         diagnostics_arguments(sub)
         sub.set_defaults(json=True)
@@ -211,11 +216,14 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             sub.add_argument('--output', required=True)
             sub.add_argument('--retry-of', help='explicit retry with a new job ID')
             workflow_arguments(sub)
+        elif operation == 'cancel':
+            sub.add_argument('--job', required=True, help='original CI job ID')
+            sub.add_argument('--output', required=True, help='durable cancellation plan directory')
         else:
             sub.add_argument('--plan', required=True)
         if operation == 'accept':
             sub.add_argument('--inbox-proof', required=True, help='complete inbox listing and downloaded event proof')
-        if operation in ('prepare', 'check', 'accept'):
+        if operation in ('prepare', 'check', 'accept', 'cancel'):
             sub.add_argument('--capabilities', required=True, help='fresh downloaded worker capabilities JSON')
     worker = commands.add_parser("worker", help="host worker and systemd user service (works outside git)")
     worker_ops = worker.add_subparsers(dest="operation", required=True)
@@ -316,6 +324,11 @@ def execute(args, *, transport_factory=None):
                         value = agent_ci.prepare(git, args.snapshot, args.repository_id, args.output,
                                                  args.publication, args.worker, args.profile, args.capabilities,
                                                  workflow=selected_workflow(args), retry_of=args.retry_of)
+                elif args.ci_operation == 'cancel':
+                    value = agent_ci.cancel(git, args.snapshot, args.repository_id, args.output,
+                                            args.job, args.capabilities)
+                elif args.ci_operation == 'cancel-check':
+                    value = agent_ci.cancel_check(git, args.plan, args.snapshot, args.repository_id)
                 else:
                     value = getattr(agent_ci, args.ci_operation)(git, args.plan, args.snapshot, args.repository_id,
                         **({'capabilities_path': args.capabilities} if args.ci_operation != 'result' else {}),
@@ -377,7 +390,10 @@ def execute(args, *, transport_factory=None):
             if args.operation in ("submit", "retry"):
                 with git.lock():
                     value = (client.submit(args.publication, args.worker, args.profile, workflow=selector) if args.operation == "submit"
-                             else client.retry(args.job))
+                             else client.retry(args.job, worker_id=args.worker))
+            elif args.operation == 'cancel':
+                with git.lock():
+                    value = client.cancel(args.job, withdraw=args.withdraw)
             elif args.operation == "status":
                 value = client.status(args.job)
             elif args.operation == "wait":

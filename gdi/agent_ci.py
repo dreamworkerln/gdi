@@ -4,7 +4,8 @@ from .agent import (file_plan, load_plan, persist_directory, plan_lock, same_rou
                     save_plan, verdict)
 from .ci import CiResultReader
 from .ci_protocol import (capability_revision, marker, prepare_request, request,
-                          workflow_selection)
+                          workflow_selection, atomic_write, cancellation, cancellation_capability,
+                          validate_cancellation)
 from .git import GdiError
 from .inbox import filename, notification
 from .publication import decode, digest, encode
@@ -64,6 +65,7 @@ def prepare(git, snapshot_path, expected_id, output, publication_id, worker_id, 
     pub = publication(snapshot, publication_id)
     selector = workflow_selection(workflow)
     current_revision = revision(capabilities_path, worker_id, profile_id)
+    namespace = git.github_repository()
     if not git.has_commit(pub['head']):
         raise GdiError('CI publication HEAD is missing locally; restore the published repository first')
     git.check_payload(pub['head'])
@@ -74,11 +76,11 @@ def prepare(git, snapshot_path, expected_id, output, publication_id, worker_id, 
         job_id(retry_of)
         with tempfile.TemporaryDirectory(prefix='gdi-agent-retry-') as temporary:
             reader = CiResultReader(git, snapshot, expected_id, temporary)
-            old = reader.result(retry_of)
-            if old is None:
-                raise GdiError('cannot retry an active job; download its complete terminal result first')
-            if old['publication_id'] != publication_id or old['worker_id'] != worker_id or old['profile_id'] != profile_id:
-                raise GdiError('retry must refer to the same publication and worker/profile')
+            old = reader.retry_request(retry_of)
+            if (old['publication_id'] != publication_id or old['profile_id'] != profile_id
+                    or old.get('workflow') != selector):
+                raise GdiError('retry must refer to the same publication, profile and workflow')
+            namespace = old.get('github_repository', '')
     with plan_lock(output) as directory:
         if (directory / 'plan.json').exists():
             value, req, _ = ci_plan(git, directory, expected_id)
@@ -91,7 +93,7 @@ def prepare(git, snapshot_path, expected_id, output, publication_id, worker_id, 
         def build(temporary):
             req = prepare_request(git, expected_id, publication_id, pub, worker_id, profile_id,
                                   current_revision, workflow=selector,
-                                  github_repository=git.github_repository(), retry_of=retry_of)
+                                  github_repository=namespace, retry_of=retry_of)
             raw = encode(req)
             event = notification(expected_id, snapshot.repository_path, pub, publication_id, req, raw)
             from .ci_protocol import atomic_write
@@ -153,15 +155,88 @@ def result(git, output, snapshot_path, expected_id):
         for remote, content in (('request.json', raw), ('request.ready', encode(marker(req, raw)))):
             snapshot.require_file(prefix + '/' + remote, digest(content), len(content))
         reader = CiResultReader(git, snapshot, expected_id, directory / 'verified-ci')
-        from .ci_protocol import validate_result
-        if 'result.json' in {item['Path'] for item in snapshot.list(prefix)}:
-            remote_result = validate_result(decode(snapshot.read(prefix + '/result.json')), req, digest(raw))
+        source = reader.result_source(req, raw)
+        if source is not None:
+            prefix, remote_result = source
             for item in remote_result['artifacts']:
                 snapshot.require_file(prefix + '/' + item['path'], item['sha256'], item['bytes'])
-            for name, checksum in reader.chunks(req['job_id']):
+            for name, checksum in reader.chunks(req['job_id'], cancelled_delivery=prefix.endswith('/cancelled')):
                 path = prefix + '/log-chunks/' + name
                 snapshot.require_file(path, checksum, snapshot.entries[path]['bytes'])
         completed = reader.result(req['job_id'])
         if completed is None:
-            return {'job_id': req['job_id'], 'state': 'PENDING', 'verified': False}
+            cancelled = reader.cancellation_requested(req['job_id'])
+            value = {'job_id': req['job_id'], 'state': 'CANCEL_REQUESTED' if cancelled else 'PENDING', 'verified': False}
+            if cancelled and cancelled.get('worker_cancellation_supported') is False:
+                value['worker_cancellation_supported'] = False
+            return value
         return {**completed, 'verified': True, 'local_artifacts': str(reader.root / 'results' / req['job_id'])}
+
+
+def cancellation_plan(git, directory, expected_id):
+    value = load_plan(directory, expected_id, 'ci-cancel')
+    keys = {'plan_version', 'kind', 'repository_id', 'repository_path', 'ref', 'head',
+            'publication_id', 'job_id', 'worker_id', 'request_sha256', 'files', 'state', 'checked_snapshot'}
+    if (set(value) != keys or value['state'] not in ('prepared', 'accepted')
+            or set(value['files']) != {'cancel'}):
+        raise GdiError('invalid CI cancellation plan')
+    raw = metadata_file(local_file(directory, 'request.json'))
+    req = request(decode(raw), git, expected_id)
+    if (digest(raw) != value['request_sha256'] or
+            any(req[key] != value[key] for key in ('repository_id', 'job_id', 'worker_id', 'ref', 'head', 'publication_id'))):
+        raise GdiError('saved CI cancellation request differs from plan')
+    local = local_file(directory, 'cancel.json')
+    validate_cancellation(metadata_file(local), req, raw)
+    target = value['repository_path'] + '/ci/jobs/' + req['job_id'] + '/cancel.json'
+    if value['files']['cancel'] != file_plan(local, 'cancel.json', target):
+        raise GdiError('saved CI cancellation destination differs from plan')
+    return value, req, raw
+
+
+def cancel(git, snapshot_path, expected_id, output, jid, capabilities_path):
+    snapshot = Snapshot(snapshot_path, expected_id)
+    with plan_lock(output) as directory:
+        reader = CiResultReader(git, snapshot, expected_id, directory / 'verified-ci')
+        req, raw = reader.load_request(jid)
+        completed = reader.result(jid)
+        if completed is not None:
+            return {**completed, 'verified': True, 'already_finished': True}
+        cancellation_capability(decode(metadata_file(capabilities_path)), req['worker_id'])
+        pub = publication(snapshot, req['publication_id'])
+        if (pub['ref'], pub['head']) != (req['ref'], req['head']):
+            raise GdiError('CI cancellation request differs from verified publication')
+        if (directory / 'plan.json').exists():
+            value, saved, saved_raw = cancellation_plan(git, directory, expected_id)
+            same_route(snapshot, value)
+            if saved != req or saved_raw != raw:
+                raise GdiError('CI cancellation settings changed; preserve the original plan')
+            return verdict(directory, value)
+        def build(temporary):
+            atomic_write(temporary / 'request.json', raw)
+            atomic_write(temporary / 'cancel.json', encode(cancellation(req, raw)))
+            target = snapshot.repository_path + '/ci/jobs/' + jid + '/cancel.json'
+            value = {'plan_version': 1, 'kind': 'ci-cancel', 'repository_id': expected_id,
+                     'repository_path': snapshot.repository_path, 'ref': req['ref'], 'head': req['head'],
+                     'publication_id': req['publication_id'], 'job_id': jid, 'worker_id': req['worker_id'],
+                     'request_sha256': digest(raw), 'state': 'prepared', 'checked_snapshot': None,
+                     'files': {'cancel': file_plan(temporary / 'cancel.json', 'cancel.json', target)}}
+            save_plan(temporary, value)
+        persist_directory(directory, build)
+        value, _, _ = cancellation_plan(git, directory, expected_id)
+        return verdict(directory, value)
+
+
+def cancel_check(git, output, snapshot_path, expected_id):
+    with plan_lock(output) as directory:
+        value, req, raw = cancellation_plan(git, directory, expected_id)
+        snapshot = Snapshot(snapshot_path, expected_id, ref=req['ref'])
+        same_route(snapshot, value)
+        reader = CiResultReader(git, snapshot, expected_id, directory / 'verified-ci')
+        remote_req, remote_raw = reader.load_request(req['job_id'])
+        if remote_req != req or remote_raw != raw:
+            raise GdiError('CI cancellation remote request differs from plan')
+        content = encode(cancellation(req, raw))
+        snapshot.require_file('ci/jobs/' + req['job_id'] + '/cancel.json', digest(content), len(content))
+        value.update(state='accepted', checked_snapshot=snapshot.fingerprint)
+        save_plan(directory, value)
+        return verdict(directory, value)

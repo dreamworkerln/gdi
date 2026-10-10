@@ -512,6 +512,13 @@ cp "$INSTALL_DIR/examples/worker.json" "$HOME/.config/gdi/worker.json"
 Откройте `~/.config/gdi/worker.json` в редакторе. Пример использует config version 2:
 укажите постоянный `worker_id`, например `user-host`, и `remote_url` общего корня,
 например `gdrive:gdi`. Общие retries/timeouts/polling можно оставить по умолчанию.
+У разных host одного root должны быть разные worker_id. Фактическое значение
+из этого config показывает `gdi worker check --json` (либо с `--config PATH`);
+состояние службы проверяется отдельно через `gdi worker status`.
+Новые CI-запросы получают этот ID через `--worker`; автоматического выбора host
+по состоянию Drive сейчас нет. Старые capabilities/READY не подтверждают,
+что компьютер включён. Паузы polling worker по умолчанию — 30–120 секунд,
+timeout исполнения 3600 секунд — отдельная настройка.
 Списка проектов, веток и команд CI в этом файле нет.
 
 Установите [act](https://nektosact.com/installation/) и
@@ -602,6 +609,17 @@ gdi ci logs drive JOB_ID --output /tmp/ci-JOB_ID.log
 upload worker хранит результат локально и повторяет доставку без повторного CI.
 Ctrl+C/timeout wait не отменяют job. Явный повтор завершённого CI на прежнем commit:
 `gdi ci retry drive JOB_ID --json`.
+
+Явная отмена — `gdi ci cancel drive JOB_ID --json`; она требует поддержки
+`cancel_version:1` worker. CANCEL_REQUESTED подтверждает запись на Drive,
+проверенный CANCELLED — остановку собственных процессов. Для разрешённой
+замены после проверенной отмены используйте
+`gdi ci retry drive JOB_ID --worker OTHER_WORKER_ID --json`.
+Поздний результат отменённой попытки не принимается как PASS, исходные файлы
+остаются историей. Для этой проверки обновите gdi на host и всех клиентах;
+новый код worker загружается после restart. Автоматическое переназначение
+по таймауту пока не реализовано. Подробный порядок и legacy withdrawal —
+[docs/ci.md](docs/ci.md), команды агента с коннектором — [docs/agent.md](docs/agent.md).
 
 ### 7.4. Пользователь получает выбранный PASS
 

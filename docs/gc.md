@@ -114,6 +114,13 @@ result с оставшимся queue marker должен сначала быть
 из очереди обычным recovery. Не удаляйте claim/queue вручную ради обхода защиты.
 CI snapshot повторно проверяется до удаления bundles и после операции.
 
+Поддерживаемая отмена с cancel.json блокирует GC, пока нет подтверждённого
+CANCELLED. Обычный поздний PASS отменённой попытки не считается завершением.
+Если подтверждение находится в `ci/jobs/JOB_ID/cancelled/`, GC учитывает marker,
+этот result и наличие его объявленных artifacts; исходные файлы остаются историей.
+Withdrawal старого worker с `worker_cancellation_supported:false` не доказывает
+остановку и сам по себе не превращает незавершённое задание в terminal.
+
 Старые gdi 0.2.1 этой защиты не имеют: обновите все клиенты, прежде чем применять
 GC на remote с CI. Все manifests сохраняются; worker может восстановить старый
 job SHA из нового полного checkpoint с проверкой ancestry. CI logs, chunks, results,

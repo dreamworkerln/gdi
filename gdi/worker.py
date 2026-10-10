@@ -14,9 +14,9 @@ import threading
 import time
 import uuid
 
-from .ci import files, publication
+from .ci import files, publication, optional_read
 from .ci_protocol import (atomic_write, descriptor, marker, now, request, upload_json,
-                          validate_result, verify_file)
+                          validate_result, verify_file, validate_cancellation)
 from .exchange import Exchange, decode, digest, encode, validate_repository
 from .executor import execute, inside, kill_owned
 from .git import GdiError, Git
@@ -27,6 +27,10 @@ from . import runner
 
 LOG = logging.getLogger("gdi.worker")
 CHUNK_BYTES = 256 * 1024
+
+
+class JobCancelled(Exception):
+    pass
 
 
 def transport_operation(function):
@@ -79,13 +83,13 @@ class Worker:
             transport = self.transport_factory(self.config['remote_url'])
             for path in ('inbox', f'ci/workers/{self.worker_id}'):
                 transport.mkdir(path)
-            capabilities = {'ci_version': 1, 'inbox_version': 1, 'worker_id': self.worker_id,
+            capabilities = {'ci_version': 1, 'inbox_version': 1, 'cancel_version': 1, 'worker_id': self.worker_id,
                             'profiles': {'full': self.config['execution_profile']['revision']}}
             upload_json(transport, f'ci/workers/{self.worker_id}/capabilities.json', capabilities, mutable=True)
             upload_json(transport, f'ci/workers/{self.worker_id}/status.json',
                         {'ci_version': 1, 'worker_id': self.worker_id, 'state': 'READY', 'updated_at': now()}, mutable=True)
             return
-        capabilities = {'ci_version': 1, 'worker_id': self.worker_id,
+        capabilities = {'ci_version': 1, 'cancel_version': 1, 'worker_id': self.worker_id,
                         'repositories': {repo['repository_id']: {name: profile['revision'] for name, profile in repo['profiles'].items()}
                                          for repo in self.config['repositories']}}
         for repo in self.config['repositories']:
@@ -125,8 +129,11 @@ class Worker:
                         continue
                     row = self.ledger.discover(req, raw, uuid.uuid4().hex)
                     if row['state'] == 'PUBLISHED':
-                        self.verify_remote(transport, req, row)
-                        transport.delete_queue(f'ci/queue/{jid}.json')
+                        if self.check_cancellation(transport, row, req):
+                            self.process(row)
+                        else:
+                            self.verify_remote(transport, req, row)
+                            transport.delete_queue(f'ci/queue/{jid}.json')
                 except (GdiError, OSError) as exc:
                     LOG.error('queue=%s: %s', entry['Path'], exc)
 
@@ -172,8 +179,11 @@ class Worker:
                 route = {'root_url': self.config['remote_url'], 'repository_path': event['repository_path']}
                 row = self.ledger.discover(req, raw, uuid.uuid4().hex, route=route, notification=name)
                 if row['state'] == 'PUBLISHED':
-                    self.verify_remote(transport, req, row)
-                    self.acknowledge(row)
+                    if self.check_cancellation(transport, row, req):
+                        self.process(row)
+                    else:
+                        self.verify_remote(transport, req, row)
+                        self.acknowledge(row)
             except (GdiError, OSError) as exc:
                 LOG.error('inbox=%s: %s; notification retained', name, exc)
 
@@ -231,9 +241,9 @@ class Worker:
                 chunks.append(path)
         return chunks
 
-    def publish_live(self, transport, row, sent):
-        spool = self.spool(row['job_id'])
-        prefix = f"ci/jobs/{row['job_id']}"
+    def publish_live(self, transport, row, sent, *, spool=None, prefix=None):
+        spool = self.spool(row['job_id']) if spool is None else spool
+        prefix = f"ci/jobs/{row['job_id']}" if prefix is None else prefix
         for directory in ('log-chunks', 'events'):
             transport.mkdir(prefix + '/' + directory)
         paths = self.make_chunks(spool)
@@ -252,9 +262,28 @@ class Worker:
             target = self.transport_factory(self.config['remote_url']) if self.shared else transport
             upload_json(target, f'ci/workers/{self.worker_id}/status.json', status, mutable=True)
 
-    def publisher(self, transport, row, done):
+    def check_cancellation(self, transport, row, req):
+        path = self.spool(req['job_id']) / 'cancel.json'
+        if path.exists():
+            validate_cancellation(path.read_bytes(), req, row['raw'])
+            return True
+        content = optional_read(transport, f"ci/jobs/{req['job_id']}/cancel.json")
+        if content is None:
+            return False
+        validate_cancellation(content, req, row['raw'])
+        # Persist before stopping: a restart or a lost remote response cannot undo cancellation.
+        atomic_write(path, content)
+        return True
+
+    def publisher(self, transport, row, done, cancelled):
         sent = set()
+        req = decode(row['raw'])
         while not done.is_set():
+            try:
+                if self.check_cancellation(transport, row, req):
+                    cancelled.set()
+            except (GdiError, OSError) as exc:
+                LOG.warning('job=%s cancellation check pending: %s', row['job_id'], exc)
             try:
                 self.publish_live(transport, row, sent)
             except (GdiError, OSError) as exc:
@@ -291,8 +320,8 @@ class Worker:
             checkout.require_clean((None, req['head'], checkout.call('status', '--porcelain=v1', '--untracked-files=all').stdout))
             return checkout
 
-    def finish(self, row, req, state, code, failed_stage, stages, warnings, started_at, duration, detail='', checkout=None, profile=None):
-        spool = self.spool(req['job_id'])
+    def finish(self, row, req, state, code, failed_stage, stages, warnings, started_at, duration, detail='', checkout=None, profile=None, *, delivery_spool=None):
+        spool = self.spool(req['job_id']) if delivery_spool is None else delivery_spool
         log = spool / 'build.log'
         if not log.exists():
             atomic_write(log, b'')
@@ -329,7 +358,10 @@ class Worker:
             except (GdiError, OSError, ValueError) as exc:
                 state, code, detail = 'ERROR', 1, str(exc)
         self.status(row, state, failed_stage)
-        atomic_write(spool / 'final-status.json', (spool / 'status.json').read_bytes())
+        status = (self.spool(req['job_id']) / 'status.json').read_bytes()
+        if delivery_spool is not None:
+            atomic_write(spool / 'status.json', status)
+        atomic_write(spool / 'final-status.json', status)
         artifacts.extend([descriptor(log, 'build.log'), descriptor(spool / 'final-status.json', 'final-status.json')])
         identity = {key: req[key] for key in ('ci_version', 'job_id', 'repository_id', 'ref', 'head', 'publication_id', 'worker_id', 'profile_id', 'profile_revision')}
         result = {**identity, 'request_sha256': digest(row['raw']), 'run_id': row['run_id'], 'state': state,
@@ -340,38 +372,93 @@ class Worker:
         atomic_write(spool / 'result.json', encode(result))
         self.ledger.update(req['job_id'], 'RESULT_READY')
 
-    def verify_remote(self, transport, req, row):
-        spool = self.spool(req['job_id'])
-        result = validate_result(decode(transport.read(f"ci/jobs/{req['job_id']}/result.json")), req, digest(row['raw']))
+    def verify_remote(self, transport, req, row, *, spool=None, prefix=None):
+        spool = self.spool(req['job_id']) if spool is None else spool
+        prefix = f"ci/jobs/{req['job_id']}" if prefix is None else prefix
+        result = validate_result(decode(transport.read(prefix + '/result.json')), req, digest(row['raw']))
         if result['run_id'] != row['run_id'] or (spool / 'result.json').read_bytes() != encode(result):
             raise GdiError('remote result differs from durable local result')
         import tempfile
         with tempfile.TemporaryDirectory(prefix='gdi-verify-result-') as directory:
             for spec in result['artifacts']:
                 target = Path(directory) / 'artifact'
-                transport.download(f"ci/jobs/{req['job_id']}/" + spec['path'], target)
+                transport.download(prefix + '/' + spec['path'], target)
                 verify_file(target, spec)
         return result
 
-    def deliver(self, repo, row, req):
+    def stop_cancelled(self, transport, row, req):
+        claim = optional_read(transport, f"ci/jobs/{req['job_id']}/worker.running.json")
+        if claim is not None and decode(claim) != {
+                'ci_version': 1, 'job_id': req['job_id'], 'run_id': row['run_id'],
+                'worker_id': self.worker_id, 'request_sha256': digest(row['raw'])}:
+            raise GdiError('foreign/stale claim: cancellation must be confirmed by the original worker ledger')
+        kill_owned(decode(row['process']) if row['process'] else None)
+        runner.cleanup(self.spool(req['job_id']))
+
+    def prepare_cancelled_delivery(self, transport, row, req):
+        """Preserve immutable execution files; cancellation has its own final log/result."""
+        self.stop_cancelled(transport, row, req)
+        original = self.spool(req['job_id'])
+        destination = original / 'cancelled'
+        destination.mkdir(exist_ok=True)
+        if not (destination / 'result.json').exists():
+            if (original / 'build.log').exists():
+                shutil.copyfile(original / 'build.log', destination / 'build.log')
+            self.ledger.update(req['job_id'], 'FINALIZING')
+            self.finish(row, req, 'CANCELLED', 130, None, [], [], now(), 0,
+                        'durable cancellation suppresses the original result; owned execution stopped',
+                        delivery_spool=destination)
+
+    def deliver(self, repo, row, req, *, cancelled_result=False):
         transport = self.transport(repo)
         spool = self.spool(req['job_id'])
         prefix = f"ci/jobs/{req['job_id']}"
+        if not cancelled_result and (spool / 'cancelled/result.json').exists():
+            cancelled_result = True
+        if cancelled_result:
+            if not self.check_cancellation(transport, row, req):
+                raise GdiError('cancelled delivery requires its durable cancellation marker')
+            spool = spool / 'cancelled'
+            prefix += '/cancelled'
         result = validate_result(decode((spool / 'result.json').read_bytes()), req, digest(row['raw']))
+        if cancelled_result and result['state'] != 'CANCELLED':
+            raise GdiError('invalid state in cancelled delivery')
         self.ledger.update(req['job_id'], 'UPLOAD_PENDING')
-        self.publish_live(transport, row, set())
-        for spec in result['artifacts']:
-            verify_file(spool / spec['path'], spec)
-            transport.upload(spool / spec['path'], prefix + '/' + spec['path'])
-        checksum, size = hashlib.sha256(), 0
-        for path in self.make_chunks(spool):
-            data = path.read_bytes()
-            checksum.update(data); size += len(data)
-        log = next(spec for spec in result['artifacts'] if spec['path'] == 'build.log')
-        if checksum.hexdigest() != log['sha256'] or size != log['bytes']:
-            raise GdiError('durable log chunks do not match the finalized log')
-        transport.upload(spool / 'result.json', prefix + '/result.json')
-        self.verify_remote(transport, req, row)
+        def require_active():
+            if result['state'] != 'CANCELLED' and self.check_cancellation(transport, row, req):
+                raise JobCancelled()
+        try:
+            require_active()
+            if result['state'] == 'CANCELLED' and (self.spool(req['job_id']) / 'cancel.json').exists():
+                # Restore the persisted tombstone before acknowledging cancellation.
+                transport.upload(self.spool(req['job_id']) / 'cancel.json',
+                                 f"ci/jobs/{req['job_id']}/cancel.json")
+                validate_cancellation(transport.read(f"ci/jobs/{req['job_id']}/cancel.json"), req, row['raw'])
+            if cancelled_result:
+                upload_json(transport, f"ci/jobs/{req['job_id']}/status.json",
+                            decode((spool / 'status.json').read_bytes()), mutable=True)
+            self.publish_live(transport, row, set(), spool=spool, prefix=prefix)
+            require_active()
+            for spec in result['artifacts']:
+                require_active()
+                verify_file(spool / spec['path'], spec)
+                transport.upload(spool / spec['path'], prefix + '/' + spec['path'])
+            checksum, size = hashlib.sha256(), 0
+            for path in self.make_chunks(spool):
+                data = path.read_bytes()
+                checksum.update(data); size += len(data)
+            log = next(spec for spec in result['artifacts'] if spec['path'] == 'build.log')
+            if checksum.hexdigest() != log['sha256'] or size != log['bytes']:
+                raise GdiError('durable log chunks do not match the finalized log')
+            require_active()
+            transport.upload(spool / 'result.json', prefix + '/result.json')
+            require_active()
+            self.verify_remote(transport, req, row, spool=spool, prefix=prefix)
+            require_active()
+        except JobCancelled:
+            self.prepare_cancelled_delivery(transport, row, req)
+            self.deliver(repo, row, req, cancelled_result=True)
+            return
         self.ledger.update(req['job_id'], 'PUBLISHED')
         self.acknowledge(row)
         LOG.info('job=%s result=%s published', req['job_id'], result['state'])
@@ -391,6 +478,15 @@ class Worker:
         transport = self.transport(repo)
         spool = self.spool(req['job_id'])
         if (spool / 'result.json').exists():
+            self.deliver(repo, row, req)
+            return
+        cancelled = threading.Event()
+        if self.check_cancellation(transport, row, req):
+            # Also covers a locally discovered job whose notification disappeared.
+            self.stop_cancelled(transport, row, req)
+            self.ledger.update(req['job_id'], 'FINALIZING')
+            self.finish(row, req, 'CANCELLED', 130, None, [], [], now(), 0,
+                        'cancelled by durable client request; owned processes and containers stopped')
             self.deliver(repo, row, req)
             return
         if row['state'] in ('RUNNING', 'FINALIZING'):
@@ -415,13 +511,19 @@ class Worker:
             return
         started_at, started = now(), time.monotonic()
         done = threading.Event()
-        publisher = threading.Thread(target=self.publisher, args=(transport, row, done), daemon=True)
+        publisher = threading.Thread(target=self.publisher, args=(transport, row, done, cancelled), daemon=True)
         publisher.start()
         checkout, state, code, failed, stages, warnings, detail = None, 'ERROR', 1, None, [], [], ''
+        def require_active():
+            if cancelled.is_set() or self.check_cancellation(transport, row, req):
+                cancelled.set()
+                raise JobCancelled()
         try:
+            require_active()
             self.status(row, 'RESTORING')
             self.ledger.update(req['job_id'], 'RESTORING')
             checkout = self.checkout(repo, transport, req)
+            require_active()
             self.status(row, 'CHECKOUT')
             if 'workflow' in profile:
                 if req['ci_version'] == 2:
@@ -430,14 +532,19 @@ class Worker:
                 if profile.get('environment'):
                     atomic_write(spool / 'artifacts/environment.json', encode(profile['environment']))
                 runner.record_owner(spool, checkout, profile)
+            require_active()
             self.ledger.update(req['job_id'], 'RUNNING')
             state, code, failed, stages, warnings = execute(checkout, profile, spool / 'build.log',
                 lambda state, stage: self.status(row, state, stage),
-                lambda identity: self.ledger.update(req['job_id'], 'RUNNING', identity))
+                lambda identity: self.ledger.update(req['job_id'], 'RUNNING', identity),
+                cancelled=cancelled.is_set)
+            require_active()
             if state == 'PASS' and 'workflow' in profile:
                 require_completed_job(spool / 'build.log')
             if checkout.oid('HEAD') != req['head']:
                 raise GdiError('CI changed requested HEAD')
+        except JobCancelled:
+            state, code, detail = 'CANCELLED', 130, 'cancelled by durable client request'
         except KeyboardInterrupt:
             state, code, detail = 'INTERRUPTED', 130, 'worker interrupted during execution'
             self.stop.set()
@@ -454,7 +561,8 @@ class Worker:
             raise GdiError('Docker cleanup pending: ' + str(exc)) from exc
         self.ledger.update(req['job_id'], 'FINALIZING')
         self.finish(row, req, state, code, failed, stages, warnings, started_at, time.monotonic() - started,
-                    detail, checkout, profile)
+                    detail, checkout if state != 'CANCELLED' else None,
+                    profile if state != 'CANCELLED' else None)
         self.deliver(repo, row, req)
 
     def tick(self):

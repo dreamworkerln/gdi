@@ -3,7 +3,10 @@
 Worker — постоянный процесс на Linux host пользователя. Git/rclone и Python 3.10+
 нужны для обмена; CI из GitHub Actions запускается через установленный `act` и Docker
 Engine. Docker Compose требуется только если его использует сам workflow.
-На один общий корень Drive назначайте ровно один worker.
+На каждом host задайте отдельный worker_id. Несколько workers могут читать общий
+root, но выполняют только запросы, адресованные их ID. Два процесса/host с одним
+ID не допускаются: локальный lock не защищает разные компьютеры. Выбор исполнителя
+и замены сейчас явный; автоматическое обнаружение, балансировка и failover — TODO.
 
 ## Общая конфигурация
 
@@ -27,8 +30,8 @@ cp "$INSTALL_DIR/examples/worker.json" "$HOME/.config/gdi/worker.json"
 | `worker_id` | ASCII ID worker, например `user-host` |
 | `remote_url` | Общий корень обмена rclone, например `gdrive:gdi` |
 | `timeout_seconds` | Общий лимит CI, по умолчанию 3600 |
-| `poll_active_seconds` | Базовая пауза polling, по умолчанию 5 |
-| `poll_idle_max_seconds` | Максимальная пауза в простое/при сетевых ошибках, по умолчанию 60 |
+| `poll_active_seconds` | Базовая пауза polling и live-публикаций CI, по умолчанию 30 секунд |
+| `poll_idle_max_seconds` | Максимальная пауза в простое/при сетевых ошибках, по умолчанию 120 секунд |
 | `state_dir`, `cache_dir` | Необязательные абсолютные пути вместо XDG defaults |
 | `act_executable` | `act` в PATH службы или абсолютный путь к программе |
 | `act_version` | Требуемая версия act, default `0.2.89`; несовпадение блокирует capabilities |
@@ -54,6 +57,33 @@ SIGKILL worker. `transport` задаёт сетевые timeout/retries для R
 можно задать `GDI_TRANSPORT=cli` в окружении службы и перезапустить её.
 Учёт процессов и RC-обращений описан в [profiling.md](profiling.md).
 
+Для обычного CI рекомендуются `poll_active_seconds: 30` и
+`poll_idle_max_seconds: 120`. Это выбор gdi, а не обязательная минимальная пауза
+Google: [Drive API ограничивает суммарную нагрузку квотами](https://developers.google.com/workspace/drive/api/guides/limits),
+которые зависят от Cloud project. При quota/rate-limit ошибках нужны задержки
+повторов; rclone управляет своими сетевыми попытками, worker увеличивает паузу
+между циклами до настроенного максимума. Один цикл gdi может означать несколько
+HTTP-запросов: listing inbox, разрешение путей и чтение уведомлений.
+
+При непрерывном опросе раз в 5 секунд получается до 17 280 циклов в сутки,
+раз в 30 секунд — до 2 880, раз в 60 секунд — до 1 440,
+раз в 120 секунд — до 720; сетевые операции
+уменьшают эти числа. Несколько включённых workers суммируют нагрузку.
+Сам по себе интервал 5 секунд не означает нарушение квоты, но для ожидания
+CI создаёт лишние обращения. Ответы `403 User rate limit exceeded` и
+`429 Rate limit exceeded` указывают на ограничение API; `TLS handshake timeout`
+и `connection refused` относятся к сети/прокси и сами по себе не означают квоту.
+
+Локальный heartbeat выполнения обновляется раз в 5 секунд и не вызывает запросов
+к Drive. Периодическая публикация статуса и новых log chunks использует базовую
+паузу `poll_active_seconds`; доставка итогового результата начинается сразу
+после завершения CI. Паузы считаются после сетевой операции, поэтому фактический
+интервал больше на длительность этой операции. Для уменьшения постоянных listings
+в дальнейшем предусмотрены [Drive change notifications](https://developers.google.com/workspace/drive/api/guides/push).
+
+Совместимость act `0.2.89` с новыми artifact actions и воспроизводимая
+сборка с upstream-патчем описаны в [act-compatibility.md](act-compatibility.md).
+
 ## CI берётся из проверяемого commit
 
 По умолчанию выполняются workflows каталога `.github/workflows` для события `push`.
@@ -73,6 +103,9 @@ gdi push drive --ci --worker user-host --workflow .github/workflows/checks.yml -
 Act получает отдельный checkout точного commit, `GITHUB_REF` и SHA. Обычный
 `actions/checkout` использует переданные локальные исходники. Workspaces jobs копируются;
 исходный checkout и пользовательская рабочая ветка не используются для build outputs.
+Изолированный checkout содержит локальный ref запрошенной ветки на точный SHA,
+при этом HEAD остаётся detached. В контейнер копируются также его git metadata,
+поэтому `git rev-parse HEAD` и чтение истории работают внутри workflow.
 Act запускается вне checkout: project `.actrc` не заменяет выбранный план. Docker
 images и actions используют persistent caches. При advertise worker проверяет
 `act_version`, SHA256 бинарника, host `.actrc`, Docker daemon ID/version и фактические
@@ -129,6 +162,10 @@ gdi worker run --config ~/.config/gdi/worker.json
 
 `check` проверяет схему config и выдаёт `config_revision`; `check --runtime`
 проверяет act/Docker/images и выдаёт фактические `execution_revision` и environment.
+Поле `worker_id` в выводе `gdi worker check --json` — ID этого host из
+`~/.config/gdi/worker.json`; при другом пути укажите `--config PATH`.
+Для CI передавайте это значение как `--worker WORKER_ID`. Проверка config
+не подтверждает, что служба работает; её состояние показывает `gdi worker status`.
 Доступ к Drive проверяется при запуске. Foreground worker создаёт capabilities и inbox,
 остаётся работать после PASS/FAIL. Ctrl+C запрашивает завершение после текущего job.
 Для одного обхода: `gdi worker run --config ~/.config/gdi/worker.json --once`.
@@ -169,6 +206,16 @@ config. Затем выполните `gdi worker restart`: команда де�
 При editable install достаточно изменить исходники и вызвать `gdi worker restart`;
 при обычной установке сначала обновите пакет. Если изменился путь к Python или config,
 повторите `gdi worker install --config ...` перед restart.
+
+Если сеть требует прокси, задайте `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` и/или
+их варианты в нижнем регистре в этом EnvironmentFile. Worker передаёт эти
+переменные как rclone, так и контейнерам act; остальные переменные окружения
+host автоматически в контейнер не передаются. Адреса прокси не записываются
+в аргументы запуска act или capabilities: они передаются через локальный файл
+окружения с правами 0600 вне checkout и публикуемых artifacts.
+При включённом прокси worker сохраняет
+исключения `NO_PROXY`/`no_proxy` и добавляет localhost, loopback и адрес локального
+artifact/cache server, чтобы загрузка артефактов не уходила через прокси.
 
 Для работы без открытой login-сессии владелец host может включить linger:
 
@@ -223,7 +270,7 @@ Ledger и spool постоянные; не удаляйте их при акти
 | --- | --- |
 | Подготовка не дошла до RUNNING | Подготовить checkout снова, сохранив job/run IDs |
 | RUNNING/FINALIZING без durable result | Не запускать снова; остановить известный собственный процесс с совпавшей Linux identity, сохранить INTERRUPTED |
-| Локальный result уже записан | Проверить spool и повторить только upload |
+| Локальный result уже записан | Проверить отмену и spool; повторить только upload либо доставить CANCELLED в отдельном cancelled/ |
 | Result опубликован, уведомление inbox или legacy queue pointer остался | Перепроверить result и повторить удаление конкретного marker, без CI |
 | Claim принадлежит другому run или ledger потерян | Явная ошибка в journal, автоматического takeover нет |
 
@@ -234,6 +281,13 @@ Live publisher работает отдельно от чтения stdout. Не�
 Heartbeat/status загружается из отдельного неизменяемого снимка, чтобы обновление
 локального status.json во время передачи не вызывало checksum mismatch.
 Статусы job и worker за один проход используют одни и те же bytes снимка.
+
+Worker объявляет `cancel_version:1`. Отмена сохраняется в `cancel.json` локального
+spool и проверяется до запуска, во время исполнения и перед/после публикации.
+При поздней отмене исходные immutable файлы остаются историей, подтверждённый
+CANCELLED доставляется отдельным комплектом в `jobs/<job-id>/cancelled/` локально
+и `ci/jobs/<job-id>/cancelled/` на Drive. Restart продолжает эту доставку без
+повторного исполнения. Подробнее — [ci-protocol.md](ci-protocol.md).
 
 При остановке `gdi worker stop` или перезапуске `gdi worker restart` worker не берёт
 новые jobs и заканчивает текущий.
@@ -247,7 +301,9 @@ Unit использует `KillMode=mixed`: SIGTERM получает тольк�
 При SIGKILL foreground вне systemd могут остаться потомки: контролируйте их на host;
 никогда не начинайте повторный запуск вслепую. Exactly-once не обещается.
 
-Уже опубликованный terminal job можно явно повторить через `gdi ci retry`.
+Job можно явно повторить через `gdi ci retry` после проверки terminal result
+либо доставки поддерживаемой отмены; `--worker ID` выбирает нового исполнителя.
+Истечение клиентского ожидания и старый heartbeat сами задание не отменяют.
 Бесконечный рост локального spool и CI artifacts пока ограничивается обслуживанием
 оператором после получения результатов; автоматической retention policy нет.
 Удаление ledger при сохранённых remote claims требует ручной диагностики и не

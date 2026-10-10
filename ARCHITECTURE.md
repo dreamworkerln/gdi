@@ -33,7 +33,8 @@ flowchart LR
 | `exchange.py`, `cache.py`, `git.py` | Git metadata chains, full/delta bundles, quarantine, cache, fast-forward |
 | `transport.py` | rclone: immutable artifacts, ограниченные mutable snapshots, scoped deletion |
 | `ci_protocol.py` | CI request/result schemas, identities, canonical JSON, checksums, durable writes |
-| `ci.py` | Durable agent outbox, submit/retry, progress/logs, verified results, pull gate |
+| `ci.py` | Durable outbox, submit/cancel/retry, progress/logs, verified results, защита от позднего PASS и pull gate |
+| `agent_ci.py` | Подготовка/проверка CI и отмены из снимков коннектора без rclone |
 | `worker_config.py` | Общие настройки host/root/таймаутов/runner, вычисление revision |
 | `local_config.py` | Собственные `.gdi/config.json` и чтение legacy Git sections |
 | `inbox.py` | Общие immutable уведомления, checksum и строгая маршрутизация |
@@ -57,7 +58,8 @@ Revision — SHA256 общих параметров и фактического 
 
 Push использует существующую последовательную модель одного writer на ref с
 обнаружением конфликтующих продолжений metadata chain. CI: один назначенный worker
-на remote, одно исполнение одновременно в процессе worker. Локальный flock
+на request, одно исполнение одновременно в процессе worker. Несколько host общего
+root имеют разные worker_id; клиент явно выбирает исполнителя. Локальный flock
 не допускает два экземпляра с одним worker ID/state directory на одном host.
 Immutable claim не является распределённой блокировкой; exactly-once и multi-worker
 координация не заявляются. Read/write доступ к папке Drive означает доверие участнику;
@@ -72,14 +74,18 @@ gdi ci status drive JOB_ID --json
 gdi ci wait drive JOB_ID --follow --timeout 3600 --json
 gdi ci logs drive JOB_ID --follow
 gdi ci logs drive JOB_ID --output ./ci.log
+gdi ci cancel drive JOB_ID --json
 gdi ci retry drive JOB_ID --json
+gdi ci retry drive JOB_ID --worker OTHER_WORKER_ID --json
 gdi pull drive --passed --job JOB_ID --profile full
 ```
 
 Push создаёт job по возвращённым значениям публикации, не перечитывает HEAD.
 Submit закрепляет revision из capabilities. Outbox сохраняет request до upload;
-повтор той же публикации/worker/profile/revision переиспользует job. Retry завершённой
-попытки создаёт новый ID, ссылается на прежний и использует текущую revision.
+повтор той же публикации/worker/profile/revision переиспользует job. Retry по
+проверенному terminal result или доставленной поддерживаемой отмене создаёт новый
+ID, ссылается на прежний и использует revision выбранного worker. Publication,
+profile, workflow selector и GitHub namespace исходной попытки сохраняются.
 Дедупликация действует при сохранённом локальном outbox.
 
 `status` может показывать advisory state, но добавляет `verified: false` до принятия
@@ -87,6 +93,16 @@ Submit закрепляет revision из capabilities. Outbox сохраняе�
 identity fields, полного log и всех объявленных artifacts по bytes/SHA256,
 final status и совпадения полной консоли с непрерывной последовательностью chunks.
 `PASS` также требует успешные blocking stage results.
+
+Отмена хранится в immutable cancel.json, привязанном к bytes исходного request,
+и требует `cancel_version:1` worker. CANCEL_REQUESTED означает доставку marker;
+проверенный CANCELLED — подтверждённую остановку собственного исполнения.
+Worker и читатель сохраняют проверенную отмену локально. Поздний обычный result
+отменённого job не становится действующим PASS даже при загрузке, уже начавшейся
+до отмены. Если результат уже сохранён локально, исходные immutable файлы остаются
+историей, полный CANCELLED публикуется отдельным комплектом в `cancelled/`.
+Восстановление продолжает доставку и подтверждение inbox без повторного CI.
+Схемы и исключение для legacy withdrawal: [docs/ci-protocol.md](docs/ci-protocol.md).
 
 `wait`: PASS → 0, другой terminal/ошибка gdi → 1, аргументы → 2, timeout ожидания → 124,
 Ctrl+C → 130. JSON ошибки содержит `kind: GDI_ERROR`, а terminal outcome — `state`.
@@ -195,7 +211,9 @@ KillMode=mixed, TimeoutStopSec=120, stdout/stderr в journal. Явная install
 ## GC и границы релиза
 
 Apply-GC требует согласованной паузы всех клиентов и worker. Любой queue marker,
-неполный job или отсутствующий terminal result/artifact блокирует применение.
+неполный job, неподтверждённая поддерживаемая отмена или отсутствующий terminal
+result/artifact блокирует применение. Поздний обычный PASS не снимает эту защиту;
+результат из cancelled/ учитывается вместе с marker и его artifacts.
 CI snapshot перепроверяется после восстановления сохраняемой Git-истории и после
 удалений. GC bundles сохраняет manifests и не удаляет CI artifacts/spool.
 Старым gdi 0.2.1 нельзя выполнять GC на CI remote: обновить все машины до 0.3.
@@ -205,6 +223,6 @@ CI snapshot перепроверяется после восстановлени
 исправленный commit → PASS и точный pull проверяются без Google credentials.
 Реальный Google Drive/host service проверяется отдельно в разрешённом окружении.
 
-Следующие этапы: CI retention/local spool quotas, отмена jobs, сохранённый cursor
-между CLI вызовами, оптимизация listings/changes API, multi-worker координация,
+Следующие этапы: CI retention/local spool quotas, автоматическая отмена и замена
+по таймауту, обнаружение/выбор workers, оптимизация listings/changes API, координация нагрузки,
 дальнейшая изоляция исполнения. Ограничения и оставшиеся проверки: [TODO.md](TODO.md).

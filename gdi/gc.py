@@ -170,7 +170,7 @@ def verify_retained(exchange, transport, repository_id, state, plan, report):
 
 def ci_guard(exchange, transport, repository_id):
     """Fail closed on incomplete jobs; all CI writers must also be paused."""
-    from .ci_protocol import marker, request, validate_result
+    from .ci_protocol import marker, request, validate_result, validate_cancellation
     if not any(item["Path"] == "ci" for item in transport.list("")):
         return ()
     listing = transport.list("ci", recursive=True)
@@ -194,15 +194,25 @@ def ci_guard(exchange, transport, repository_id):
         prefix = f"ci/jobs/{jid}"
         names = {item["Path"][len("jobs/" + jid + "/"):] for item in listing
                  if not item["IsDir"] and item["Path"].startswith("jobs/" + jid + "/")}
-        if not {"request.json", "request.ready", "result.json"}.issubset(names):
+        if not {"request.json", "request.ready"}.issubset(names):
             raise GdiError("GC blocked by incomplete/nonterminal CI job: " + jid)
         raw = transport.read(prefix + "/request.json")
         req = request(decode(raw), exchange.git, repository_id)
         if req["job_id"] != jid or decode(transport.read(prefix + "/request.ready")) != marker(req, raw):
             raise GdiError("GC found an invalid CI request/ready")
-        result_raw = transport.read(prefix + "/result.json")
+        cancelled = (validate_cancellation(transport.read(prefix + '/cancel.json'), req, raw)
+                     if 'cancel.json' in names else None)
+        result_directory = 'cancelled/' if cancelled is not None and 'cancelled/result.json' in names else ''
+        if result_directory + 'result.json' not in names:
+            raise GdiError("GC blocked by incomplete/nonterminal CI job: " + jid)
+        result_raw = transport.read(prefix + '/' + result_directory + 'result.json')
         result = validate_result(decode(result_raw), req, digest(raw))
-        if any(spec["path"] not in names for spec in result["artifacts"]):
+        if (result_directory and result['state'] != 'CANCELLED'):
+            raise GdiError('GC found an invalid cancelled CI result: ' + jid)
+        if (cancelled is not None and cancelled.get('worker_cancellation_supported') is not False
+                and result['state'] != 'CANCELLED'):
+            raise GdiError('GC blocked by unconfirmed CI cancellation: ' + jid)
+        if any(result_directory + spec["path"] not in names for spec in result["artifacts"]):
             raise GdiError("GC blocked by missing CI result artifacts: " + jid)
         immutable.append((jid, digest(raw), digest(result_raw)))
     return tuple(sorted(immutable))

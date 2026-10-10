@@ -34,7 +34,7 @@ def inside(root, relative):
     return target
 
 
-def execute(checkout, profile, log, update, process_changed):
+def execute(checkout, profile, log, update, process_changed, *, cancelled=lambda: False):
     started = time.monotonic()
     results, warnings = [], []
     env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
@@ -43,6 +43,8 @@ def execute(checkout, profile, log, update, process_changed):
     env["PYTHONUNBUFFERED"] = "1"
     with log.open('ab', buffering=0) as output:
         for stage in profile["stages"]:
+            if cancelled():
+                return 'CANCELLED', 130, None, results, warnings
             update("RUNNING", stage["name"])
             output.write(f"\n=== gdi stage: {stage['name']} ===\n".encode())
             cwd = log.parent if "workflow" in profile else inside(checkout.path, stage["cwd"])
@@ -53,6 +55,7 @@ def execute(checkout, profile, log, update, process_changed):
                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
             identity = process_identity(process.pid)
             timed_out = False
+            was_cancelled = False
             force_kill_at = None
             heartbeat = time.monotonic()
             selector = selectors.DefaultSelector()
@@ -61,8 +64,9 @@ def execute(checkout, profile, log, update, process_changed):
             try:
                 process_changed(identity)
                 while selector.get_map() or process.poll() is None:
-                    if time.monotonic() >= deadline and not timed_out:
-                        timed_out = True
+                    if (cancelled() or time.monotonic() >= deadline) and not (timed_out or was_cancelled):
+                        was_cancelled = cancelled()
+                        timed_out = not was_cancelled
                         # The leader may have exited while descendants still hold stdout.
                         try:
                             os.killpg(process.pid, signal.SIGINT if "workflow" in profile else signal.SIGKILL)
@@ -102,9 +106,11 @@ def execute(checkout, profile, log, update, process_changed):
                 selector.close()
                 process.stdout.close()
                 process_changed(None)
-            state = "TIMEOUT" if timed_out else "PASS" if code == 0 else "FAIL"
+            state = 'CANCELLED' if was_cancelled else "TIMEOUT" if timed_out else "PASS" if code == 0 else "FAIL"
             results.append({"name": stage["name"], "blocking": stage["blocking"], "state": state,
-                            "exit_code": 124 if timed_out else code})
+                            "exit_code": 130 if was_cancelled else 124 if timed_out else code})
+            if was_cancelled:
+                return 'CANCELLED', 130, stage['name'], results, warnings
             if timed_out:
                 return "TIMEOUT", 124, stage["name"], results, warnings
             if code:

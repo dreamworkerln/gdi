@@ -19,6 +19,11 @@ class AgentCiTests(InboxTestCase):
             include.extend(['ci', 'ci/jobs', 'ci/jobs/' + job])
             if result:
                 include.extend(['ci/jobs/' + job + '/artifacts', 'ci/jobs/' + job + '/log-chunks'])
+            if 'cancelled' in {item['Path'] for item in transport.list('ci/jobs/' + job) if item['IsDir']}:
+                include.append('ci/jobs/' + job + '/cancelled')
+                if result:
+                    include.extend(['ci/jobs/' + job + '/cancelled/artifacts',
+                                    'ci/jobs/' + job + '/cancelled/log-chunks'])
         return export_snapshot(self.root / name, transport, repository_path='repos/a', include=include)
 
     def capabilities(self):
@@ -172,3 +177,101 @@ class AgentCiTests(InboxTestCase):
         self.assertEqual(raw['retry_of'], value['job_id'])
         self.assertEqual(agent_ci.prepare(self.a, snapshot, self.identity, self.root / 'retry-plan',
                                          value['publication_id'], 'user-host', 'full', self.capabilities(), retry_of=value['job_id']), retry)
+
+    def test_offline_cancel_plan_and_replacement_worker_use_existing_tools(self):
+        worker = self.worker()
+        value = self.prepare(worker)
+        self.transfer(value, 'request', 'ready', 'inbox')
+        worker.discover()
+        config = worker.config
+        old_capabilities = self.root / 'old-capabilities.json'
+        old_capabilities.write_bytes(self.capabilities().read_bytes())
+        worker.close();self._cleanups.pop()
+        other_config = self.config();other_config['worker_id'] = 'other-host'
+        other = self.worker(other_config)
+        next_caps = self.root / 'next-capabilities.json'
+        next_caps.write_bytes(self.store.data['ci/workers/other-host/capabilities.json'])
+        cancel_plan = self.root / 'cancel-plan'
+        with patch('gdi.transport.Rclone.call', side_effect=AssertionError('no rclone')), \
+                patch('gdi.rc_transport.RcServer.__enter__', side_effect=AssertionError('no RC')):
+            cancel = agent_ci.cancel(self.a, self.snapshot('cancel', value['job_id']), self.identity,
+                                     cancel_plan, value['job_id'], old_capabilities)
+            self.assertTrue(cancel['safe_to_upload_cancel'])
+            self.assertEqual(cancel['upload_order'], ['cancel'])
+            self.assertEqual(agent_ci.cancel(self.a, self.snapshot('cancel-replay', value['job_id']), self.identity,
+                                             cancel_plan, value['job_id'], old_capabilities), cancel)
+            with self.assertRaisesRegex(GdiError, 'download is missing'):
+                agent_ci.cancel_check(self.a, cancel_plan, self.snapshot('before-upload', value['job_id']), self.identity)
+            self.transfer(cancel, 'cancel')
+            checked = agent_ci.cancel_check(self.a, cancel_plan, self.snapshot('cancel-proof', value['job_id']), self.identity)
+            self.assertEqual(checked['state'], 'accepted')
+            self.assertTrue(checked['cancellation_requested'])
+            self.assertFalse(checked['verified'])
+            pending = agent_ci.result(self.a, self.plan, self.snapshot('cancel-pending', value['job_id']), self.identity)
+            self.assertEqual(pending['state'], 'CANCEL_REQUESTED')
+            retry_plan = self.root / 'replacement-plan'
+            replacement = agent_ci.prepare(self.a, self.snapshot('replace', value['job_id']), self.identity,
+                                           retry_plan, value['publication_id'], 'other-host', 'full', next_caps,
+                                           retry_of=value['job_id'])
+            replacement_raw = decode((retry_plan/'request.json').read_bytes())
+            self.assertNotEqual(replacement['job_id'], value['job_id'])
+            self.assertEqual(replacement_raw['retry_of'], value['job_id'])
+            self.assertEqual(replacement['head'], value['head'])
+            self.transfer(replacement, 'request', 'ready', 'inbox')
+            other.tick()
+            self.assertEqual(self.counter.read_text(), 'x')
+            resumed = self.worker(config)
+            resumed.tick()
+            result = agent_ci.result(self.a, self.plan, self.snapshot('cancel-result', value['job_id'], True), self.identity)
+            self.assertEqual(result['state'], 'CANCELLED')
+            self.assertTrue(result['verified'])
+            self.assertEqual(self.counter.read_text(), 'x')
+
+    def test_late_pass_is_fenced_and_cancelled_result_verified_offline(self):
+        worker = self.worker()
+        value = self.prepare(worker)
+        self.transfer(value, 'request', 'ready', 'inbox')
+        prefix = 'repos/a/ci/jobs/' + value['job_id']
+        self.store.fail = prefix + '/result.json'
+        worker.tick()
+        self.store.fail = None
+        cancel = agent_ci.cancel(self.a, self.snapshot('late-cancel', value['job_id']), self.identity,
+                                 self.root / 'late-cancel-plan', value['job_id'], self.capabilities())
+        self.transfer(cancel, 'cancel')
+        # Simulate an original result upload already in flight when cancellation arrived.
+        self.store.upload(worker.spool(value['job_id']) / 'result.json', prefix + '/result.json')
+        with patch('gdi.transport.Rclone.call', side_effect=AssertionError('no rclone')):
+            pending = agent_ci.result(self.a, self.plan, self.snapshot('late-pass', value['job_id']), self.identity)
+        self.assertEqual(pending['state'], 'CANCEL_REQUESTED')
+        self.assertFalse(pending['verified'])
+        worker.tick()
+        snapshot = self.snapshot('cancelled-delivered', value['job_id'], True)
+        # Original PASS artifacts are historical; only the cancelled result is authoritative.
+        document = decode(snapshot.read_bytes())
+        document['files'] = [item for item in document['files']
+                             if '/cancelled/' in item['local_path']
+                             or not any(item['local_path'].endswith('/' + name) for name in
+                                        ('result.json', 'build.log', 'final-status.json'))]
+        snapshot.write_bytes(encode(document))
+        with patch('gdi.transport.Rclone.call', side_effect=AssertionError('no rclone')):
+            completed = agent_ci.result(self.a, self.plan, snapshot, self.identity)
+        self.assertEqual(completed['state'], 'CANCELLED')
+        self.assertTrue(completed['verified'])
+        self.assertEqual(self.counter.read_text(), 'x')
+
+    def test_cancel_plan_rejects_unsupported_worker_and_remote_marker_tamper(self):
+        worker = self.worker();value = self.prepare(worker)
+        self.transfer(value, 'request', 'ready', 'inbox')
+        path=self.capabilities()
+        caps=decode(path.read_bytes());caps.pop('cancel_version');path.write_bytes(encode(caps))
+        with self.assertRaisesRegex(GdiError, 'does not advertise cancellation'):
+            agent_ci.cancel(self.a, self.snapshot('unsupported', value['job_id']), self.identity,
+                            self.root/'cancel-plan', value['job_id'], path)
+        worker.advertise()
+        cancel = agent_ci.cancel(self.a, self.snapshot('supported', value['job_id']), self.identity,
+                                 self.root/'cancel-plan', value['job_id'], self.capabilities())
+        self.transfer(cancel, 'cancel')
+        target='repos/a/ci/jobs/'+value['job_id']+'/cancel.json'
+        self.store.data[target]=self.store.data[target].replace(b'user-host', b'bad-host-')
+        with self.assertRaisesRegex(GdiError, 'checksum'):
+            agent_ci.cancel_check(self.a, self.root/'cancel-plan', self.snapshot('tampered', value['job_id']), self.identity)

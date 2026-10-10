@@ -56,7 +56,8 @@ gdi pull
 | `gdi push [NAME] [BRANCH] --checkpoint-every N` | Полный bundle после каждых N обновлений от предыдущего полного (по умолчанию 20) |
 | `gdi push [NAME] --ci --worker ID [--profile full] [--json]` | Публикует commit и запрос CI в общую inbox |
 | `gdi ci status/wait/logs NAME JOB_ID` | Прогресс, streaming console и проверенный terminal result |
-| `gdi ci retry NAME JOB_ID [--json]` | Явный повтор завершённой проверки, новый job ID |
+| `gdi ci cancel NAME JOB_ID [--withdraw] [--json]` | Сохраняет отмену; --withdraw также снимает точное уведомление очереди |
+| `gdi ci retry NAME JOB_ID [--worker ID] [--json]` | Новая попытка по проверенному результату либо поддерживаемой отмене; можно сменить worker |
 | `gdi pull [NAME] --passed --job ID --profile full` | Fast-forward именно на SHA выбранного проверенного PASS |
 | `gdi worker check/run/install --config PATH` | Проверка config, foreground worker, явная установка user service |
 | `gdi worker start/restart/status/stop` | Управление постоянной systemd user service; restart перечитывает config и код |
@@ -108,10 +109,23 @@ gdi ci wait drive JOB_ID --follow --timeout 3600 --json
 gdi ci logs drive JOB_ID --output /tmp/ci-JOB_ID.log
 ```
 
+`user-host` — пример: фактический ID на CI host показывает `gdi worker check --json`
+из `~/.config/gdi/worker.json`; служба проверяется отдельно через `gdi worker status`.
+Несколько host могут использовать общий root с разными worker_id. Выбор исполнителя
+явный, автоматического обнаружения, round robin и failover пока нет.
+
 При FAIL агент исправляет код, делает новый commit и повторяет. Worker хранит Git
 cache, выполняет exact SHA в отдельном checkout, публикует stdout+stderr chunks,
 полный build.log и result. После PASS/FAIL продолжает работать. Ошибка upload не
 вызывает повторный CI; recovery неопределённого исполнения даёт INTERRUPTED.
+
+Отмена — `gdi ci cancel drive JOB_ID --json`. CANCEL_REQUESTED подтверждает доставку
+marker, проверенный CANCELLED — остановку собственного исполнения worker.
+Для разрешённой замены используйте `gdi ci retry drive JOB_ID --worker NEW_ID --json`;
+отмена сама замену не создаёт. Поздний PASS отменённой попытки блокируется,
+подтверждение поздней отмены хранится отдельно в `ci/jobs/JOB_ID/cancelled/`.
+Агент с коннектором использует `gdi agent ci cancel/cancel-check` и
+`prepare --retry-of`, по [docs/agent.md](docs/agent.md).
 
 Пользователь получает выбранный PASS в свой чистый clone:
 
@@ -186,9 +200,10 @@ GC не запускается автоматически. Он удаляет �
 - Push/fetch/pull работают с одной веткой на команду; GC проверяет все опубликованные
   ветки. Tags, удаление веток, force push, refspecs и clone не реализованы.
   Metadata, orphan bundles и локальный кеш накапливаются; фонового GC нет.
-- Drive API/push notifications, отмена jobs и CI/local spool retention пока не реализованы.
+- Drive Changes API/push notifications и CI/local spool retention пока не реализованы.
   Общие immutable уведомления через rclone inbox уже поддерживаются.
-  Работает один назначенный worker на remote; multi-worker координации нет.
+  Отмена и явная замена worker реализованы; автоматические таймауты переноса,
+  обнаружение/выбор workers и координация нагрузки остаются в TODO.
 - SHA256 проверяет целостность, а не авторство. Доступ к папке Drive предоставляйте
   доверенным участникам. Подписи публикаций и защита от удаления всей remote-истории
   не реализованы. Не выполняйте обычные Git-команды, меняющие worktree, одновременно с pull.

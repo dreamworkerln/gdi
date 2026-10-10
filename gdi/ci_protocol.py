@@ -10,7 +10,7 @@ import tempfile
 from .exchange import decode, digest, encode, file_digest, hex_value
 from .git import GdiError
 
-TERMINAL = {"PASS", "FAIL", "ERROR", "TIMEOUT", "INTERRUPTED", "REJECTED"}
+TERMINAL = {"PASS", "FAIL", "ERROR", "TIMEOUT", "INTERRUPTED", "REJECTED", "CANCELLED"}
 REQUEST_KEYS = {"ci_version", "job_id", "repository_id", "ref", "head", "publication_id",
                 "worker_id", "profile_id", "profile_revision", "created_at", "retry_of"}
 
@@ -87,6 +87,30 @@ def workflow_selection(value=None):
 
 def marker(req, raw):
     return {"ci_version": req["ci_version"], "job_id": req["job_id"], "request_sha256": digest(raw)}
+
+
+def cancellation(req, raw, *, supported=True):
+    """A deterministic immutable tombstone, bound to the exact original request."""
+    value = {'cancel_version': 1, 'repository_id': req['repository_id'],
+             'job_id': req['job_id'], 'worker_id': req['worker_id'],
+             'request_sha256': digest(raw)}
+    if not supported:
+        value['worker_cancellation_supported'] = False
+    return value
+
+
+def validate_cancellation(raw_cancel, req, raw):
+    value = cancellation(req, raw, supported=decode(raw_cancel).get('worker_cancellation_supported') is not False)
+    if raw_cancel != encode(value):
+        raise GdiError('CI cancellation/request identity or canonical bytes mismatch')
+    return value
+
+
+def cancellation_capability(capabilities, worker_id):
+    if (not isinstance(capabilities, dict) or capabilities.get('worker_id') != worker_id
+            or type(capabilities.get('ci_version')) is not int or capabilities['ci_version'] != 1
+            or type(capabilities.get('cancel_version')) is not int or capabilities['cancel_version'] != 1):
+        raise GdiError('worker does not advertise cancellation support; update and restart that worker first')
 
 
 def atomic_write(path, data):
