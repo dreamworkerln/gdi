@@ -261,13 +261,19 @@ GC не запускается автоматически. Он удаляет �
 INSTALL_DIR="/путь/к/gdi"
 cd "$INSTALL_DIR"
 python3 -m gdi --help
-python3 -m unittest discover -s tests -v
+bash test.sh
 ```
+
+`test.sh` запускает весь набор тестов из корня проекта независимо от текущего
+каталога. Если `GDI_TEST_ACT` не задан и `act` доступен в PATH, скрипт подхватывает
+его для integration tests. Аргументы передаются `unittest discover`, например
+`bash test.sh -k deploy`. Docker и проверки установленной службы требуют явных
+настроек окружения, описанных в [acceptance.md](docs/acceptance.md).
 
 После проверок, commit и GitHub push опубликуйте исходники и готовый runtime:
 
 ```bash
-bash scripts/deploy.sh
+python3 scripts/deploy.py
 ```
 
 Это внешний скрипт, а не команда CLI GDI. Он сначала собирает из текущего commit
@@ -285,7 +291,7 @@ bash scripts/deploy.sh
 Только сборка и локальная проверка, без rclone и изменений на Drive:
 
 ```bash
-bash scripts/deploy.sh --build-only
+python3 scripts/deploy.py --build-only
 ```
 
 `--output DIR` задаёт каталог сборки (по умолчанию ignored `dist/runtime`);

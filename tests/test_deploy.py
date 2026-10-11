@@ -56,7 +56,7 @@ class DeployTests(unittest.TestCase):
         return self.run_command([sys.executable, '-m', 'gdi', '--no-progress', *args])
 
     def deploy(self, *args, expected=0):
-        return self.run_command(['bash', str(self.repo / 'scripts/deploy.sh'), '--output', str(self.output), *args],
+        return self.run_command([sys.executable, str(self.repo / 'scripts/deploy.py'), '--output', str(self.output), *args],
                                 cwd=self.root, expected=expected)
 
     def initialize_remote(self):
@@ -97,6 +97,17 @@ class DeployTests(unittest.TestCase):
         for args in (('--help',), ('--version',), ('agent', 'snapshot', '--help'), ('agent', 'clone', '--help')):
             self.run_command([sys.executable, '-I', str(self.output / 'gdi.pyz'), *args], cwd=self.root)
 
+    def test_build_only_without_rclone_uses_default_output_from_another_directory(self):
+        tools = self.root / 'tools'
+        tools.mkdir()
+        (tools / 'git').symlink_to(shutil.which('git'))
+        self.env['PATH'] = str(tools)
+        self.run_command([sys.executable, str(self.repo / 'scripts/deploy.py'), '--build-only'], cwd=self.root)
+        output = self.repo / 'dist/runtime'
+        self.assertTrue((output / 'gdi.pyz').is_file())
+        self.assertEqual(json.loads((output / 'runtime.json').read_text())['head'], self.head)
+        self.assertEqual(self.git('status', '--porcelain'), '')
+
     @unittest.skipUnless(shutil.which('rclone'), 'requires rclone with local backend')
     def test_dirty_sources_and_untracked_files_are_not_deployed(self):
         self.initialize_remote()
@@ -115,8 +126,8 @@ class DeployTests(unittest.TestCase):
                     path.write_bytes(original)
 
     def test_build_refuses_output_in_source_tree(self):
-        result = self.run_command([sys.executable, '-I', str(self.repo / 'scripts/build_runtime.py'),
-                                   '--output', str(self.repo / 'gdi')], expected=1)
+        result = self.run_command([sys.executable, '-I', str(self.repo / 'scripts/deploy.py'),
+                                   '--build-only', '--output', str(self.repo / 'gdi')], expected=1)
         self.assertIn('must be git-ignored', result.stderr)
         self.assertFalse((self.repo / 'gdi/gdi.pyz').exists())
         self.assertEqual(self.git('status', '--porcelain'), '')
