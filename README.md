@@ -44,6 +44,8 @@ gdi pull
 
 | Команда | Поведение |
 | --- | --- |
+| `gdi alias set NAME "COMMAND [OPTIONS]"` | Создаёт или заменяет пользовательский алиас команды |
+| `gdi alias list` / `gdi alias remove NAME` | Показывает алиасы / удаляет выбранный алиас |
 | `gdi remote add NAME URL --init` | Один раз создаёт протокол в пустой папке, сохраняет repository ID локально |
 | `gdi remote add NAME URL [--repository-id ID]` | Подключает существующий remote; без ID доверяет идентичности при первом подключении |
 | `gdi remote default NAME` | Выбирает подключение для коротких команд |
@@ -52,7 +54,7 @@ gdi pull
 | `gdi remote list` | Показывает имена, адреса и закреплённые repository IDs |
 | `gdi remote remove NAME` | Удаляет локальные настройки, оставляет удалённые данные и fetched refs |
 | `gdi push [NAME] [BRANCH]` | Первый bundle полный, следующие инкрементальные; повтор того же HEAD ничего не публикует |
-| `gdi push [NAME] [BRANCH] --full` | Создаёт полный контрольный bundle, в том числе для уже опубликованного HEAD дельты |
+| `gdi push [NAME] [BRANCH] -f / --full` | Создаёт полный контрольный bundle, в том числе для уже опубликованного HEAD дельты |
 | `gdi push [NAME] [BRANCH] --checkpoint-every N` | Полный bundle после каждых N обновлений от предыдущего полного (по умолчанию 20) |
 | `gdi push [NAME] --ci --worker ID [--profile full] [--json]` | Публикует commit и запрос CI в общую inbox |
 | `gdi ci status/wait/logs NAME JOB_ID` | Прогресс, streaming console и проверенный terminal result |
@@ -88,6 +90,41 @@ Timeout/Ctrl+C клиента не отменяют job. JSON stdout отдел�
 Подключения gdi хранятся в `.gdi/config.json`; `.git/config` не изменяется.
 Общий inbox root по умолчанию — родитель URL проекта; для вложенной структуры
 задайте `remote add --inbox-root gdrive:gdi`. Добавьте `.gdi/` в `.gitignore`.
+
+### Пользовательские алиасы
+
+Алиасы общие для всех проектов и хранятся в `~/.config/gdi/aliases.ini`.
+Если задан `XDG_CONFIG_HOME`, используется `$XDG_CONFIG_HOME/gdi/aliases.ini`.
+При первом запуске обычного CLI GDI создаёт отсутствующий файл вместе с каталогом
+и добавляет алиас `s = status`. Существующий файл при запуске не изменяется.
+Прямые вызовы `gdi agent ...` не создают и не читают конфигурацию алиасов.
+Управление алиасами работает вне Git-репозитория, без rclone.
+
+```bash
+gdi alias set s status
+gdi alias set pc "push --ci"
+gdi alias set wl "worker logs --follow"
+gdi alias list
+gdi s --json                 # gdi status --json
+gdi pc --worker user-host    # gdi push --ci --worker user-host
+gdi alias remove pc
+```
+
+Файл можно редактировать вручную; комментарии начинаются с `#` или `;`:
+
+```ini
+[alias]
+s = status
+pc = push --ci
+wl = worker logs --follow
+```
+
+Значение начинается со встроенной команды без префикса `gdi`. Кавычки позволяют
+передавать аргументы с пробелами; параметры вызова добавляются после параметров
+алиаса. Имена чувствительны к регистру. Встроенные команды нельзя переопределять,
+цепочки алиасов не поддерживаются. Shell, подстановка переменных и конвейеры не
+используются. При изменении через `alias set/remove` INI перезаписывается:
+значения остальных алиасов сохраняются, комментарии — нет.
 
 ## Автономный CI
 

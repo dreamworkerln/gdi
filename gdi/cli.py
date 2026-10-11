@@ -87,6 +87,7 @@ def parser():
   gdi fetch                                           # import without changing files
   gdi pull                                            # clean worktree, fast-forward
   gdi status                                          # branch, HEAD, connections and publication
+  gdi alias set s status                              # define a user command alias
   gdi log                                             # latest publications of the current branch
   gdi cache clear drive                               # clear local verified cache
   gdi push drive --ci --worker user-host --profile full
@@ -104,6 +105,15 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
     cli.add_argument("-v", "--version", action=VersionAction, nargs=0, help="show version and the GDI emblem")
     diagnostics_arguments(cli)
     commands = cli.add_subparsers(dest="command", required=True)
+    alias = commands.add_parser('alias', help='manage user command aliases (works outside git)')
+    alias_ops = alias.add_subparsers(dest='operation', required=True)
+    for operation in ('set', 'list', 'remove'):
+        sub = alias_ops.add_parser(operation)
+        diagnostics_arguments(sub)
+        if operation != 'list':
+            sub.add_argument('name', help='user alias name; built-in commands cannot be overridden')
+        if operation == 'set':
+            sub.add_argument('expansion', help='quoted command and options, e.g. "push --ci"')
     remote = commands.add_parser("remote", help="configure a dedicated rclone folder for this repository")
     operations = remote.add_subparsers(dest="operation", required=True)
     add = operations.add_parser("add", help="join an existing remote, or initialize an empty folder")
@@ -150,7 +160,7 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
                                  help='show at most N latest publications (default: 20)')
             command.add_argument('--json', action='store_true', help='write one machine-readable response')
         if name == "push":
-            command.add_argument("--full", action="store_true", help="publish a self-contained checkpoint")
+            command.add_argument("-f", "--full", action="store_true", help="publish a self-contained checkpoint")
             command.add_argument("--checkpoint-every", type=int, default=CHECKPOINT_EVERY,
                                  help=f"publish a full checkpoint every N updates (default: {CHECKPOINT_EVERY})")
             command.add_argument("--ci", action="store_true", help="submit exact published commit to the host worker")
@@ -293,6 +303,16 @@ def emit(value, machine=False):
 
 def main(argv=None):
     command_parser = parser()
+    from .aliases import command_index, ensure_config, expand
+    argv = list(sys.argv[1:] if argv is None else argv)
+    index = command_index(argv)
+    try:
+        if index is None or argv[index] != 'agent':
+            ensure_config()
+            argv = expand(argv)
+    except (GdiError, OSError, UnicodeError) as exc:
+        print_error(exc)
+        return 1
     args = command_parser.parse_args(argv)
     if args.command == "push" and (args.ci and not args.profile or
                                   not args.ci and (args.worker or args.policy or args.profile != "full" or args.workflow or args.event or args.job or args.input)):
@@ -311,7 +331,7 @@ def main(argv=None):
         from .diagnostics import command_session
         with command_session(args.command + (' ' + args.operation if hasattr(args, 'operation') else ''),
                              path=getattr(args, 'profile_log', None), progress=getattr(args, 'progress', None)) as diagnostics:
-            if args.command == 'agent' or (args.command == 'worker' and args.operation in
+            if args.command in ('agent', 'alias') or (args.command == 'worker' and args.operation in
                                           ('start', 'restart', 'status', 'stop', 'logs')):
                 code = execute(args)
             else:
@@ -334,6 +354,9 @@ def main(argv=None):
 
 def execute(args, *, transport_factory=None):
     try:
+        if args.command == 'alias':
+            from .aliases import execute as execute_alias
+            return execute_alias(args)
         if args.command == 'agent':
             from . import agent
             if args.operation == 'snapshot':
