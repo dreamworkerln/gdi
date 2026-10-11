@@ -270,12 +270,18 @@ class TransferProgress:
         if not final and now - self.last_shown < 1:
             return
         counters = (transferred, total, int(speed))
-        if counters == self.last and not final:
+        waiting = total is not None and total > 0 and transferred >= total and not final
+        # Bytes reaching the total do not mean the rclone job has succeeded.
+        # Its average speed can keep falling while it finishes the operation.
+        if not final and (counters == self.last or
+                          waiting and self.last is not None and counters[:2] == self.last[:2]):
             return
         self.last, self.last_shown = counters, now
         text = (f'{transferred}/{total} bytes ({min(100, transferred * 100 / total):.1f}%)'
                 if total else f'{transferred} bytes (total unknown)')
-        session.show(f'{self.label}: {text}, {speed:.0f} bytes/s' + ('; complete' if final else ''))
+        detail = ('; waiting for transfer completion' if waiting else
+                  f', {speed:.0f} bytes/s' + ('; complete' if final else ''))
+        session.show(f'{self.label}: {text}' + detail)
         session.event('transfer_progress', phase=_phase.get(), label=self.label,
                       bytes=transferred, total_bytes=total, speed_bytes_per_second=speed, complete=final)
 

@@ -24,6 +24,37 @@ class ProgressTests(unittest.TestCase):
         self.assertNotIn('total ', err.getvalue())
         self.assertNotIn('profile', err.getvalue())
 
+    def test_all_bytes_wait_once_until_job_succeeds(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), command_session('push', progress=True), \
+                patch('gdi.diagnostics.time.monotonic', return_value=0) as clock:
+            progress = TransferProgress('upload source.bundle', 100)
+            clock.return_value = 1
+            progress.update({'bytes': 100, 'speed': 100})
+            for second in range(2, 20):
+                clock.return_value = second
+                progress.update({'bytes': 100, 'speed': 100 / second})
+            self.assertEqual(err.getvalue().splitlines(), [
+                'gdi: upload source.bundle: 100/100 bytes (100.0%); waiting for transfer completion'])
+            progress.update({'bytes': 100, 'speed': 5}, final=True)
+        self.assertEqual(len(err.getvalue().splitlines()), 2)
+        self.assertTrue(err.getvalue().endswith('5 bytes/s; complete\n'))
+
+    def test_failure_after_all_bytes_does_not_report_complete(self):
+        server = RcServer()
+        responses = [{'jobid': 7}, {'finished': False}, {'bytes': 100, 'speed': 100},
+                     {'finished': True, 'success': False, 'error': 'failed transfer'},
+                     {'bytes': 100, 'speed': 50}, {}]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), command_session('push', progress=True), \
+                patch.object(server, '_request', side_effect=responses), \
+                patch('gdi.rc_transport.time.sleep'), \
+                patch('gdi.diagnostics.time.monotonic', side_effect=range(100)):
+            with self.assertRaisesRegex(GdiError, 'failed transfer'):
+                server.transfer('/sync/copy', {}, 'upload', 100)
+        self.assertIn('waiting for transfer completion', err.getvalue())
+        self.assertNotIn('; complete', err.getvalue())
+
     def test_disabled_progress_makes_no_async_calls(self):
         with command_session('push', progress=False), patch.object(RcServer, 'request', return_value={}) as request:
             transport = RcServer().transport('test:project')

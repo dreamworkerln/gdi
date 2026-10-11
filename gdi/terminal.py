@@ -4,8 +4,9 @@ import os
 import sys
 
 
-def colorize(text, code):
+def colorize(text, code, *, stream=None):
+    stream = sys.stdout if stream is None else stream
     force = os.environ.get('FORCE_COLOR', '') not in ('', '0')
     enabled = 'NO_COLOR' not in os.environ and (force or (
-        sys.stdout.isatty() and os.environ.get('TERM') != 'dumb'))
+        stream.isatty() and os.environ.get('TERM') != 'dumb'))
     return f'\033[{code}m{text}\033[0m' if enabled else text

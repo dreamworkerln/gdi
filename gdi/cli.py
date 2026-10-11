@@ -11,6 +11,14 @@ from .exchange import CHECKPOINT_EVERY, Exchange
 from .git import GdiError, Git
 
 
+def print_error(exc):
+    message = f"gdi: {exc}"
+    if str(exc) == 'push is not a fast-forward; fetch/pull and reconcile history first':
+        from .terminal import colorize
+        message = colorize(message, 33, stream=sys.stderr)
+    print(message, file=sys.stderr)
+
+
 class VersionAction(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         print("gdi " + __version__)
@@ -320,7 +328,7 @@ def main(argv=None):
     except (GdiError, OSError, UnicodeError) as exc:
         if getattr(args, "json", False):
             emit({"error": str(exc), "kind": "GDI_ERROR"}, True)
-        print(f"gdi: {exc}", file=sys.stderr)
+        print_error(exc)
         return 1
 
 
@@ -579,7 +587,7 @@ def execute(args, *, transport_factory=None):
     except (GdiError, OSError, UnicodeError) as exc:
         if getattr(args, "json", False):
             emit({"error": str(exc), "kind": "GDI_ERROR"}, True)
-        print(f"gdi: {exc}", file=sys.stderr)
+        print_error(exc)
         return 1
 
 
