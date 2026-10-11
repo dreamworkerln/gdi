@@ -21,6 +21,18 @@ cd "$INSTALL_DIR"
 python3 -m gdi agent --help
 ```
 
+В среде агента ChatGPT/OAI живые Git checkout-ы, полученные через GDI, храните
+под `/home/oai/share/gdi-checkouts/<repo-name>`. Например:
+`/home/oai/share/gdi-checkouts/serialterminal` или
+`/home/oai/share/gdi-checkouts/gdi`. Не используйте `/mnt/data` как постоянный
+`WORK_DIR` или `INSTALL_DIR`: этот каталог предназначен для временных downloads,
+snapshots, bundles, manifests и connector materialization; runtime может повторно
+материализовать туда файлы и заменить содержимое существующего каталога. После
+`agent clone` проверьте наличие `.git`, фактические HEAD/ветку и чистоту worktree.
+Каталог `/home/oai/share/gdi-checkouts` остаётся рабочей копией текущей execution
+environment, а опубликованный GDI-репозиторий на Drive — источником истины; при
+потере среды восстановите checkout заново через `gdi agent`.
+
 Храните снимки и планы вне tracked файлов проекта. Для каждой новой передачи
 выбирайте отдельный каталог плана. До завершения передачи сохраняйте этот каталог:
 повтор использует прежние bytes, nonce и job ID. После ошибки не создавайте новый
