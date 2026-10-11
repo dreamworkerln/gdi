@@ -264,6 +264,36 @@ python3 -m gdi --help
 python3 -m unittest discover -s tests -v
 ```
 
+После проверок, commit и GitHub push опубликуйте исходники и готовый runtime:
+
+```bash
+bash scripts/deploy.sh
+```
+
+Это внешний скрипт, а не команда CLI GDI. Он сначала собирает из текущего commit
+воспроизводимый `dist/runtime/gdi.pyz` и проверяет запуск вне исходников, затем
+выполняет `python3 -m gdi push drive --full`. Только после полной публикации того
+же HEAD/ветки загружает `gdi.pyz`, `runtime.json` (версия, HEAD, ветка, SHA256,
+размер) и `gdi.pyz.sha256` в `gdrive:gdi/gdi/runtime/`. Скачивание обратно проверяет
+точные bytes всех трёх файлов. Нужны Python 3.10+, Git и настроенный rclone;
+рабочее дерево должно быть чистым. Тесты, commit и GitHub push скрипт не делает.
+При ошибке последующие этапы не выполняются. Уже завершённая Git-публикация
+сохраняется, даже если загрузка runtime не удалась; исправьте причину и повторите
+скрипт для того же commit. Обновление трёх runtime-файлов не является атомарным:
+агент должен проверять checksum перед запуском и повторить скачивание при несовпадении.
+
+Только сборка и локальная проверка, без rclone и изменений на Drive:
+
+```bash
+bash scripts/deploy.sh --build-only
+```
+
+`--output DIR` задаёт каталог сборки (по умолчанию ignored `dist/runtime`);
+`--runtime-dir RCLONE_PATH` меняет место загрузки runtime, например для проверки
+на local backend. Не направляйте output в tracked каталог. Zipapp содержит код
+GDI и стандартную точку входа, без Python-интерпретатора и Git. Агент запускает
+его как `python3 /путь/gdi.pyz agent ...`: [быстрое восстановление](docs/agent.md#готовый-runtime-gdipyz).
+
 Новые tests используют реальные временные Git repositories и fake transport; при наличии
 rclone также проверяется настоящий CLI с local backend, без Google credentials.
 Проверяются пропущенные дельты, checkpoints, повторные операции без загрузок, потеря
