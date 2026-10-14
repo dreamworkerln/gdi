@@ -115,7 +115,11 @@ def prepare(checkout, profile, spool, req, *, cache_dir=None, network_environmen
         argv += ["--secret", name]
     # Run outside checkout so a committed .actrc cannot replace the execution plan.
     effective = dict(profile)
-    effective['process_env'] = {'XDG_CACHE_HOME': str(cache_dir / 'xdg')}
+    # act reads these from its process environment before selecting its own
+    # artifact server. A nested worker must not reuse the parent CI's service.
+    effective['process_env'] = {'XDG_CACHE_HOME': str(cache_dir / 'xdg'),
+                                'ACTIONS_RUNTIME_URL': '', 'ACTIONS_RESULTS_URL': '',
+                                'ACTIONS_RUNTIME_TOKEN': ''}
     if network_environment is not None:
         # Both act's own downloads and action containers use the selected route.
         # Credentials stay in the private file, not the execution profile/logs.

@@ -271,6 +271,14 @@ class DockerV2CliTests(V2CliFixture):
         super().setUp()
 
     def test_matrix_secrets_external_actions_and_artifacts(self):
+        # Reproduce a worker launched inside an outer GitHub Actions/act job.
+        # Artifact uploads must go to this fixture's server, even when a parent
+        # runtime endpoint and token are inherited by the worker process.
+        self.stop_worker()
+        self.env.update(ACTIONS_RUNTIME_URL='http://127.0.0.1:9/parent-artifacts/',
+                        ACTIONS_RESULTS_URL='http://127.0.0.1:9/parent-results/',
+                        ACTIONS_RUNTIME_TOKEN='parent-runtime-token')
+        self.start_worker()
         self.cycle()
 
     def test_sigkill_cleans_owned_containers_before_result(self):
