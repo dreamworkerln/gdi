@@ -14,25 +14,29 @@ Git-репозиторий проекта; это может быть друго
 FAIL: состояние CI определяется полями `state` и `verified`, а не кодом этой команды.
 
 ```bash
-INSTALL_DIR="/путь/к/исходникам/gdi"
-WORK_DIR="/путь/к/рабочему/my-project"
-EXCHANGE_DIR="/путь/к/локальному/обмену"
+INSTALL_DIR="/mnt/data/gdi-checkouts/gdi"
+WORK_DIR="/mnt/data/gdi-checkouts/my-project"
+EXCHANGE_DIR="/mnt/data/gdi-exchange/my-project"
 REPOSITORY_ID="доверенный_repository_id_пользователя"
 cd "$INSTALL_DIR"
 python3 -m gdi agent --help
 ```
 
-В среде агента ChatGPT/OAI живые Git checkout-ы, полученные через GDI, храните
-под `/home/oai/share/gdi-checkouts/<repo-name>`. Например:
-`/home/oai/share/gdi-checkouts/serialterminal` или
-`/home/oai/share/gdi-checkouts/gdi`. Не используйте `/mnt/data` как постоянный
-`WORK_DIR` или `INSTALL_DIR`: этот каталог предназначен для временных downloads,
-snapshots, bundles, manifests и connector materialization; runtime может повторно
-материализовать туда файлы и заменить содержимое существующего каталога. После
-`agent clone` проверьте наличие `.git`, фактические HEAD/ветку и чистоту worktree.
-Каталог `/home/oai/share/gdi-checkouts` остаётся рабочей копией текущей execution
-environment, а опубликованный GDI-репозиторий на Drive — источником истины; при
-потере среды восстановите checkout заново через `gdi agent`.
+По наблюдению владельца, в используемой среде агента ChatGPT/OAI `/mnt/data`
+сохраняется дольше, чем `/home/oai/share`. При этом **материализация может стереть
+содержимое по обоим путям**: ни один из них не защищает рабочую копию от потери.
+Для Git checkout-ов можно использовать отдельные каталоги под
+`/mnt/data/gdi-checkouts/<repo-name>`, например
+`/mnt/data/gdi-checkouts/serialterminal` и `/mnt/data/gdi-checkouts/gdi`.
+`WORK_DIR` и `INSTALL_DIR` могут находиться в `/mnt/data`; downloads, snapshots,
+bundles, manifests и планы обмена храните отдельно, например в `/mnt/data/gdi-exchange`.
+После `agent clone` проверьте наличие `.git`, фактические HEAD/ветку и чистоту
+worktree. После материализации или восстановления среды проверьте сохранившийся
+checkout перед продолжением работы: наличие `.git`, HEAD/ветку и состояние worktree.
+Разделение каталогов checkout и обмена не гарантирует защиту от материализации.
+Локальные каталоги не гарантируют сохранность между средами,
+а опубликованный GDI-репозиторий на Drive — источник восстановления; при потере
+checkout восстановите его заново через `gdi agent`.
 
 Храните снимки и планы вне tracked файлов проекта. Для каждой новой передачи
 выбирайте отдельный каталог плана. До завершения передачи сохраняйте этот каталог:
@@ -128,7 +132,7 @@ HEAD/ветки разрешены; восстановление из файло
 доверенному SHA256, восстановите из неё вторую копию вместе с checksum-файлом
 и задайте `GDI_RUNTIME` на существующий проверенный архив. Если исчезли обе,
 скачайте и проверьте runtime заново. Две локальные копии не гарантируют сохранность
-между средами; правило о checkout-ах вне `/mnt/data` остаётся в силе.
+при материализации или смене среды; проверяйте их наличие и checksum перед запуском.
 
 ### Bootstrap из полного bundle
 
