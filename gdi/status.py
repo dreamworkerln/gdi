@@ -66,7 +66,7 @@ def display(value):
         print(f"Connection: {remote['name']}{' (default)' if remote['default'] else ''} — {remote['url']}")
         print('  Repository ID: ' + remote['repository_id'])
         state = descriptions[remote['state']]
-        if remote['state'] in ('ahead', 'published', 'unpublished', 'unknown'):
+        if remote['state'] in ('ahead', 'behind', 'published', 'unpublished', 'unknown'):
             state = colorize(state, 33)
         print('  State: ' + state)
         if remote['publication_id']:
