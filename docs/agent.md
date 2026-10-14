@@ -329,6 +329,27 @@ worker (`remote_url` в его конфигурации), и его реальн
 `gdrive:exchange` значение `exchange/my-project` направит worker в
 `gdrive:exchange/exchange/my-project`, а не в `gdrive:exchange/my-project`.
 
+Для CI самого GDI общий корень — `gdrive:gdi`, папка репозитория —
+`gdrive:gdi/gdi`, поэтому **`repository_path: "gdi"`**. Значение `"gdi/gdi"`
+ошибочно: worker добавит его к общему корню и попытается прочитать
+`gdrive:gdi/gdi/gdi/repository.json`, получив `404`.
+
+**Запросы CI для других репозиториев оформляйте по тем же правилам.** Меняются
+папка проекта, Repository ID, ref/HEAD и параметры конкретного запроса; путь
+проекта всегда считается относительно общего корня выбранного worker.
+Примеры для общего корня `gdrive:gdi`:
+
+| Репозиторий | Полный адрес проекта | `repository_path` | Папка request/ready от общего корня |
+| --- | --- | --- | --- |
+| GDI | `gdrive:gdi/gdi` | `gdi` | `gdi/ci/jobs/JOB_ID` |
+| serialterminal | `gdrive:gdi/serialterminal` | `serialterminal` | `serialterminal/ci/jobs/JOB_ID` |
+| lora-sack | `gdrive:gdi/lora-sack` | `lora-sack` | `lora-sack/ci/jobs/JOB_ID` |
+| Вложенный проект | `gdrive:gdi/repos/my-project` | `repos/my-project` | `repos/my-project/ci/jobs/JOB_ID` |
+
+Во всех этих случаях уведомление направляется в `gdrive:gdi/inbox`, а registry
+worker читается из `gdrive:gdi/ci/workers`. Реальные пути и Repository ID
+подтвердите через listing и `repository.json` перед подготовкой плана.
+
 Для `repository_path: "my-project"` все пути плана разрешаются так:
 
 ```text
@@ -654,6 +675,12 @@ worker с другим ID не перенаправляет существующ
    папка назначения»; папка проекта уже включена в эти пути. До загрузки inbox
    сверьте `repository_path` плана/уведомления с реальной цепочкой папок от
    общего корня до PROJECT_FOLDER_ID.
+   Это обязательно для каждого репозитория, включая сам GDI: при корне
+   `gdrive:gdi` и проекте `gdrive:gdi/gdi` в уведомлении должен быть путь `gdi`.
+   Корректные `request.json`, `request.ready` и совпадающий SHA-256 запроса
+   не подтверждают правильность маршрута: поля `repository_path` в запросе нет,
+   worker берёт его из отдельного уведомления inbox. При ошибке этого пути
+   worker может оставаться READY, а запрос не попадёт в его локальную очередь.
 2. Скачайте оба обратно, свежие capabilities и metadata проекта. Дополните снимок
    listings `ci`, `ci/jobs`, `ci/jobs/JOB_ID` и downloads request/ready.
 
