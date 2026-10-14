@@ -46,7 +46,7 @@ class RcError(GdiError):
 
 
 class RcServer:
-    def __init__(self, *, executable='rclone', timeout=None, trace_path=None, options=None):
+    def __init__(self, *, executable='rclone', timeout=None, trace_path=None, options=None, network=None):
         self.executable = executable
         self.timeout = timeout
         self.process = None
@@ -57,6 +57,9 @@ class RcServer:
         self.trace_path = Path(trace_path) if trace_path else None
         self.trace = None
         self.options = options or {}
+        from .network import NetworkRoutes
+        self.network = network if network is not None else NetworkRoutes()
+        self.network_route = None
         self.lock = threading.RLock()
         self.profile_call = None
         self.profile_result = None
@@ -65,6 +68,9 @@ class RcServer:
             ('gdi:' + self.password).encode()).decode()
 
     def __enter__(self):
+        self.closed = False
+        if self.network_route is None:
+            self.network_route = next(route for route in self.network.routes() if self.network.available(route))
         if self.trace_path is not None:
             self.trace_path.parent.mkdir(parents=True, exist_ok=True)
             descriptor = os.open(self.trace_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
@@ -74,14 +80,14 @@ class RcServer:
         self.path = self.directory / 'rc.sock'
         self.errors = (self.directory / 'stderr').open('w+')
         # Do not inherit RC listeners, auth, files or browser settings.
-        environment = {key: value for key, value in os.environ.items()
+        environment = {key: value for key, value in self.network.environment(self.network_route).items()
                        if not key.startswith('RCLONE_RC_')}
         environment.update(RCLONE_RC_USER='gdi', RCLONE_RC_PASS=self.password)
         args = [self.executable, 'rcd', '--rc-addr', str(self.path), '--rc-serve',
                 '--contimeout', str(self.options.get('connect_timeout_seconds', 10)) + 's',
                 '--timeout', str(self.options.get('timeout_seconds', 60)) + 's',
-                '--retries', str(self.options.get('retries', 3)),
-                '--low-level-retries', str(self.options.get('low_level_retries', 3)),
+                '--retries', str(self.options.get('retries', 1)),
+                '--low-level-retries', str(self.options.get('low_level_retries', 1)),
                 '--rc-server-read-timeout', '0', '--rc-server-write-timeout', '0']
         started = time.monotonic()
         self.record({'event': 'process_start', 'argv': args})
@@ -152,10 +158,45 @@ class RcServer:
 
     def request(self, route, value=None, *, get=False):
         # Serialize cache resets with operations, including worker log publication.
-        with self.lock, rc_call('read' if get else route.lstrip('/'), value) as profile:
+        with self.lock:
+            if not get and not route.startswith(('/operations/', '/sync/')):
+                return self._single_request(route, value)
+            return self.network.run(lambda network_route: self._routed_request(network_route, route, value, get=get))
+
+    def _use_route(self, route):
+        if route != self.network_route:
+            self.network_route = route
+            # Starting a daemon belongs to the session context. In particular,
+            # a request on an unstarted server must not spawn an orphan process.
+            if self.process is not None:
+                self.close()
+                self.__enter__()
+
+    def _routed_request(self, network_route, route, value, *, get=False):
+        self._use_route(network_route)
+        if not get and route.startswith(('/operations/', '/sync/')):
+            # Default to one attempt on this route; explicit retry settings
+            # still apply. A network failure can select a different route.
+            config = {'Retries': self.options.get('retries', 1),
+                      'LowLevelRetries': self.options.get('low_level_retries', 1)}
+            value = {**(value or {}), '_config': {**config, **(value or {}).get('_config', {})}}
+        return self._single_request(route, value, get=get)
+
+    def _single_request(self, route, value=None, *, get=False):
+        with rc_call('read' if get else route.lstrip('/'), value) as profile:
             return self._request(route, value, get=get, profile=profile)
 
     def transfer(self, route, value, label, total=None):
+        with self.lock:
+            def attempt(network_route):
+                self._use_route(network_route)
+                config = {'Retries': self.options.get('retries', 1),
+                          'LowLevelRetries': self.options.get('low_level_retries', 1)}
+                parameters = {**value, '_config': {**config, **value.get('_config', {})}}
+                return self._transfer(route, parameters, label, total)
+            return self.network.run(attempt)
+
+    def _transfer(self, route, value, label, total=None):
         from .diagnostics import TransferProgress
         import uuid
         # Keep the cache/transfer lock for the whole job; polling uses the same
@@ -165,14 +206,14 @@ class RcServer:
             progress = TransferProgress(label, total)
             jid, error = None, None
             try:
-                job = self.request(route, {**value, '_async': True, '_group': group})
+                job = self._single_request(route, {**value, '_async': True, '_group': group})
                 jid = job.get('jobid')
                 if type(jid) is not int:
                     raise GdiError('invalid RC asynchronous job identity')
                 while True:
-                    status = self.request('/job/status', {'jobid': jid})
+                    status = self._single_request('/job/status', {'jobid': jid})
                     # These calls are local to the daemon, not Drive API requests.
-                    stats = self.request('/core/stats', {'group': group})
+                    stats = self._single_request('/core/stats', {'group': group})
                     progress.update(stats, final=status.get('finished') is True and status.get('success') is True)
                     if status.get('finished') is True:
                         if status.get('success') is not True:
@@ -183,7 +224,7 @@ class RcServer:
                 error = type(exc).__name__
                 if type(jid) is int:
                     try:
-                        self.request('/job/stop', {'jobid': jid})
+                        self._single_request('/job/stop', {'jobid': jid})
                     except (GdiError, OSError):
                         pass
                 raise
@@ -403,6 +444,8 @@ class TransportSession:
 
     def __init__(self, *, options=None):
         self.options = options or {}
+        from .network import NetworkRoutes
+        self.network = NetworkRoutes()
         self.server = None
         self.depth = 0
         self.mode = os.environ.get('GDI_TRANSPORT', 'rc' if sys.platform.startswith('linux') else 'cli')
@@ -429,10 +472,10 @@ class TransportSession:
         if self.depth == 0:
             raise GdiError('rclone transport used outside its operation lifetime')
         if self.mode == 'cli':
-            return Rclone(url, options=self.options)
+            return Rclone(url, options=self.options, network=self.network)
         # Worker starts its first request on the main operation thread before
         # starting the log publisher. No process is spawned for local-only commands.
         if self.server is None:
-            self.server = RcServer(options=self.options)
+            self.server = RcServer(options=self.options, network=self.network)
             self.server.__enter__()
         return self.server.transport(url)

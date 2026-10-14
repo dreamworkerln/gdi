@@ -68,3 +68,16 @@ class WorkflowProxyTests(ExchangeTestCase):
         self.assertNotIn('https_proxy', env)
         self.assertNotIn('NO_PROXY', env)
         self.assertNotIn('no_proxy', env)
+
+    def test_automatic_network_reaches_act_without_stale_host_proxy(self):
+        selected = {'HTTP_PROXY': 'http://gdi:token@127.0.0.1:54321',
+                    'HTTPS_PROXY': 'http://gdi:token@127.0.0.1:54321'}
+        with patch.dict(os.environ, {'HTTPS_PROXY': 'http://stale:9999'}, clear=True):
+            result = prepare(self.a, self.profile, self.spool, self.request, network_environment=selected)
+        proxy_file = self.spool / 'worker-proxy-env.yaml'
+        self.assertEqual(result['process_proxy_file'], str(proxy_file))
+        environment = json.loads(proxy_file.read_bytes())
+        self.assertEqual(environment['HTTPS_PROXY'], selected['HTTPS_PROXY'])
+        self.assertNotIn('stale', repr(result))
+        self.assertNotIn('token@', repr(result))
+        self.assertIn('localhost', environment['NO_PROXY'])

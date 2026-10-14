@@ -38,6 +38,12 @@ def execute(checkout, profile, log, update, process_changed, *, cancelled=lambda
     started = time.monotonic()
     results, warnings = [], []
     env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+    if profile.get('process_proxy_file'):
+        from .network import PROXY_NAMES
+        from .exchange import decode
+        for key in PROXY_NAMES:
+            env.pop(key, None)
+        env.update(decode(Path(profile['process_proxy_file']).read_bytes()))
     env.update(profile["env"])
     env.update(profile.get("process_env", {}))
     env["PYTHONUNBUFFERED"] = "1"

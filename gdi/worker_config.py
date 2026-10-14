@@ -204,7 +204,7 @@ def global_config(config):
     for key, default in (("connect_timeout_seconds", 10), ("timeout_seconds", 60)):
         options[key] = seconds(options.get(key, default))
     for key in ("retries", "low_level_retries"):
-        value = options.setdefault(key, 3)
+        value = options.setdefault(key, 1)
         if type(value) is not int or value < 1:
             raise GdiError("rclone retries must be positive integers")
     return config

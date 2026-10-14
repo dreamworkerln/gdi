@@ -24,9 +24,11 @@ class Rclone:
     # Both copy and copyto create the destination's parent directories.
     creates_parents = True
 
-    def __init__(self, url, *, options=None):
+    def __init__(self, url, *, options=None, network=None):
         self.url = validate_url(url)
         self.options = options or {}
+        from .network import NetworkRoutes
+        self.network = network if network is not None else NetworkRoutes()
 
     def call(self, *args, allowed=(0,)):
         from .diagnostics import TransferProgress, transfer_progress_enabled
@@ -36,11 +38,12 @@ class Rclone:
             args = (*args, '--stats', '1s', '--stats-log-level', 'NOTICE', '--use-json-log')
         error = None
         try:
-            return run(["rclone", *args, "--contimeout", str(self.options.get("connect_timeout_seconds", 10)) + "s",
+            return self.network.run(lambda route: run(["rclone", *args, "--contimeout", str(self.options.get("connect_timeout_seconds", 10)) + "s",
                         "--timeout", str(self.options.get("timeout_seconds", 60)) + "s",
-                        "--retries", str(self.options.get("retries", 3)),
-                        "--low-level-retries", str(self.options.get("low_level_retries", 3))], allowed=allowed,
-                       **({'stderr_line': progress.line} if progress is not None else {}))
+                        "--retries", str(self.options.get("retries", 1)),
+                        "--low-level-retries", str(self.options.get("low_level_retries", 1))], allowed=allowed,
+                       environment=self.network.environment(route),
+                       **({'stderr_line': progress.line} if progress is not None else {})))
         except BaseException as exc:
             error = type(exc).__name__
             raise

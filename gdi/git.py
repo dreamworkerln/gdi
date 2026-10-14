@@ -12,9 +12,10 @@ class GdiError(RuntimeError):
     """An actionable command, transport, or protocol failure."""
 
 
-def run(args, *, cwd=None, allowed=(0,), isolated_git=False, stderr_line=None):
+def run(args, *, cwd=None, allowed=(0,), isolated_git=False, stderr_line=None, environment=None):
     from .diagnostics import subprocess_call
-    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env = {key: value for key, value in (os.environ if environment is None else environment).items()
+           if not key.startswith("GIT_")}
     env["GIT_TERMINAL_PROMPT"] = "0"
     if isolated_git:
         env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,

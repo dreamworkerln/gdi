@@ -31,7 +31,7 @@ def validate_selection(git, head, selector):
     return files
 
 
-def prepare(checkout, profile, spool, req, *, cache_dir=None):
+def prepare(checkout, profile, spool, req, *, cache_dir=None, network_environment=None):
     """Resolve only paths and runner options; act owns all workflow semantics."""
     workflow = profile["workflow"]
     from .runner import verify_environment
@@ -72,13 +72,14 @@ def prepare(checkout, profile, spool, req, *, cache_dir=None):
     # Keep proxy credentials outside argv, checkout and published artifacts.
     proxy_names = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
                    "http_proxy", "https_proxy", "all_proxy")
-    proxy_env = {name: os.environ[name] for name in (*proxy_names, "NO_PROXY", "no_proxy")
-                 if name in os.environ and name not in profile["env"]
+    host_environment = os.environ if network_environment is None else network_environment
+    proxy_env = {name: host_environment[name] for name in (*proxy_names, "NO_PROXY", "no_proxy")
+                 if name in host_environment and name not in profile["env"]
                  and name.swapcase() not in profile["env"]}
-    if any(os.environ.get(name) or profile["env"].get(name) for name in proxy_names):
+    if any(host_environment.get(name) or profile["env"].get(name) for name in proxy_names):
         entries = list(dict.fromkeys(item.strip()
                        for source in ("NO_PROXY", "no_proxy")
-                       for item in os.environ.get(source, '').split(',') if item.strip()))
+                       for item in host_environment.get(source, '').split(',') if item.strip()))
         for address in ("localhost", "127.0.0.1", "::1", workflow["artifact_server_addr"]):
             if address not in entries:
                 entries.append(address)
@@ -115,6 +116,10 @@ def prepare(checkout, profile, spool, req, *, cache_dir=None):
     # Run outside checkout so a committed .actrc cannot replace the execution plan.
     effective = dict(profile)
     effective['process_env'] = {'XDG_CACHE_HOME': str(cache_dir / 'xdg')}
+    if network_environment is not None:
+        # Both act's own downloads and action containers use the selected route.
+        # Credentials stay in the private file, not the execution profile/logs.
+        effective['process_proxy_file'] = str(proxy_file)
     if profile.get('environment', {}).get('docker') is not None:
         effective['process_env']['DOCKER_HOST'] = profile['environment']['docker']['endpoint']
     effective["stages"] = [{"name": "github-actions", "argv": argv, "cwd": ".", "blocking": True,

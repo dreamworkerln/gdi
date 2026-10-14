@@ -61,9 +61,20 @@ class Worker:
         self.transport_factory = self.transport_session if self.transport_session is not None else transport_factory
         self.stop = threading.Event()
         self.queue_length = 0
+        self.ci_proxy = None
+
+    def network_environment(self):
+        if self.transport_session is None:
+            return None
+        if self.ci_proxy is None:
+            from .ci_proxy import CiProxy
+            self.ci_proxy = CiProxy(self.transport_session.network)
+        return self.ci_proxy.environment()
 
     def close(self):
         try:
+            if self.ci_proxy is not None:
+                self.ci_proxy.close()
             if self.transport_session is not None:
                 self.transport_session.close()
         finally:
@@ -565,10 +576,19 @@ class Worker:
             if 'workflow' in profile:
                 if req['ci_version'] == 2:
                     profile = {**profile, 'workflow': {**profile['workflow'], **req['workflow']}}
-                profile = prepare_workflow(checkout, profile, spool, req, cache_dir=Path(self.config['cache_dir']) / self.worker_id / 'act')
+                profile = prepare_workflow(checkout, profile, spool, req,
+                    cache_dir=Path(self.config['cache_dir']) / self.worker_id / 'act',
+                    network_environment=self.network_environment())
                 if profile.get('environment'):
                     atomic_write(spool / 'artifacts/environment.json', encode(profile['environment']))
                 runner.record_owner(spool, checkout, profile)
+            elif self.transport_session is not None:
+                # Legacy shell CI stages inherit the same automatic route.
+                from .network import PROXY_NAMES
+                proxy_file = spool / 'worker-proxy-env.json'
+                atomic_write(proxy_file, encode({key: value for key, value in self.network_environment().items()
+                                                if key in PROXY_NAMES}))
+                profile = {**profile, 'process_proxy_file': str(proxy_file)}
             require_active()
             self.ledger.update(req['job_id'], 'RUNNING')
             state, code, failed, stages, warnings = execute(checkout, profile, spool / 'build.log',

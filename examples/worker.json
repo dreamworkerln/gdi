@@ -14,7 +14,7 @@
   "transport": {
     "connect_timeout_seconds": 10,
     "timeout_seconds": 60,
-    "retries": 3,
-    "low_level_retries": 3
+    "retries": 1,
+    "low_level_retries": 1
   }
 }
