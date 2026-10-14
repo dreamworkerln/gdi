@@ -307,6 +307,58 @@ bundles или репозиторий вручную.
 Для проверки загруженного bundle дополнительно нужны полный listing `bundles`
 и скачанные bytes проверяемого bundle. Для clone — checkpoint и все нужные дельты.
 
+### Общий корень, путь проекта и папка назначения
+
+Перед созданием снимка определите **общий корень обмена**, который использует
+worker (`remote_url` в его конфигурации), и его реальный Drive folder ID. В этом
+корне находятся общие `inbox/` и `ci/workers/`. Папка проекта — отдельный каталог
+внутри этого корня; она содержит `repository.json`, `branches/` и `bundles/`.
+
+`repository_path` — путь **от общего корня до папки проекта**. Он не включает
+имя самого общего корня, rclone remote, Drive URL/ID или локальный путь checkout.
+Вложенные каталоги между общим корнем и проектом включаются. Абстрактные примеры:
+
+| Общий корень worker | Полный адрес проекта | `repository_path` |
+| --- | --- | --- |
+| `gdrive:exchange` | `gdrive:exchange/my-project` | `my-project` |
+| `gdrive:exchange` | `gdrive:exchange/repos/my-project` | `repos/my-project` |
+| `gdrive:exchange` | `gdrive:exchange/exchange` | `exchange` |
+
+Последняя строка намеренно использует одинаковые имена корня и проекта:
+в относительном пути остаётся только каталог проекта. Например, при общем корне
+`gdrive:exchange` значение `exchange/my-project` направит worker в
+`gdrive:exchange/exchange/my-project`, а не в `gdrive:exchange/my-project`.
+
+Для `repository_path: "my-project"` все пути плана разрешаются так:
+
+```text
+COMMON_ROOT_FOLDER_ID/                  # общий корень: gdrive:exchange
+    inbox/EVENT_ID-EVENT_SHA256.json     # уведомления всех проектов
+    ci/workers/WORKER_ID/status.json     # общий статус host
+    my-project/                         # PROJECT_FOLDER_ID
+        repository.json
+        bundles/BUNDLE_NAME
+        branches/BRANCH_NAME/MANIFEST_NAME
+        ci/jobs/JOB_ID/
+            request.json
+            request.ready
+            status.json
+            result.json
+```
+
+Перед prepare пройдите коннектором от **COMMON_ROOT_FOLDER_ID** каждый сегмент
+`repository_path`, используя ID дочерней папки из полного listing родителя.
+Конечный ID должен совпасть с `repository_folder_id` снимка; скачанный
+`repository.json` должен содержать согласованный Repository ID. Одна лишь
+проверка snapshot не доказывает правильность пути относительно общего корня:
+GDI получает `repository_path` от агента и переносит его в план и уведомление.
+
+`files.*.target_folder` в плане тоже считается от **общего корня**, уже содержит
+нужный префикс проекта и не требует добавления `repository_path` второй раз.
+Например, `my-project/ci/jobs/JOB_ID` разрешайте от COMMON_ROOT_FOLDER_ID,
+а не от PROJECT_FOLDER_ID. Уведомление публикуется в общий `inbox`, не в inbox
+проекта. Имена и bytes берите из плана; не переписывайте готовые immutable JSON.
+
 Создайте `snapshot.json` следующего формата. Идентификаторы — реальные непрозрачные
 Drive ID, разрешённые коннектором. Здесь показан пустой репозиторий; для существующей
 ветки добавьте её папку в listing `branches`, полный listing этой папки и manifests.
@@ -596,7 +648,12 @@ worker с другим ID не перенаправляет существующ
 исполнителя, готовят отмену, проверяют доставку и сохраняют новую попытку.
 Порядок snapshots/передачи: [scheduling.md](scheduling.md).
 
-1. Загрузите request.json, затем request.ready в `PROJECT_PATH/ci/jobs/JOB_ID/`.
+1. Загрузите request.json, затем request.ready в папки из
+   `files.request.target_folder` и `files.ready.target_folder` плана. Разрешайте
+   оба пути от общего корня по правилам раздела «Общий корень, путь проекта и
+   папка назначения»; папка проекта уже включена в эти пути. До загрузки inbox
+   сверьте `repository_path` плана/уведомления с реальной цепочкой папок от
+   общего корня до PROJECT_FOLDER_ID.
 2. Скачайте оба обратно, свежие capabilities и metadata проекта. Дополните снимок
    listings `ci`, `ci/jobs`, `ci/jobs/JOB_ID` и downloads request/ready.
 
@@ -818,13 +875,15 @@ ci/jobs/JOB_ID/status.json
 
 Папку задачи определяйте по `files.request.target_folder` сохранённого плана.
 Этот путь относителен общему Drive root; `status.json` лежит рядом с переданными
-`request.json` и `request.ready`. Например, для репозитория самой утилиты в
-текущей установке владельца папка Drive — `gdi/gdi`, а файл задачи —
-`gdi/gdi/ci/jobs/JOB_ID/status.json`. Это пример расположения, не обязательное
-имя для других репозиториев.
+`request.json` и `request.ready`. Например, при общем корне `gdrive:exchange`
+и `repository_path: "my-project"` путь задачи от общего корня —
+`my-project/ci/jobs/JOB_ID/status.json`, а полный rclone-адрес —
+`gdrive:exchange/my-project/ci/jobs/JOB_ID/status.json`. Не подставляйте полный
+адрес в `repository_path` или `target_folder`.
 
 Общий статус host расположен иначе: `ci/workers/WORKER_ID/status.json`
-**относительно общего root**, например `gdi/ci/workers/user-dream/status.json`.
+**относительно общего root**; для того же примера полный адрес —
+`gdrive:exchange/ci/workers/WORKER_ID/status.json`.
 Он полезен для диагностики доступности host, но не заменяет heartbeat своей
 задачи: worker может уже выполнять другой job. Для существующего CI используйте
 job ID из плана, а не только статус worker или наличие его capabilities.
@@ -986,8 +1045,8 @@ mutable status ещё не заменяет проверенный result: вы�
 наличие файла, но не свежесть heartbeat и не текущий этап.
 
 Сообщайте job/worker ID, HEAD, состояние и stage из status, время его обновления,
-возраст/свежесть heartbeat и что именно ожидается. Например: «job 264e… на
-user-dream проверяет f380…; RUNNING/github-actions, heartbeat fresh, возраст
+возраст/свежесть heartbeat и что именно ожидается. Например: «job JOB_ID на
+WORKER_ID проверяет HEAD_SHA; RUNNING/github-actions, heartbeat fresh, возраст
 12 секунд; result.json ещё не опубликован». Если status уже FAIL/PASS, а result
 ещё нет, сообщайте: «worker сообщил завершение исполнения; ожидаю доставку и
 проверку результата», а не «CI всё ещё исполняется».
