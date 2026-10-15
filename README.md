@@ -64,6 +64,7 @@ gdi pull
 | `gdi worker check/run/install --config PATH` | Проверка config, foreground worker, явная установка user service |
 | `gdi worker start/restart/status/stop` | Управление постоянной systemd user service; restart перечитывает config и код |
 | `gdi worker logs [-f] [-n N] [-b]` | Последние 100 сообщений службы; follow, число строк, текущая загрузка |
+| `gdi worker job logs [-f] [-n N] [--config PATH]` | Локальная консоль последнего запущенного job: последние 10 строк и follow до его завершения, без Drive |
 | `gdi fetch [NAME] [BRANCH]` | Восстанавливает недостающую историю, обновляет `refs/remotes/NAME/BRANCH` |
 | `gdi pull [NAME]` | Получает текущую ветку и применяет только fast-forward |
 | `gdi cache clear NAME` | Удаляет только локальный кеш проверенных объектов этого repository ID |

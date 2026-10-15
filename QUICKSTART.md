@@ -253,6 +253,7 @@ gdi pull drive --passed --job JOB_ID --profile full
 | Последние 100 сообщений службы | `gdi worker logs` |
 | Последние 200 сообщений за текущую загрузку | `gdi worker logs --boot -n 200` |
 | Следить за логом службы | `gdi worker logs --follow` |
+| Последние 10 строк и новые сообщения последней локальной сборки | `gdi worker job logs --follow` |
 | Следить только за новыми сообщениями | `gdi worker logs -f -n 0` |
 | Остановить службу | `gdi worker stop` |
 | Запустить службу | `gdi worker start` |

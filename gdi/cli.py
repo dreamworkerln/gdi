@@ -291,6 +291,14 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             sub.add_argument('-n', '--lines', type=nonnegative_count, default=100,
                              help='show the last N entries (default: 100; 0 shows only new entries with --follow)')
             sub.add_argument('-b', '--boot', action='store_true', help='show only entries from the current boot')
+    job = worker_ops.add_parser('job', help='inspect locally executed jobs')
+    job_ops = job.add_subparsers(dest='job_operation', required=True)
+    job_logs = job_ops.add_parser('logs', help='show or follow the latest started job console without Drive')
+    diagnostics_arguments(job_logs)
+    job_logs.add_argument('--config', default='~/.config/gdi/worker.json')
+    job_logs.add_argument('-f', '--follow', action='store_true', help='follow this job until completion; do not switch jobs')
+    job_logs.add_argument('-n', '--lines', type=nonnegative_count, default=10,
+                          help='show the last N lines before following (default: 10; 0 skips history)')
     return cli
 
 
@@ -332,7 +340,7 @@ def main(argv=None):
         with command_session(args.command + (' ' + args.operation if hasattr(args, 'operation') else ''),
                              path=getattr(args, 'profile_log', None), progress=getattr(args, 'progress', None)) as diagnostics:
             if args.command in ('agent', 'alias') or (args.command == 'worker' and args.operation in
-                                          ('start', 'restart', 'status', 'stop', 'logs')):
+                                          ('start', 'restart', 'status', 'stop', 'logs', 'job')):
                 code = execute(args)
             else:
                 from .rc_transport import TransportSession
@@ -342,7 +350,9 @@ def main(argv=None):
                 diagnostics.exit_code = code
             return code
     except KeyboardInterrupt:
-        print("gdi: log following stopped" if args.command == 'worker' and args.operation == 'logs'
+        local_logs = args.command == 'worker' and (args.operation == 'logs' or
+                     args.operation == 'job' and args.job_operation == 'logs')
+        print("gdi: log following stopped" if local_logs
               else "gdi: interrupted; the remote job is not cancelled", file=sys.stderr)
         return 130
     except (GdiError, OSError, UnicodeError) as exc:
@@ -424,6 +434,9 @@ def execute(args, *, transport_factory=None):
             if args.operation == 'logs':
                 return service.logs(lines=args.lines, follow=args.follow, boot=args.boot)
             from .worker_config import load_config
+            if args.operation == 'job':
+                from .worker_job_logs import logs
+                return logs(load_config(args.config), lines=args.lines, follow=args.follow)
             if args.operation in ("check", "run", "install"):
                 config = load_config(args.config)
                 if args.operation == "check":
@@ -604,7 +617,9 @@ def execute(args, *, transport_factory=None):
                         print(f"{args.command}: {tracking} -> {head}\nPublication: {pub}")
         return 0
     except KeyboardInterrupt:
-        print("gdi: log following stopped" if args.command == 'worker' and args.operation == 'logs'
+        local_logs = args.command == 'worker' and (args.operation == 'logs' or
+                     args.operation == 'job' and args.job_operation == 'logs')
+        print("gdi: log following stopped" if local_logs
               else "gdi: interrupted; the remote job is not cancelled", file=sys.stderr)
         return 130
     except (GdiError, OSError, UnicodeError) as exc:
