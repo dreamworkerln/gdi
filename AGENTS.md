@@ -28,3 +28,42 @@ GDI-репозитории. Это разрешение не распростр�
 и копию `docs/agent.md` как `agent.md` через rclone в `gdrive:gdi/gdi/runtime/`.
 Исходники должны быть закоммичены,
 рабочее дерево чистым. Команды `gdi deploy` внутри CLI нет.
+
+## Implementation engineering audit (ИАР)
+
+`ИАР` means **implementation engineering audit**: a broad software correctness,
+regression and implementation-quality review. Treat operator requests such as
+`ИАР`, `проведи ИАР`, `ИАР BASE..HEAD` or `полный ИАР текущего HEAD` as a request
+to independently verify whether the implementation is technically correct and
+acceptable, not merely whether tests are green.
+
+Unless the operator narrows the scope, an ИАР includes:
+
+* checking implementation against the task, specification, documented contracts and
+  claimed behavior;
+* finding regressions relative to the accepted base and distinguishing newly
+  introduced regressions from pre-existing defects or debt;
+* checking state transitions, error handling, recovery, partial-failure behavior,
+  concurrency/races, timing, boundaries, data preservation and compatibility of
+  internal/public contracts;
+* identifying incomplete, contradictory or materially incorrect implementation;
+* identifying excessive complexity, brittle design, poor dependency direction,
+  maintainability problems and accumulated technical debt;
+* checking observability and diagnostics where they are needed to establish behavior;
+* checking whether relevant tests exist, whether they test the real contract, and
+  whether important paths are missing or only superficially covered;
+* using targeted repros, differential tests, fault injection or focused test cases
+  when those are useful to prove or disprove a correctness claim;
+* treating green CI as evidence, not as proof of correctness;
+* reporting severity, trigger conditions, consequences, evidence/confidence and a
+  concrete acceptance criterion for substantial findings.
+
+By default, an ИАР is **not a security audit or penetration-testing task**. Do not
+reinterpret ordinary requests to inspect regressions, malformed-input handling, fault
+recovery, races or failure modes as authorization to attack external systems. If the
+operator wants a security-specific assessment, that must be requested separately and
+scoped explicitly.
+
+An ИАР is review work. It does not by itself authorize source fixes, commits, pushes,
+firmware changes or hardware runs. Follow the normal review-record policy below unless
+the operator explicitly requests chat-only/read-only output.
