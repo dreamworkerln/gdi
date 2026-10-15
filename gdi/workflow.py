@@ -88,11 +88,13 @@ def prepare(checkout, profile, spool, req, *, cache_dir=None, network_environmen
                 proxy_env[name] = ','.join(entries)
     proxy_file = spool / 'worker-proxy-env.yaml'
     atomic_write(proxy_file, encode(proxy_env))
+    # Read actions from Git objects, avoiding checkout/reset of a shared action
+    # directory while another matrix job copies it into its container.
     argv = [executable, workflow["event"], "--directory", str(checkout.path),
             "--workflows", str(path), "--no-recurse", "--eventpath", str(event_path),
             "--artifact-server-path", str(uploads), "--artifact-server-port", str(workflow["artifact_server_port"]),
             "--artifact-server-addr", workflow["artifact_server_addr"], "--network", "host",
-            "--action-cache-path", str(cache_dir),
+            "--action-cache-path", str(cache_dir), "--use-new-action-cache",
             "--cache-server-path", str(cache_dir / 'cache-server'),
             "--cache-server-addr", workflow["artifact_server_addr"], "--cache-server-port", "0",
             "--env-file", str(proxy_file), "--secret-file", os.devnull,

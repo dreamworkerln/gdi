@@ -1,5 +1,8 @@
 """Real CLI fixtures; Docker and live Drive require explicit opt-in roots/tools."""
 
+from datetime import datetime
+import gzip
+import io
 import json
 import os
 from pathlib import Path
@@ -11,6 +14,7 @@ import sys
 import tempfile
 import time
 import unittest
+import zipfile
 
 from gdi.exchange import encode
 
@@ -158,12 +162,18 @@ jobs:
             except subprocess.TimeoutExpired:
                 self.worker.kill(); self.worker.wait(timeout=5)
 
-    def cycle(self):
+    def cycle(self, *, reset_action_cache=False):
         bad = json.loads(self.gdi('push', 'drive', '--ci', '--worker', 'fixture-worker', '--json').stdout)
         first = self.gdi('ci', 'wait', 'drive', bad['job_id'], '--follow', '--timeout', '60', '--json', ok=(1,))
         self.assertEqual(json.loads(first.stdout)['state'], 'FAIL')
         self.assertIn('EARLY-CONSOLE', first.stderr)
         fixed = self.commit('fixed')
+        if reset_action_cache:
+            # The failing run populated the cache; exercise a successful cold
+            # start separately, without touching any host worker's cache.
+            self.stop_worker()
+            shutil.rmtree(self.root / 'cache/fixture-worker/act')
+            self.start_worker()
         good = json.loads(self.gdi('push', 'drive', '--ci', '--worker', 'fixture-worker', '--json').stdout)
         result = json.loads(self.gdi('ci', 'wait', 'drive', good['job_id'], '--follow', '--timeout', '60', '--json').stdout)
         self.assertEqual(result['state'], 'PASS')
@@ -183,6 +193,7 @@ jobs:
         if self.docker:
             archive = next((self.agent / '.gdi/ci').glob('*/results/' + good['job_id'] + '/artifacts/workflow-artifacts.zip'))
             self.assertGreater(archive.stat().st_size, 0)
+        return good
 
     def interrupt(self, sig):
         workflow = self.agent / '.github/workflows/ci.yml'
@@ -279,7 +290,54 @@ class DockerV2CliTests(V2CliFixture):
                         ACTIONS_RESULTS_URL='http://127.0.0.1:9/parent-results/',
                         ACTIONS_RUNTIME_TOKEN='parent-runtime-token')
         self.start_worker()
-        self.cycle()
+        cold = self.cycle(reset_action_cache=True)
+        self.assert_matrix_artifacts(cold['job_id'])
+        action_cache = self.root / 'cache/fixture-worker/act'
+        repositories = sorted(action_cache.glob('*.git'))
+        self.assertTrue(repositories, 'new action cache was not populated')
+        cache_identity = {path.name: path.stat().st_ino for path in repositories}
+        warm = json.loads(self.gdi('ci', 'retry', 'drive', cold['job_id'], '--json').stdout)
+        self.assertNotEqual(warm['job_id'], cold['job_id'])
+        result = json.loads(self.gdi('ci', 'wait', 'drive', warm['job_id'], '--follow',
+                                     '--timeout', '60', '--json').stdout)
+        self.assertEqual(result['state'], 'PASS')
+        self.assertTrue(result['verified'])
+        self.assertEqual(result['head'], cold['head'])
+        self.assertEqual({path.name: path.stat().st_ino for path in action_cache.glob('*.git')}, cache_identity)
+        self.assert_matrix_artifacts(warm['job_id'])
+        self.assertIsNone(self.worker.poll())
+
+    def assert_matrix_artifacts(self, job_id):
+        result_dir = next((self.agent / '.gdi/ci').glob('*/results/' + job_id))
+        with zipfile.ZipFile(result_dir / 'artifacts/workflow-artifacts.zip') as archive:
+            names = archive.namelist()
+            for variant in ('one', 'two'):
+                for version in ('v3', 'v4'):
+                    artifact = version + '-' + variant
+                    matches = [name for name in names if artifact in Path(name).parts
+                               or Path(name).name == artifact + '.zip']
+                    self.assertEqual(len(matches), 1, (artifact, names))
+                    name = matches[0]
+                    data = archive.read(name)
+                    if version == 'v4':
+                        with zipfile.ZipFile(io.BytesIO(data)) as uploaded:
+                            self.assertEqual(uploaded.namelist(), ['file.txt'])
+                            data = uploaded.read('file.txt')
+                    elif name.endswith('.gz__'):
+                        data = gzip.decompress(data)
+                    self.assertEqual(data, b'fixed\n', artifact)
+        records = [json.loads(line) for line in (result_dir / 'build.log').read_text().splitlines()
+                   if line.startswith('{')]
+        self.assertTrue(any('GoGitActionCache' in record.get('msg', '') for record in records))
+        intervals = []
+        for variant in ('one', 'two'):
+            selected = [record for record in records if record.get('matrix', {}).get('variant') == variant]
+            start = min(datetime.fromisoformat(record['time'].replace('Z', '+00:00')) for record in selected)
+            end = next(datetime.fromisoformat(record['time'].replace('Z', '+00:00')) for record in selected
+                       if record.get('jobResult') == 'success')
+            intervals.append((start, end))
+        self.assertLess(max(start for start, _ in intervals), min(end for _, end in intervals),
+                        'matrix jobs did not execute concurrently')
 
     def test_sigkill_cleans_owned_containers_before_result(self):
         self.interrupt(signal.SIGKILL)

@@ -116,7 +116,10 @@ Act получает отдельный checkout точного commit, `GITHUB_
 при этом HEAD остаётся detached. В контейнер копируются также его git metadata,
 поэтому `git rev-parse HEAD` и чтение истории работают внутри workflow.
 Act запускается вне checkout: project `.actrc` не заменяет выбранный план. Docker
-images и actions используют persistent caches. При advertise worker проверяет
+images и actions используют persistent caches. Actions запускаются с
+`--use-new-action-cache`: act читает их из Git objects по выбранному commit,
+без checkout/reset общей папки во время копирования в параллельные jobs.
+При advertise worker проверяет
 `act_version`, SHA256 бинарника, host `.actrc`, Docker daemon ID/version и фактические
 image IDs из `platforms`. Эти значения входят в execution revision. Все выбранные
 base images должны уже присутствовать локально; загрузите их через `docker pull`
