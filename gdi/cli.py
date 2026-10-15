@@ -7,16 +7,36 @@ import sys
 
 from . import __version__
 from .banner import render as render_banner
-from .exchange import CHECKPOINT_EVERY, Exchange
+from .exchange import CHECKPOINT_EVERY, Exchange, GdiMergeConflict
 from .git import GdiError, Git
 
 
 def print_error(exc):
+    if isinstance(exc, GdiMergeConflict):
+        from .terminal import colorize
+        lines = str(exc).splitlines()
+        print(colorize("Auto merge attempted; conflicts found, rolling back.", 33, stream=sys.stderr),
+              file=sys.stderr)
+        print("gdi: " + lines[0], file=sys.stderr)
+        for line in lines[1:-1]:
+            print(line, file=sys.stderr)
+        if len(lines) > 1:
+            print(colorize(lines[-1], 33, stream=sys.stderr), file=sys.stderr)
+        return
     message = f"gdi: {exc}"
     if str(exc) == 'push is not a fast-forward; fetch/pull and reconcile history first':
         from .terminal import colorize
         message = colorize(message, 33, stream=sys.stderr)
     print(message, file=sys.stderr)
+
+
+def print_changed_files(files):
+    print("Changed files:")
+    if files:
+        for status, path in files:
+            print(f"  {status:<8} {path}")
+    else:
+        print("  none")
 
 
 class VersionAction(argparse.Action):
@@ -85,7 +105,7 @@ def parser():
   gdi push                                            # publish committed branch HEAD
   gdi remote add drive gdrive:gdi/my-project          # join from another clone
   gdi fetch                                           # import without changing files
-  gdi pull                                            # clean worktree, fast-forward
+  gdi pull                                            # clean worktree, fast-forward or conflict-free merge
   gdi status                                          # branch, HEAD, connections and publication
   gdi alias set s status                              # define a user command alias
   gdi log                                             # latest publications of the current branch
@@ -149,7 +169,7 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
                     help="confirm ALL clients have paused push/fetch/pull/gc; required with --apply, not a distributed lock")
     for name in ("push", "fetch", "pull", "log"):
         command = commands.add_parser(name, help={"push": "publish committed branch history",
-            "fetch": "verify and update a remote-tracking ref", "pull": "fetch current branch and fast-forward only",
+            "fetch": "verify and update a remote-tracking ref", "pull": "fetch and fast-forward or cleanly merge current branch",
             "log": "show verified publication history, newest first"}[name])
         diagnostics_arguments(command)
         command.add_argument("remote", nargs="?", help="local gdi remote name (default: selected connection)")
@@ -609,10 +629,23 @@ def execute(args, *, transport_factory=None):
                     print(f"pull: verified PASS {args.job} -> {value['head']}")
                     if value['head'] == before_head:
                         print("Already up to date.")
+                    print_changed_files(git.changed_files(before_head, value['head'])
+                                        if before_head != value['head'] else [])
                 else:
                     head, pub, tracking = (exchange.fetch(args.remote, args.branch) if args.command == "fetch" else exchange.pull(args.remote))
-                    if args.command == "pull" and head == before_head:
-                        print("Already up to date.")
+                    if args.command == "pull":
+                        info = exchange.last_pull_info
+                        if info["auto_merged"]:
+                            from .terminal import colorize
+                            print(colorize("Auto merge completed without conflicts.", 33))
+                        if head == before_head:
+                            print("Already up to date.")
+                        elif info["auto_merged"]:
+                            print(f"pull: {tracking} -> {info['remote_head']}\n"
+                                  f"Local merge: {head}\nPublication: {pub}")
+                        else:
+                            print(f"pull: {tracking} -> {head}\nPublication: {pub}")
+                        print_changed_files(info["files"])
                     else:
                         print(f"{args.command}: {tracking} -> {head}\nPublication: {pub}")
         return 0

@@ -419,7 +419,9 @@ class LocalAutonomousTests(unittest.TestCase):
                     self.assertEqual(command(['git', 'rev-parse', 'HEAD'], cwd=user).stdout.strip(), bad['head'])
                     commit('new-unverified')
                     gdi('push', 'drive')
-                    gdi('pull', 'drive', '--passed', '--job', good['job_id'], '--profile', 'full', cwd=user)
+                    pulled = gdi('pull', 'drive', '--passed', '--job', good['job_id'], '--profile', 'full', cwd=user)
+                    self.assertIn('Changed files:', pulled.stdout)
+                    self.assertIn('изменен  file.txt', pulled.stdout)
                     self.assertEqual(command(['git', 'rev-parse', 'HEAD'], cwd=user).stdout.strip(), fixed)
                 finally:
                     worker.terminate()

@@ -37,6 +37,58 @@ class ShortCommandTests(ExchangeTestCase):
             self.assertIn('Connection: drive', output)
             self.assertIn('Branch: main', output)
 
+    def test_pull_prints_file_statuses_for_fast_forward(self):
+        self.ea.push('drive')
+        (self.a.path / 'to-delete.txt').write_text('temporary\n')
+        self.a.call('add', 'to-delete.txt')
+        self.a.call('-c', 'user.name=Gdi Test', '-c', 'user.email=gdi@example.invalid',
+                    'commit', '-qm', 'add file later deleted')
+        self.ea.push('drive')
+        self.eb.pull('drive')
+        (self.a.path / 'file.txt').write_text('updated\n')
+        (self.a.path / 'to-delete.txt').unlink()
+        (self.a.path / 'new.txt').write_text('new\n')
+        self.a.call('add', '-A', '--', 'file.txt', 'to-delete.txt', 'new.txt')
+        self.a.call('-c', 'user.name=Gdi Test', '-c', 'user.email=gdi@example.invalid',
+                    'commit', '-qm', 'change files')
+        self.ea.push('drive')
+
+        code, output, error = self.cli(['pull'], self.eb)
+
+        self.assertEqual(code, 0, error)
+        self.assertIn('Changed files:', output)
+        self.assertIn('создан   new.txt', output)
+        self.assertIn('изменен  file.txt', output)
+        self.assertIn('удален   to-delete.txt', output)
+
+    def test_pull_reports_yellow_auto_merge_and_conflict_command(self):
+        self.ea.push('drive')
+        (self.b.path / 'local.txt').write_text('local\n')
+        self.b.call('add', 'local.txt')
+        self.b.call('-c', 'user.name=Gdi Test', '-c', 'user.email=gdi@example.invalid',
+                    'commit', '-qm', 'local change')
+        self.commit(self.a, 'remote change')
+        self.ea.push('drive')
+        with patch('gdi.terminal.colorize', side_effect=lambda text, _code, **_kwargs: f'<yellow>{text}</yellow>'):
+            code, output, error = self.cli(['pull'], self.eb)
+        self.assertEqual(code, 0, error)
+        self.assertIn('<yellow>Auto merge completed without conflicts.</yellow>', output)
+        self.assertIn('Local merge:', output)
+        self.assertIn('изменен  file.txt', output)
+
+        # A later conflicting pull must leave the branch clean and end with a usable command.
+        self.commit(self.a, 'second remote change')
+        self.ea.push('drive')
+        self.commit(self.b, 'local conflicting change')
+        before = self.b.snapshot()
+        with patch('gdi.terminal.colorize', side_effect=lambda text, _code, **_kwargs: f'<yellow>{text}</yellow>'):
+            code, _output, error = self.cli(['pull'], self.eb)
+        self.assertEqual(code, 1)
+        self.assertEqual(self.b.snapshot(), before)
+        self.assertIn('<yellow>Auto merge attempted; conflicts found, rolling back.</yellow>', error)
+        self.assertTrue(error.rstrip().endswith(
+            '<yellow>Resolve manually: git merge --no-edit --no-ff refs/remotes/drive/main || git mergetool</yellow>'))
+
     def test_multiple_connections_require_default_or_explicit_selection(self):
         self.ea.add('backup', 'memory:project')
         self.assertEqual(select(self.a), 'drive')

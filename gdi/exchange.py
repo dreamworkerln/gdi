@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 from pathlib import Path
 import re
+import shlex
 import tempfile
 import uuid
 
@@ -23,11 +24,25 @@ def remote_name(name):
     return name
 
 
+class GdiMergeConflict(GdiError):
+    """An automatic pull merge conflicted and was cleanly rolled back."""
+
+    def __init__(self, tracking, conflicts):
+        command = f"git merge --no-edit --no-ff {shlex.quote(tracking)} || git mergetool"
+        lines = ["automatic merge conflicted; pull cancelled and the working branch was restored"]
+        if conflicts:
+            lines.append("Conflicting files:")
+            lines.extend("  " + repr(path) for path in conflicts)
+        lines.append("Resolve manually: " + command)
+        super().__init__("\n".join(lines))
+
+
 class Exchange:
     def __init__(self, git, transport_factory=Rclone):
         self.git = git
         self.transport_factory = transport_factory
         self.last_publication = None
+        self.last_pull_info = None
 
     def key(self, name):
         return "gdi.remote." + remote_name(name)
@@ -281,17 +296,66 @@ class Exchange:
     def pull(self, name):
         before = self.git.snapshot()
         self.git.require_clean(before)
-        head, publication_id, tracking = self.fetch(name, before[0])
-        if before[1] is not None and not self.git.ancestor(before[1], head):
-            raise GdiError("pull is not a fast-forward; working branch unchanged (fetched ref is available for inspection)")
+        remote_head, publication_id, tracking = self.fetch(name, before[0])
         now = self.git.snapshot()
         self.git.require_clean(now)
         if now != before:
             raise GdiError("branch or HEAD changed during pull; refusing to apply")
-        if before[1] != head:
-            # Use the verified immutable OID, not a tracking ref another Git process
-            # could change. Ordinary Git processes must not mutate this worktree concurrently.
-            self.git.call("merge", "--ff-only", "--no-autostash", head)
-        if self.git.branch() != before[0] or self.git.oid("HEAD") != head:
-            raise GdiError("unexpected branch/HEAD after fast-forward; inspect concurrent git activity")
-        return head, publication_id, tracking
+        auto_merged = False
+        result_head = before[1]
+        if before[1] is None or self.git.ancestor(before[1], remote_head):
+            if before[1] != remote_head:
+                # Use the verified immutable OID, not a tracking ref another Git process
+                # could change. Ordinary Git processes must not mutate this worktree concurrently.
+                self.git.call("merge", "--ff-only", "--no-autostash", remote_head)
+            result_head = remote_head
+        elif self.git.ancestor(remote_head, before[1]):
+            # The local branch already contains the published tip.
+            result_head = before[1]
+        else:
+            try:
+                merge = self.git.call("merge", "--no-commit", "--no-ff", "--no-edit",
+                                      "--no-stat", remote_head, allowed=(0, 1))
+            except GdiError as exc:
+                in_progress = self.git.oid("MERGE_HEAD") is not None
+                if in_progress:
+                    aborted = self.git.call("merge", "--abort", allowed=(0, 1))
+                    if aborted.returncode:
+                        raise GdiError("automatic merge failed and Git could not abort it; inspect the worktree") from exc
+                if self.git.snapshot() != before:
+                    raise GdiError("automatic merge failed and did not restore the original worktree; inspect it") from exc
+                raise GdiError("automatic merge failed; working branch restored: " + str(exc)) from exc
+            if merge.returncode:
+                raw_conflicts = self.git.call("diff", "--name-only", "--diff-filter=U", "-z").stdout
+                conflicts = [path for path in raw_conflicts.split("\0") if path]
+                aborted = self.git.call("merge", "--abort", allowed=(0, 1))
+                if aborted.returncode:
+                    raise GdiError("automatic merge failed and Git could not abort it; inspect the worktree")
+                if self.git.snapshot() != before:
+                    raise GdiError("automatic merge conflict did not restore the original worktree; inspect it")
+                if conflicts:
+                    raise GdiMergeConflict(tracking, conflicts)
+                detail = merge.stderr.strip() or "git merge failed without reporting conflicts"
+                raise GdiError("automatic merge failed; working branch restored: " + detail)
+            try:
+                self.git.call("commit", "--no-edit")
+            except GdiError as exc:
+                aborted = self.git.call("merge", "--abort", allowed=(0, 1))
+                if aborted.returncode:
+                    raise GdiError("merge commit failed and Git could not abort it; inspect the worktree") from exc
+                if self.git.snapshot() != before:
+                    raise GdiError("failed automatic merge commit did not restore the original worktree; inspect it") from exc
+                raise GdiError("could not create automatic merge commit; working branch restored: " + str(exc)) from exc
+            result_head = self.git.oid("HEAD")
+            parents = self.git.text("rev-list", "--parents", "-n", "1", result_head).split()[1:]
+            if parents != [before[1], remote_head]:
+                raise GdiError("automatic merge produced unexpected parents; inspect the new commit")
+            auto_merged = True
+        final = self.git.snapshot()
+        self.git.require_clean(final)
+        if final[0] != before[0] or final[1] != result_head:
+            raise GdiError("unexpected branch/HEAD after pull; inspect concurrent git activity")
+        files = self.git.changed_files(before[1], result_head) if result_head != before[1] else []
+        self.last_pull_info = {"remote_head": remote_head, "head": result_head,
+                               "auto_merged": auto_merged, "files": files}
+        return result_head, publication_id, tracking

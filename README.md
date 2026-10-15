@@ -1,7 +1,7 @@
 # gdi 0.3.0 (pre-alpha)
 
 Обмен Git-историей через Google Drive и настроенный rclone: инкрементальные bundles,
-проверка metadata и SHA256, fetch в отдельные refs, pull только fast-forward.
+проверка metadata и SHA256, fetch в отдельные refs, pull с fast-forward или безопасным auto merge.
 Постоянный worker опрашивает общую inbox всех проектов и выполняет GitHub Actions
 workflows из точного commit через act + Docker; агент
 получает progress, консоль и проверенный PASS/FAIL и повторяет исправления автономно.
@@ -66,7 +66,7 @@ gdi pull
 | `gdi worker logs [-f] [-n N] [-b]` | Последние 100 сообщений службы; follow, число строк, текущая загрузка |
 | `gdi worker job logs [-f] [-n N] [--config PATH]` | Локальная консоль последнего запущенного job: последние 10 строк и follow до его завершения, без Drive |
 | `gdi fetch [NAME] [BRANCH]` | Восстанавливает недостающую историю, обновляет `refs/remotes/NAME/BRANCH` |
-| `gdi pull [NAME]` | Получает текущую ветку и применяет только fast-forward |
+| `gdi pull [NAME]` | Получает текущую ветку; при расхождении делает merge без конфликтов |
 | `gdi cache clear NAME` | Удаляет только локальный кеш проверенных объектов этого repository ID |
 | `gdi gc NAME [--keep-checkpoints N]` | Показывает план очистки bundles всех веток; по умолчанию сохраняет два полных checkpoint и дельты после них |
 | `gdi gc NAME --apply --quiescent` | Проверяет сохраняемую историю с нуля, повторно сверяет remote и удаляет устаревшие bundles; требует остановки обмена на всех машинах |

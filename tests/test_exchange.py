@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from gdi.cli import main
 from gdi.cache import VerifiedCache
-from gdi.exchange import Exchange, bundle_prerequisites, decode, digest, encode
+from gdi.exchange import Exchange, GdiMergeConflict, bundle_prerequisites, decode, digest, encode
 from gdi.git import GdiError, Git
 from gdi.transport import Rclone, validate_url
 
@@ -167,15 +167,74 @@ class ExchangeTests(ExchangeTestCase):
         self.assertEqual(self.b.oid("HEAD"), self.first)
         self.assertEqual((self.b.path / "local.txt").read_text(), "keep")
 
-    def test_divergent_pull_preserves_branch_and_exposes_fetched_ref(self):
-        remote_head = self.commit(self.a, "remote")
-        local_head = self.commit(self.b, "local")
+    def test_divergent_pull_auto_merges_clean_changes_and_can_be_published(self):
         self.ea.push("drive")
-        with self.assertRaisesRegex(GdiError, "not a fast-forward"):
+        local_file = self.b.path / "local.txt"
+        local_file.write_text("local\n")
+        self.b.call("add", "local.txt")
+        self.b.call("-c", "user.name=Gdi Test", "-c", "user.email=gdi@example.invalid",
+                    "commit", "-qm", "local change")
+        local_head = self.b.oid("HEAD")
+        remote_head = self.commit(self.a, "remote change")
+        self.ea.push("drive")
+
+        merged, publication, tracking = self.eb.pull("drive")
+
+        self.assertNotEqual(merged, local_head)
+        self.assertEqual(self.b.text("rev-parse", "HEAD^1"), local_head)
+        self.assertEqual(self.b.text("rev-parse", "HEAD^2"), remote_head)
+        self.assertEqual(self.b.oid(tracking), remote_head)
+        self.assertEqual(self.eb.last_pull_info,
+                         {"remote_head": remote_head, "head": merged, "auto_merged": True,
+                          "files": [("изменен", "file.txt")]})
+        self.assertTrue(publication)
+        self.assertEqual((self.b.path / "local.txt").read_text(), "local\n")
+        self.assertEqual((self.b.path / "file.txt").read_text(), "remote change\n")
+
+        pushed, _, created = self.eb.push("drive")
+        self.assertEqual(pushed, merged)
+        self.assertTrue(created)
+
+    def test_pull_is_up_to_date_when_local_history_already_contains_remote_tip(self):
+        self.ea.push("drive")
+        local_head = self.commit(self.b, "local only")
+
+        pulled, _, tracking = self.eb.pull("drive")
+
+        self.assertEqual(pulled, local_head)
+        self.assertEqual(self.b.oid(tracking), self.first)
+        self.assertEqual(self.eb.last_pull_info,
+                         {"remote_head": self.first, "head": local_head, "auto_merged": False,
+                          "files": []})
+
+    def test_divergent_pull_conflict_aborts_and_prints_copyable_mergetool_command(self):
+        self.ea.push("drive")
+        local_head = self.commit(self.b, "local conflicting change")
+        remote_head = self.commit(self.a, "remote conflicting change")
+        self.ea.push("drive")
+        before = self.b.snapshot()
+
+        with self.assertRaises(GdiMergeConflict) as raised:
             self.eb.pull("drive")
+
+        message = str(raised.exception)
+        self.assertIn("automatic merge conflicted", message)
+        self.assertIn("Conflicting files:\n  'file.txt'", message)
+        self.assertTrue(message.splitlines()[-1].endswith(
+            "git merge --no-edit --no-ff refs/remotes/drive/main || git mergetool"))
+        self.assertEqual(self.b.snapshot(), before)
         self.assertEqual(self.b.oid("HEAD"), local_head)
         self.assertEqual(self.b.oid("refs/remotes/drive/main"), remote_head)
-        self.assertEqual((self.b.path / "file.txt").read_text(), "local\n")
+        self.assertIsNone(self.b.oid("MERGE_HEAD"))
+
+        manual = self.b.call("merge", "--no-edit", "--no-ff", "refs/remotes/drive/main", allowed=(0, 1))
+        self.assertEqual(manual.returncode, 1)
+        self.assertIsNotNone(self.b.oid("MERGE_HEAD"))
+        (self.b.path / "file.txt").write_text("resolved\n")
+        self.b.call("add", "file.txt")
+        self.b.call("-c", "user.name=Gdi Test", "-c", "user.email=gdi@example.invalid",
+                    "commit", "-qm", "resolve merge")
+        self.assertTrue(self.eb.push("drive")[2])
 
     def test_non_fast_forward_push_refused(self):
         self.commit(self.a, "remote")

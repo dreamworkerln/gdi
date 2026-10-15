@@ -15,7 +15,7 @@ Git 2.34.1 и rclone 1.75.1. Другие версии rclone отдельно �
 | Компонент | Для чего нужен |
 | --- | --- |
 | Python 3.10+ | Выполняет gdi |
-| Git | Создаёт/проверяет bundles, импортирует commits, делает fast-forward |
+| Git | Создаёт/проверяет bundles, импортирует commits, делает fast-forward или auto merge |
 | rclone | Передаёт файлы между компьютером и Google Drive |
 | python3-venv и pip | Устанавливают gdi в отдельное Python-окружение |
 | setuptools и wheel | Собирают Python-пакет при установке |
@@ -632,7 +632,8 @@ gdi pull drive --passed --job JOB_ID --profile full
 
 Применяется SHA выбранного проверенного результата, даже если уже появился новый
 непроверенный tip. Только fast-forward; gdi не сбрасывает ваши локальные изменения.
-Обычный `gdi pull drive` получает последний tip без CI gate.
+Обычный `gdi pull drive` получает последний tip без CI gate; если локальная и
+опубликованная истории разошлись, он создаёт merge-коммит при отсутствии конфликтов.
 
 Подробный цикл CI через CLI с rclone: [docs/ci.md](docs/ci.md).
 Обмен и запрос CI агентом с Drive-коннектором: [docs/agent.md](docs/agent.md).
@@ -695,7 +696,8 @@ cd "$INSTALL_DIR"
 | `no completed publication` | Проверьте имя ветки, дождитесь завершения push на A |
 | checksum/ref/HEAD mismatch | Полученные данные не принимаются. Проверьте полный upload и содержимое remote; не отключайте проверки |
 | `working tree is dirty` | Сохраните изменения через commit/stash либо разберите untracked files перед pull; fetch разрешён |
-| `not a fast-forward` | Изучите `git log --graph --all` и fetched ref; согласуйте историю обычным Git |
+| `automatic merge conflicted` | Pull оставляет ветку без изменений и показывает команду `git merge ... || git mergetool`; разрешите конфликты и опубликуйте результат через `gdi push` |
+| `push is not a fast-forward` | Remote уже содержит историю, которой нет локально. Выполните `gdi pull`, затем повторите push; при конфликте следуйте команде с `git mergetool` |
 | `concurrent push detected` | Сохраните обе истории, согласуйте commit и создайте новый remote; автоматического выбора победителя нет |
 | Network timeout | Проверьте сеть и доступность rclone, затем повторите команду |
 | `expected protocol v3` | Remote использует старый формат v1/v2; используйте новую пустую папку и новый repository ID |

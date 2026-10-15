@@ -169,6 +169,26 @@ class Git:
     def ancestor(self, old, new):
         return self.call("merge-base", "--is-ancestor", old, new, allowed=(0, 1)).returncode == 0
 
+    def changed_files(self, old, new):
+        """Return path/status pairs for a tree transition, without rename collapsing."""
+        empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        result = self.call("-c", "core.quotePath=true", "diff", "--name-status", "--no-renames",
+                           old or empty_tree, new, "--").stdout
+        changes = []
+        for line in result.splitlines():
+            try:
+                status, path = line.split("\t", 1)
+            except ValueError as exc:
+                raise GdiError("git returned an invalid changed-file list") from exc
+            if status == "A":
+                label = "создан"
+            elif status == "D":
+                label = "удален"
+            else:
+                label = "изменен"
+            changes.append((label, path))
+        return changes
+
     def check_payload(self, oid):
         tree = self.call("ls-tree", "-r", "-z", oid).stdout
         if self.call("ls-tree", "-r", "--name-only", oid, "--", ".gdi").stdout:
