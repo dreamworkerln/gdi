@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 from unittest.mock import patch
 
 from gdi.branches import branch_directory, directory_ref
@@ -19,7 +20,8 @@ class ShortCommandTests(ExchangeTestCase):
         errors = io.StringIO()
         with patch('gdi.cli.Git.discover', return_value=exchange.git), patch('gdi.cli.Exchange', return_value=exchange), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
-            code = main(args + ['--no-progress'])
+            options = [] if '--progress' in args or '--no-progress' in args else ['--no-progress']
+            code = main(args + options)
         return code, output.getvalue(), errors.getvalue()
 
     def test_short_push_fetch_pull_select_current_branch_and_default(self):
@@ -69,10 +71,12 @@ class ShortCommandTests(ExchangeTestCase):
                     'commit', '-qm', 'local change')
         self.commit(self.a, 'remote change')
         self.ea.push('drive')
-        with patch('gdi.terminal.colorize', side_effect=lambda text, _code, **_kwargs: f'<yellow>{text}</yellow>'):
+        with patch.dict(os.environ, {'FORCE_COLOR': '1'}):
+            os.environ.pop('NO_COLOR', None)
             code, output, error = self.cli(['pull'], self.eb)
         self.assertEqual(code, 0, error)
-        self.assertIn('<yellow>Auto merge completed without conflicts.</yellow>', output)
+        self.assertIn('\x1b[33mAuto merge started.\x1b[0m', output)
+        self.assertIn('\x1b[33mAuto merge completed without conflicts.\x1b[0m', output)
         self.assertIn('Local merge:', output)
         self.assertIn('изменен  file.txt', output)
 
@@ -81,13 +85,94 @@ class ShortCommandTests(ExchangeTestCase):
         self.ea.push('drive')
         self.commit(self.b, 'local conflicting change')
         before = self.b.snapshot()
-        with patch('gdi.terminal.colorize', side_effect=lambda text, _code, **_kwargs: f'<yellow>{text}</yellow>'):
+        with patch.dict(os.environ, {'FORCE_COLOR': '1'}):
+            os.environ.pop('NO_COLOR', None)
             code, _output, error = self.cli(['pull'], self.eb)
         self.assertEqual(code, 1)
         self.assertEqual(self.b.snapshot(), before)
-        self.assertIn('<yellow>Auto merge attempted; conflicts found, rolling back.</yellow>', error)
+        self.assertIn('\x1b[33mAuto merge attempted; conflicts found, rolling back.\x1b[0m', error)
         self.assertTrue(error.rstrip().endswith(
-            '<yellow>Resolve manually: git merge --no-edit --no-ff refs/remotes/drive/main || git mergetool</yellow>'))
+            '\x1b[33mResolve manually: git merge --no-edit --no-ff refs/remotes/drive/main || git mergetool\x1b[0m'))
+
+    def test_auto_merge_start_precedes_git_even_on_failure_and_respects_no_color(self):
+        self.prepare_divergent_pull()
+        before = self.b.snapshot()
+        original = self.b.call
+        for no_color in (False, True):
+            with self.subTest(no_color=no_color), patch.dict(os.environ, {'FORCE_COLOR': '1'}):
+                if no_color:
+                    os.environ['NO_COLOR'] = '1'
+                else:
+                    os.environ.pop('NO_COLOR', None)
+                expected = ('Auto merge started.' if no_color else
+                            '\x1b[33mAuto merge started.\x1b[0m')
+                observed = []
+                def fail_merge(*args, **kwargs):
+                    if '--no-commit' in args:
+                        import sys
+                        observed.append(sys.stdout.getvalue())
+                        raise GdiError('injected merge failure')
+                    return original(*args, **kwargs)
+                with patch.object(self.b, 'call', side_effect=fail_merge):
+                    code, output, error = self.cli(['pull'], self.eb)
+                self.assertEqual(code, 1)
+                self.assertEqual(len(observed), 1)
+                self.assertIn(expected, observed[0])
+                self.assertIn('injected merge failure', error)
+                self.assertEqual(self.b.snapshot(), before)
+                if no_color:
+                    self.assertNotIn('\x1b[', output + error)
+
+    def test_conflict_hint_is_last_after_profile_and_progress_teardown(self):
+        self.ea.push('drive')
+        self.commit(self.a, 'remote conflict')
+        self.commit(self.b, 'local conflict')
+        self.ea.push('drive')
+        before = self.b.snapshot()
+        cases = [('plain', []), ('flag', ['--profile-log']),
+                 ('environment', []), ('progress', ['--progress', '--profile-log'])]
+        for kind, arguments in cases:
+            with self.subTest(kind=kind), patch.dict(os.environ, {'NO_COLOR': '1'}):
+                path = self.root / (kind + '.jsonl')
+                os.environ.pop('GDI_PROFILE_LOG', None)
+                if kind == 'environment':
+                    os.environ['GDI_PROFILE_LOG'] = str(path)
+                args = ['pull', *arguments]
+                if '--profile-log' in args:
+                    args.append(str(path))
+                code, _, error = self.cli(args, self.eb)
+                self.assertEqual(code, 1)
+                self.assertEqual(self.b.snapshot(), before)
+                self.assertEqual(error.rstrip().splitlines()[-1],
+                                 'Resolve manually: git merge --no-edit --no-ff '
+                                 'refs/remotes/drive/main || git mergetool')
+                if kind != 'plain':
+                    self.assertIn('gdi: total', error)
+                    records = [json.loads(line) for line in path.read_text().splitlines()]
+                    self.assertEqual(records[-1]['exit_code'], 1)
+
+    def test_changed_file_names_keep_unicode_and_escape_controls(self):
+        self.ea.push('drive')
+        names = ['данные.txt', 'tab\tfile.txt', 'line\nfile.txt', '\x1b[31mred.txt',
+                 'c1\x9b31m.txt', 'bidi\u202efile.txt', 'literal\\n.txt']
+        for name in names:
+            (self.a.path / name).write_text('content\n')
+        self.a.call('add', '--', *names)
+        self.a.call('commit', '-qm', 'Unicode and control characters in paths')
+        self.ea.push('drive')
+        with patch.dict(os.environ, {'NO_COLOR': '1'}):
+            code, output, error = self.cli(['pull'], self.eb)
+        self.assertEqual(code, 0, error)
+        self.assertEqual(set(self.eb.last_pull_info['files']), {('создан', name) for name in names})
+        self.assertIn('создан   данные.txt', output)
+        self.assertIn('"tab\\tfile.txt"', output)
+        self.assertIn('"line\\nfile.txt"', output)
+        self.assertIn('"\\u001b[31mred.txt"', output)
+        self.assertIn('"c1\\x9b31m.txt"', output)
+        self.assertIn('"bidi\\u202efile.txt"', output)
+        self.assertNotIn('\x1b', output)
+        self.assertNotIn('\x9b', output)
+        self.assertNotIn('\u202e', output)
 
     def test_multiple_connections_require_default_or_explicit_selection(self):
         self.ea.add('backup', 'memory:project')

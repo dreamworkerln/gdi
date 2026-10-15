@@ -72,8 +72,8 @@ class Git:
         return self.call(*args).stdout.strip()
 
     @classmethod
-    def discover(cls, path="."):
-        git = cls(path)
+    def discover(cls, path=".", *, isolated=False):
+        git = cls(path, isolated=isolated)
         if git.text("rev-parse", "--is-bare-repository") != "false":
             raise GdiError("gdi requires a git worktree; bare user repositories are unsupported")
         git.path = Path(git.text("rev-parse", "--show-toplevel"))
@@ -170,16 +170,15 @@ class Git:
         return self.call("merge-base", "--is-ancestor", old, new, allowed=(0, 1)).returncode == 0
 
     def changed_files(self, old, new):
-        """Return path/status pairs for a tree transition, without rename collapsing."""
+        """Return status/raw-path pairs for a tree transition, without renames."""
         empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-        result = self.call("-c", "core.quotePath=true", "diff", "--name-status", "--no-renames",
+        result = self.call("diff", "--name-status", "--no-renames", "-z",
                            old or empty_tree, new, "--").stdout
+        fields = result.split('\0')
+        if fields.pop() != '' or len(fields) % 2:
+            raise GdiError('git returned an invalid changed-file list')
         changes = []
-        for line in result.splitlines():
-            try:
-                status, path = line.split("\t", 1)
-            except ValueError as exc:
-                raise GdiError("git returned an invalid changed-file list") from exc
+        for status, path in zip(fields[::2], fields[1::2]):
             if status == "A":
                 label = "создан"
             elif status == "D":

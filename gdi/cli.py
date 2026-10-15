@@ -31,12 +31,29 @@ def print_error(exc):
 
 
 def print_changed_files(files):
+    from .terminal import display_path
     print("Changed files:")
     if files:
         for status, path in files:
-            print(f"  {status:<8} {path}")
+            print(f"  {status:<8} {display_path(path)}")
     else:
         print("  none")
+
+
+def report_auto_merge():
+    from .terminal import colorize
+    print(colorize('Auto merge started.', 33), flush=True)
+
+
+def print_interruption(args):
+    if args.command == 'pull':
+        message = 'gdi: pull interrupted; inspect git status before retrying'
+    elif args.command == 'worker' and (args.operation == 'logs' or
+                                      args.operation == 'job' and args.job_operation == 'logs'):
+        message = 'gdi: log following stopped'
+    else:
+        message = 'gdi: interrupted; the remote job is not cancelled'
+    print(message, file=sys.stderr)
 
 
 class VersionAction(argparse.Action):
@@ -359,21 +376,21 @@ def main(argv=None):
         from .diagnostics import command_session
         with command_session(args.command + (' ' + args.operation if hasattr(args, 'operation') else ''),
                              path=getattr(args, 'profile_log', None), progress=getattr(args, 'progress', None)) as diagnostics:
-            if args.command in ('agent', 'alias') or (args.command == 'worker' and args.operation in
-                                          ('start', 'restart', 'status', 'stop', 'logs', 'job')):
-                code = execute(args)
-            else:
-                from .rc_transport import TransportSession
-                with TransportSession() as transport_factory:
-                    code = execute(args, transport_factory=transport_factory)
-            if diagnostics is not None:
-                diagnostics.exit_code = code
+            code = 1
+            try:
+                if args.command in ('agent', 'alias') or (args.command == 'worker' and args.operation in
+                                              ('start', 'restart', 'status', 'stop', 'logs', 'job')):
+                    code = execute(args)
+                else:
+                    from .rc_transport import TransportSession
+                    with TransportSession() as transport_factory:
+                        code = execute(args, transport_factory=transport_factory)
+            finally:
+                if diagnostics is not None:
+                    diagnostics.exit_code = code
             return code
     except KeyboardInterrupt:
-        local_logs = args.command == 'worker' and (args.operation == 'logs' or
-                     args.operation == 'job' and args.job_operation == 'logs')
-        print("gdi: log following stopped" if local_logs
-              else "gdi: interrupted; the remote job is not cancelled", file=sys.stderr)
+        print_interruption(args)
         return 130
     except (GdiError, OSError, UnicodeError) as exc:
         if getattr(args, "json", False):
@@ -632,7 +649,10 @@ def execute(args, *, transport_factory=None):
                     print_changed_files(git.changed_files(before_head, value['head'])
                                         if before_head != value['head'] else [])
                 else:
-                    head, pub, tracking = (exchange.fetch(args.remote, args.branch) if args.command == "fetch" else exchange.pull(args.remote))
+                    if args.command == 'fetch':
+                        head, pub, tracking = exchange.fetch(args.remote, args.branch)
+                    else:
+                        head, pub, tracking = exchange.pull(args.remote, on_auto_merge=report_auto_merge)
                     if args.command == "pull":
                         info = exchange.last_pull_info
                         if info["auto_merged"]:
@@ -649,11 +669,11 @@ def execute(args, *, transport_factory=None):
                     else:
                         print(f"{args.command}: {tracking} -> {head}\nPublication: {pub}")
         return 0
+    except GdiMergeConflict:
+        # Render after transport/profiling teardown so the resolution command is last.
+        raise
     except KeyboardInterrupt:
-        local_logs = args.command == 'worker' and (args.operation == 'logs' or
-                     args.operation == 'job' and args.job_operation == 'logs')
-        print("gdi: log following stopped" if local_logs
-              else "gdi: interrupted; the remote job is not cancelled", file=sys.stderr)
+        print_interruption(args)
         return 130
     except (GdiError, OSError, UnicodeError) as exc:
         if getattr(args, "json", False):

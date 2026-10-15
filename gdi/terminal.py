@@ -1,7 +1,17 @@
 """Terminal colours with explicit pipe opt-in and NO_COLOR taking precedence."""
 
+import json
 import os
 import sys
+
+
+def display_path(path):
+    """Keep Unicode readable while escaping terminal controls and ambiguous quotes."""
+    if all(char.isprintable() and char not in '\\"' for char in path):
+        return path
+    quoted = json.dumps(path, ensure_ascii=False)
+    return ''.join(char if char.isprintable() else char.encode('unicode_escape').decode('ascii')
+                   for char in quoted)
 
 
 def colorize(text, code, *, stream=None):

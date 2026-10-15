@@ -106,14 +106,27 @@ class ExchangeTestCase(unittest.TestCase):
             clone.call("clone", "--no-local", str(clone.path), str(path))
         else:
             path.mkdir()
-            Git(path).call("init", "--quiet", "-b", "main", "--object-format=" + object_format)
-        return Git.discover(path)
+            Git(path, isolated=True).call("init", "--quiet", "-b", "main", "--object-format=" + object_format)
+        git = Git.discover(path, isolated=True)
+        git.call('config', 'user.name', 'Gdi Test')
+        git.call('config', 'user.email', 'gdi@example.invalid')
+        return git
 
     def commit(self, git, text):
         (git.path / "file.txt").write_text(text + "\n")
         git.call("add", "file.txt")
         git.call("-c", "user.name=Gdi Test", "-c", "user.email=gdi@example.invalid", "commit", "-qm", text)
         return git.oid("HEAD")
+
+    def prepare_divergent_pull(self):
+        self.ea.push('drive')
+        (self.b.path / 'local.txt').write_text('local\n')
+        self.b.call('add', 'local.txt')
+        self.b.call('commit', '-qm', 'local change')
+        local_head = self.b.oid('HEAD')
+        remote_head = self.commit(self.a, 'remote change')
+        self.ea.push('drive')
+        return local_head, remote_head
 
     def published(self):
         self.ea.push("drive")
@@ -168,15 +181,7 @@ class ExchangeTests(ExchangeTestCase):
         self.assertEqual((self.b.path / "local.txt").read_text(), "keep")
 
     def test_divergent_pull_auto_merges_clean_changes_and_can_be_published(self):
-        self.ea.push("drive")
-        local_file = self.b.path / "local.txt"
-        local_file.write_text("local\n")
-        self.b.call("add", "local.txt")
-        self.b.call("-c", "user.name=Gdi Test", "-c", "user.email=gdi@example.invalid",
-                    "commit", "-qm", "local change")
-        local_head = self.b.oid("HEAD")
-        remote_head = self.commit(self.a, "remote change")
-        self.ea.push("drive")
+        local_head, remote_head = self.prepare_divergent_pull()
 
         merged, publication, tracking = self.eb.pull("drive")
 
@@ -194,6 +199,117 @@ class ExchangeTests(ExchangeTestCase):
         pushed, _, created = self.eb.push("drive")
         self.assertEqual(pushed, merged)
         self.assertTrue(created)
+
+    def test_auto_merge_restores_state_on_interrupt_and_commit_failure(self):
+        _, remote_head = self.prepare_divergent_pull()
+        before = self.b.snapshot()
+        original = self.b.call
+        cases = [('merge', KeyboardInterrupt, KeyboardInterrupt),
+                 ('commit', KeyboardInterrupt, KeyboardInterrupt),
+                 ('commit', OSError, GdiError), ('commit', GdiError, GdiError)]
+        for stage, failure, expected in cases:
+            with self.subTest(stage=stage, failure=failure.__name__):
+                def fail(*args, **kwargs):
+                    if stage == 'commit' and args[:2] == ('commit', '--no-edit'):
+                        raise failure('injected commit failure')
+                    value = original(*args, **kwargs)
+                    if stage == 'merge' and '--no-commit' in args:
+                        raise failure('injected interrupt after merge')
+                    return value
+                with patch.object(self.b, 'call', side_effect=fail), self.assertRaises(expected):
+                    self.eb.pull('drive')
+                self.assertEqual(self.b.snapshot(), before)
+                self.assertIsNone(self.b.oid('MERGE_HEAD'))
+                self.assertEqual(self.b.oid('refs/remotes/drive/main'), remote_head)
+                self.assertIsNone(self.eb.last_pull_info)
+
+    def test_interrupt_after_merge_commit_preserves_the_new_commit(self):
+        local_head, remote_head = self.prepare_divergent_pull()
+        original = self.b.call
+        calls = []
+        def interrupt(*args, **kwargs):
+            calls.append(args)
+            value = original(*args, **kwargs)
+            if args[:2] == ('commit', '--no-edit'):
+                raise KeyboardInterrupt('injected after commit succeeded')
+            return value
+        with patch.object(self.b, 'call', side_effect=interrupt), self.assertRaises(KeyboardInterrupt):
+            self.eb.pull('drive')
+        merged = self.b.oid('HEAD')
+        self.assertEqual(self.b.text('rev-list', '--parents', '-n', '1', merged).split()[1:],
+                         [local_head, remote_head])
+        self.assertNotIn(('merge', '--abort'), calls)
+        self.assertFalse(self.b.snapshot()[2])
+        self.assertIsNone(self.b.oid('MERGE_HEAD'))
+        self.assertEqual(self.eb.pull('drive')[0], merged)
+
+    def test_auto_merge_reports_failed_rollback_without_claiming_restoration(self):
+        local_head, _ = self.prepare_divergent_pull()
+        original = self.b.call
+        def fail(*args, **kwargs):
+            if args[:2] == ('commit', '--no-edit'):
+                raise GdiError('injected commit failure')
+            if args[:2] == ('merge', '--abort'):
+                raise GdiError('injected abort failure')
+            return original(*args, **kwargs)
+        try:
+            with patch.object(self.b, 'call', side_effect=fail):
+                with self.assertRaisesRegex(GdiError, 'rollback failed; inspect git status') as raised:
+                    self.eb.pull('drive')
+            self.assertNotIn('working branch restored', str(raised.exception))
+            self.assertEqual(self.b.oid('HEAD'), local_head)
+            self.assertIsNotNone(self.b.oid('MERGE_HEAD'))
+        finally:
+            original('merge', '--abort')
+
+    def test_auto_merge_without_identity_preserves_the_working_branch(self):
+        self.prepare_divergent_pull()
+        self.b.call('config', '--unset', 'user.name')
+        self.b.call('config', '--unset', 'user.email')
+        self.b.call('config', 'user.useConfigOnly', 'true')
+        before = self.b.snapshot()
+        with self.assertRaisesRegex(GdiError, 'automatic merge failed; working branch restored'):
+            self.eb.pull('drive')
+        self.assertEqual(self.b.snapshot(), before)
+        self.assertIsNone(self.b.oid('MERGE_HEAD'))
+
+    def test_auto_merge_combines_independent_hunks_in_one_file(self):
+        base = ['line-%02d' % number for number in range(20)]
+        self.commit(self.a, '\n'.join(base))
+        self.ea.push('drive')
+        self.eb.pull('drive')
+        remote = base.copy(); remote[0] = 'REMOTE'
+        local = base.copy(); local[-1] = 'LOCAL'
+        remote_head = self.commit(self.a, '\n'.join(remote))
+        local_head = self.commit(self.b, '\n'.join(local))
+        self.ea.push('drive')
+        merged, _, _ = self.eb.pull('drive')
+        self.assertEqual((self.b.path / 'file.txt').read_text(),
+                         '\n'.join(['REMOTE', *base[1:-1], 'LOCAL']) + '\n')
+        self.assertEqual(self.b.text('rev-list', '--parents', '-n', '1', merged).split()[1:],
+                         [local_head, remote_head])
+        self.eb.push('drive')
+        self.assertEqual(self.ea.pull('drive')[0], merged)
+
+    def test_auto_merge_restores_add_add_modify_delete_and_binary_conflicts(self):
+        for kind in ('add-add', 'modify-delete', 'binary'):
+            with self.subTest(kind=kind):
+                self.a.call('switch', '-c', 'conflict/' + kind, self.first)
+                self.b.call('switch', '-c', 'conflict/' + kind, self.first)
+                path = 'collision.txt' if kind == 'add-add' else 'file.txt'
+                for git, content in ((self.a, b'REMOTE\n'), (self.b, b'LOCAL\n')):
+                    if kind == 'modify-delete' and git is self.b:
+                        (git.path / path).unlink()
+                    else:
+                        (git.path / path).write_bytes((b'\0' if kind == 'binary' else b'') + content)
+                    git.call('add', '-A', '--', path)
+                    git.call('commit', '-qm', kind)
+                self.ea.push('drive')
+                before = self.b.snapshot()
+                with self.assertRaises(GdiMergeConflict):
+                    self.eb.pull('drive')
+                self.assertEqual(self.b.snapshot(), before)
+                self.assertIsNone(self.b.oid('MERGE_HEAD'))
 
     def test_pull_is_up_to_date_when_local_history_already_contains_remote_tip(self):
         self.ea.push("drive")

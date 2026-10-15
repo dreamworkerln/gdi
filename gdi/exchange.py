@@ -292,8 +292,54 @@ class Exchange:
         self.git.call("update-ref", "-m", "gdi fetch", tracking, tip[1]["head"], old or "0" * 40)
         return tip[1]["head"], tip[0], tracking
 
+    def _abort_auto_merge(self, before):
+        """Undo an unfinished merge, without resetting a commit that already landed."""
+        if (self.git.branch(), self.git.oid('HEAD')) != before[:2]:
+            return False
+        if self.git.oid('MERGE_HEAD') is not None:
+            try:
+                self.git.call('merge', '--abort')
+            except (GdiError, OSError, UnicodeError) as exc:
+                raise GdiError('automatic merge rollback failed; inspect git status and '
+                               'complete or abort the merge before retrying') from exc
+        if self.git.snapshot() != before or self.git.oid('MERGE_HEAD') is not None:
+            raise GdiError('automatic merge did not restore the original worktree; inspect git status')
+        return True
+
+    def _auto_merge(self, before, remote_head, tracking):
+        try:
+            merge = self.git.call('merge', '--no-commit', '--no-ff', '--no-edit',
+                                  '--no-stat', remote_head, allowed=(0, 1))
+            if merge.returncode:
+                raw = self.git.call('diff', '--name-only', '--diff-filter=U', '-z').stdout
+                conflicts = [path for path in raw.split('\0') if path]
+                if conflicts:
+                    raise GdiMergeConflict(tracking, conflicts)
+                raise GdiError(merge.stderr.strip() or 'git merge failed without reporting conflicts')
+            self.git.call('commit', '--no-edit')
+        except BaseException as exc:
+            # Ctrl+C can arrive after Git prepared the index or while committing.
+            # Check HEAD before cleanup: a completed commit must never be reset.
+            restored = self._abort_auto_merge(before)
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            if not restored:
+                raise GdiError('automatic merge failed after branch or HEAD changed; '
+                               'commits were preserved, inspect git status') from exc
+            if isinstance(exc, GdiMergeConflict):
+                raise
+            if isinstance(exc, (GdiError, OSError, UnicodeError)):
+                raise GdiError('automatic merge failed; working branch restored: ' + str(exc)) from exc
+            raise
+        head = self.git.oid('HEAD')
+        parents = self.git.text('rev-list', '--parents', '-n', '1', head).split()[1:]
+        if parents != [before[1], remote_head]:
+            raise GdiError('automatic merge produced unexpected parents; inspect the new commit')
+        return head
+
     @timed('pull')
-    def pull(self, name):
+    def pull(self, name, *, on_auto_merge=None):
+        self.last_pull_info = None
         before = self.git.snapshot()
         self.git.require_clean(before)
         remote_head, publication_id, tracking = self.fetch(name, before[0])
@@ -313,43 +359,9 @@ class Exchange:
             # The local branch already contains the published tip.
             result_head = before[1]
         else:
-            try:
-                merge = self.git.call("merge", "--no-commit", "--no-ff", "--no-edit",
-                                      "--no-stat", remote_head, allowed=(0, 1))
-            except GdiError as exc:
-                in_progress = self.git.oid("MERGE_HEAD") is not None
-                if in_progress:
-                    aborted = self.git.call("merge", "--abort", allowed=(0, 1))
-                    if aborted.returncode:
-                        raise GdiError("automatic merge failed and Git could not abort it; inspect the worktree") from exc
-                if self.git.snapshot() != before:
-                    raise GdiError("automatic merge failed and did not restore the original worktree; inspect it") from exc
-                raise GdiError("automatic merge failed; working branch restored: " + str(exc)) from exc
-            if merge.returncode:
-                raw_conflicts = self.git.call("diff", "--name-only", "--diff-filter=U", "-z").stdout
-                conflicts = [path for path in raw_conflicts.split("\0") if path]
-                aborted = self.git.call("merge", "--abort", allowed=(0, 1))
-                if aborted.returncode:
-                    raise GdiError("automatic merge failed and Git could not abort it; inspect the worktree")
-                if self.git.snapshot() != before:
-                    raise GdiError("automatic merge conflict did not restore the original worktree; inspect it")
-                if conflicts:
-                    raise GdiMergeConflict(tracking, conflicts)
-                detail = merge.stderr.strip() or "git merge failed without reporting conflicts"
-                raise GdiError("automatic merge failed; working branch restored: " + detail)
-            try:
-                self.git.call("commit", "--no-edit")
-            except GdiError as exc:
-                aborted = self.git.call("merge", "--abort", allowed=(0, 1))
-                if aborted.returncode:
-                    raise GdiError("merge commit failed and Git could not abort it; inspect the worktree") from exc
-                if self.git.snapshot() != before:
-                    raise GdiError("failed automatic merge commit did not restore the original worktree; inspect it") from exc
-                raise GdiError("could not create automatic merge commit; working branch restored: " + str(exc)) from exc
-            result_head = self.git.oid("HEAD")
-            parents = self.git.text("rev-list", "--parents", "-n", "1", result_head).split()[1:]
-            if parents != [before[1], remote_head]:
-                raise GdiError("automatic merge produced unexpected parents; inspect the new commit")
+            if on_auto_merge is not None:
+                on_auto_merge()
+            result_head = self._auto_merge(before, remote_head, tracking)
             auto_merged = True
         final = self.git.snapshot()
         self.git.require_clean(final)
