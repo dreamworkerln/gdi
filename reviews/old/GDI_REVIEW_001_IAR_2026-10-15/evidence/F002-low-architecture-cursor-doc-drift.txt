@@ -1,0 +1,19 @@
+F002 — LOW — ARCHITECTURE.md contradicts implemented persistent CI follow cursor
+
+ARCHITECTURE.md:184-185 says a new follow invocation starts at the beginning and that the resume cursor is not saved across CLI invocations.
+
+Current implementation:
+- gdi/ci.py:505-553 persists .gdi/ci/follow/<job>.json under a lock and advances it only after verified chunk output.
+- docs/ci.md:109-113 says wait --follow / logs --follow persist position between calls and --restart replays from the start.
+- focused cursor regression suite: 6 tests PASS.
+
+Attribution:
+The stale architecture sentence predates the current review attribution range (git blame points to 29f4baa2/4cbd6ac9), so classify it as pre-existing documentation drift rather than a regression introduced by current HEAD.
+
+Consequence:
+Operator/developer documentation gives contradictory recovery/replay semantics and can cause incorrect expectations when debugging CI log follow behavior.
+
+Confidence: HIGH.
+
+Acceptance criterion:
+Update ARCHITECTURE.md to describe the persisted per-job cursor and --restart semantics consistently with gdi/ci.py and docs/ci.md.

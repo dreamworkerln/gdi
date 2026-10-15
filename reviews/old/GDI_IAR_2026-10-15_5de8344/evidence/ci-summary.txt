@@ -1,0 +1,24 @@
+Exact-SHA GDI CI verification
+repository_id=4b3d23458a15492aabc47f6ffd024f99
+ref=refs/heads/dev
+head=5de8344df7337f4b0f22d3cfa0d937b270d806e7
+publication_id=f6686fd21332159303d7a0526149972f1bd20338833a6f393b454fdcb6245c59
+job_id=03797b57ea864954a2fec0e8125ee0d8
+worker_id=user-dream
+profile_id=full
+profile_revision=0009727f305bd84ee3ea973addf04df2a1fdf0418d1198528d65b5f0ffbf77ab
+request_sha256=41519ba373292ad4461db523476add538a586dd3b5cb5bdfa5479519d5961488
+run_id=05687596168c4a409c0277188462e26d
+state=PASS
+verified=true
+exit_code=0
+warnings=[]
+duration_seconds=622.0791246680001
+stage.github-actions=PASS blocking=true exit_code=0
+unit_and_integration_tests=366 PASS (5 skipped by suite conditions)
+docker_acceptance_tests=2 PASS
+log_chunks=33
+total_log_bytes=211075
+concatenated_chunk_sha256=9cc1175e99b0f78ad969a6bfaae2f3839bc306b01e2f54ff1b5b9c190317f578
+build_log_sha256=9cc1175e99b0f78ad969a6bfaae2f3839bc306b01e2f54ff1b5b9c190317f578
+GDI agent ci result verified request/result/artifact/chunk identities and returned verified:true.

@@ -1,0 +1,8 @@
+branch=dev
+head=5de8344df7337f4b0f22d3cfa0d937b270d806e7
+subject=fix: harden pull merge rollback and console output
+worktree=clean
+tracked_files=98
+commits=42
+tree=90570ae55a718d82fff9dc5b6c6d8b2f341fbf53
+source_sha256=5e436ebed2295c165c15ca97b185e74570b67bdf59a97bb7fd11aff7e1eada58

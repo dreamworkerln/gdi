@@ -1,0 +1,45 @@
+F001 — MEDIUM — long-running worker can retain stale proxy/NO_PROXY after host network settings change
+
+Contract:
+- gdi/network.py:97 says settings are read afresh so a running worker can follow host changes.
+- docs/worker.md:219-234 says proxy settings are reread during operation and worker config need not change when the network changes.
+- docs/worker.md:246-248 says NO_PROXY/no_proxy exclusions are preserved for CI.
+
+Mechanism:
+- NetworkRoutes.routes() tries self.selected before newly inherited/discovered routes.
+- routes(): value = {**direct, **value}; a stale selected route's no_proxy overwrites current host no_proxy.
+- environment(): settings = {**fresh_bypass, **route}; stale route no_proxy again overwrites fresh bypass.
+- run(): a successful route becomes self.selected. If the old selected proxy remains reachable, it can continue succeeding, so the fresh route is never selected.
+- CiProxy.environment() starts from self.network.environment(self.network.selected or {}), so a new CI job can inherit the stale bypass.
+
+Deterministic repro:
+repro-network-route-stale.txt:
+first_route= {'no_proxy': 'old.internal', 'http_proxy': 'http://old-proxy:8080', 'https_proxy': 'http://old-proxy:8080'}
+successful_route= {'no_proxy': 'old.internal', 'http_proxy': 'http://old-proxy:8080', 'https_proxy': 'http://old-proxy:8080'}
+process_environment_no_proxy= old.internal
+
+repro-ci-proxy-stale-no-proxy.txt:
+ci_env_NO_PROXY= old.internal,localhost,127.0.0.1,::1
+contains_new= False
+contains_old= True
+
+Regression attribution:
+git blame attributes the relevant route-selection/environment logic to ed1b5131 (feat: automatically switch proxy routes for GDI and CI), which is inside the reviewer attribution range.
+
+Trigger:
+1. long-running worker/GDI selects route A with proxy/NO_PROXY A;
+2. host settings change to proxy/NO_PROXY B;
+3. old route A remains operational;
+4. a later network operation/new CI job runs.
+
+Consequence:
+- live host proxy endpoint changes may not take effect;
+- NO_PROXY additions/removals may not take effect;
+- new jobs can use stale routing policy until the old route fails or the worker restarts.
+
+Confidence: HIGH.
+
+Acceptance criterion:
+- after host proxy or NO_PROXY changes, the next network operation/new CI job must reflect current host settings even when the old selected route is still reachable;
+- preferred/selected-route state must not retain mutable bypass/endpoint data in a way that masks fresh settings;
+- regression tests must cover selected route + live proxy endpoint change and selected route + NO_PROXY add/remove while the old route remains successful.

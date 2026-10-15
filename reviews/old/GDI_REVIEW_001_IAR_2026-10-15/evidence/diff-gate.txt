@@ -1,0 +1,61 @@
+review_target=5de8344df7337f4b0f22d3cfa0d937b270d806e7
+diff_baseline=dbdea2c4d8aee9e4b19a773fb4f9b49dda504f05
+note=diff baseline selected for recent implementation attribution; not operator-accepted base
+
+ .github/workflows/ci.yml      |  32 ++-
+ AGENTS.md                     |  29 +--
+ INSTALL.md                    |   8 +-
+ QUICKSTART.md                 |  11 +-
+ README.md                     |  34 ++-
+ TODO.md                       |  79 ++++++-
+ deploy.sh                     |  13 ++
+ docs/agent.md                 | 500 ++++++++++++++++++++++++++++++++++++------
+ docs/protocol.md              |  17 +-
+ docs/scheduling.md            |   7 +
+ docs/worker.md                |  54 ++++-
+ examples/worker.json          |   4 +-
+ gdi.prompt                    |   8 +-
+ gdi/ci_proxy.py               | 211 ++++++++++++++++++
+ gdi/cli.py                    | 106 +++++++--
+ gdi/exchange.py               |  98 ++++++++-
+ gdi/executor.py               |   6 +
+ gdi/git.py                    |  28 ++-
+ gdi/network.py                | 230 +++++++++++++++++++
+ gdi/rc_transport.py           |  65 +++++-
+ gdi/status.py                 |   2 +-
+ gdi/terminal.py               |  10 +
+ gdi/transport.py              |  13 +-
+ gdi/worker.py                 |  22 +-
+ gdi/worker_config.py          |   2 +-
+ gdi/worker_job_logs.py        | 102 +++++++++
+ gdi/workflow.py               |  21 +-
+ scripts/deploy.py             |  12 +-
+ tests/test_ci.py              |   4 +-
+ tests/test_ci_proxy.py        | 140 ++++++++++++
+ tests/test_deploy.py          |   7 +
+ tests/test_exchange.py        | 191 +++++++++++++++-
+ tests/test_network_routes.py  | 160 ++++++++++++++
+ tests/test_short_cli.py       | 139 +++++++++++-
+ tests/test_v2_cli.py          |   8 +
+ tests/test_worker_job_logs.py | 125 +++++++++++
+ tests/test_workflow_proxy.py  |  13 ++
+ 37 files changed, 2312 insertions(+), 199 deletions(-)
+
+changed production files:
+gdi/ci_proxy.py
+gdi/cli.py
+gdi/exchange.py
+gdi/executor.py
+gdi/git.py
+gdi/network.py
+gdi/rc_transport.py
+gdi/status.py
+gdi/terminal.py
+gdi/transport.py
+gdi/worker.py
+gdi/worker_config.py
+gdi/worker_job_logs.py
+gdi/workflow.py
+
+diff check:
+PASS

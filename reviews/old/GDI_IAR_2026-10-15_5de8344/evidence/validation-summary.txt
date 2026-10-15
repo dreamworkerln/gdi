@@ -1,0 +1,15 @@
+Validation summary
+
+PASS — compileall: compileall=PASS.
+PASS — auto-merge/rollback/concurrency/CLI focused suite: 15 tests in 7.986s.
+PASS — agent publication/snapshot/clone + agent CI integrity suite: 25 tests in 20.347s.
+PASS — GC quiescence/race/dependency suite: 21 PASS, 1 skipped because rclone local-backend integration prerequisite was unavailable.
+PASS — network/proxy existing focused suite: 24 tests in 10.880s.
+PASS — follow cursor focused suite: 6 tests in 0.964s.
+PASS — exact-SHA remote GDI CI: verified:true, 366 unit/integration tests (5 conditional skips) plus 2 Docker acceptance tests, exit 0.
+INCOMPLETE — local ./test.sh monolithic run exceeded the 300s container-call limit. Captured output showed progress without a code failure, but this run is not counted as PASS. Exact-SHA remote full CI supplies the complete suite verdict.
+
+Semantic/repro validation:
+- F001 deterministic NetworkRoutes live-settings repro: reproduced stale old proxy/NO_PROXY after host environment mutation.
+- F001 deterministic CiProxy repro: reproduced old NO_PROXY in a new CI environment.
+- F002 implementation/document comparison + 6 cursor tests: implementation persists cursor; ARCHITECTURE.md is stale.

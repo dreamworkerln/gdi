@@ -1,0 +1,25 @@
+Evidence index
+
+source-snapshot.txt — exact reviewed repo/HEAD/tree/source fingerprint.
+diff-gate.txt — reviewer attribution BASE..HEAD range, production file inventory, diff --check.
+recent-source.diff — full reviewer-attribution source diff.
+commit-production-stats.txt — production change stats by commit.
+compileall.txt — Python bytecode compilation gate.
+auto-merge-tests-clean.log — focused merge/rollback/concurrency/CLI regressions.
+agent-tests.log — publication/snapshot/clone and agent CI integrity regressions.
+gc-tests.log — GC quiescence/race/dependency regressions.
+network-proxy-tests.log — existing network/proxy regressions.
+follow-cursor-tests.log — persistent CI follow cursor regressions.
+local-full-suite-timeout.log — incomplete local monolithic suite attempt (timeout, not PASS).
+complexity-proxy.txt — AST branch-node/span heuristic; nonblocking maintainability evidence.
+repro-network-route-stale.py — deterministic F001 repro source.
+repro-network-route-stale.txt — F001 route output.
+repro-ci-proxy-stale-no-proxy.txt — F001 CI environment output.
+F001-network-lines.txt / F001-ci-proxy-lines.txt / F001-worker-lines.txt / F001-worker-contract-lines.txt / F001-blame.txt — source/contract/attribution excerpts.
+F002-architecture-lines.txt / F002-ci-cursor-lines.txt / F002-ci-doc-lines.txt / F002-blame.txt — contradictory documentation and implementation excerpts.
+F001-medium-network-route-staleness.txt — standalone finding record.
+F002-low-architecture-cursor-doc-drift.txt — standalone finding record.
+ci-result-verified.json — authoritative GDI agent ci result output with verified:true.
+ci-summary.txt — compact CI identity/integrity summary.
+validation-summary.txt — reviewer validation matrix summary.
+final-repo-state.txt — reviewer final branch/HEAD/worktree state.
