@@ -21,7 +21,10 @@ GDI-репозитории. Это разрешение не распростр�
 на Google Drive (включая runtime) только по явной просьбе пользователя.
 Просьба изменить или исправить GDI сама по себе не разрешает эти действия.
 
+Корневой `deploy.sh` проверяет чистоту рабочего дерева, выполняет `git push`,
+`python3 -m gdi push drive --full` и запускает `scripts/deploy.py`.
 Внешний `scripts/deploy.py` сначала собирает из текущего commit и проверяет
 `gdi.pyz`, затем выполняет `python3 -m gdi push drive --full` и загружает runtime
-через rclone в `gdrive:gdi/gdi/runtime/`. Исходники должны быть закоммичены,
+и копию `docs/agent.md` как `agent.md` через rclone в `gdrive:gdi/gdi/runtime/`.
+Исходники должны быть закоммичены,
 рабочее дерево чистым. Команды `gdi deploy` внутри CLI нет.

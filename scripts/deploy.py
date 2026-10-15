@@ -16,6 +16,9 @@ import tarfile
 import zipfile
 
 
+RUNTIME_FILES = ('gdi.pyz', 'runtime.json', 'gdi.pyz.sha256', 'agent.md')
+
+
 def git(repository, *args):
     environment = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
     return subprocess.check_output(['git', '-C', str(repository), *args], env=environment)
@@ -27,6 +30,7 @@ def build(repository, output):
         raise ValueError('commit all changes before building the runtime')
     head = git(repository, 'rev-parse', 'HEAD').decode().strip()
     ref = git(repository, 'symbolic-ref', 'HEAD').decode().strip()
+    agent_document = git(repository, 'show', head + ':docs/agent.md')
     archive = git(repository, 'archive', '--format=tar', head, 'gdi', 'LICENSE')
     files = {}
     with tarfile.open(fileobj=io.BytesIO(archive)) as source:
@@ -53,7 +57,7 @@ def build(repository, output):
     files['GDI_RUNTIME.json'] = (json.dumps(metadata, sort_keys=True, indent=2) + '\n').encode()
     output = Path(output).resolve()
     if output.is_relative_to(repository):
-        for name in ('gdi.pyz', 'runtime.json', 'gdi.pyz.sha256'):
+        for name in RUNTIME_FILES:
             relative = (output / name).relative_to(repository).as_posix()
             if git(repository, 'ls-files', '--', relative):
                 raise ValueError('output would overwrite a tracked file: ' + relative)
@@ -73,6 +77,7 @@ def build(repository, output):
     metadata.update(sha256=hashlib.sha256(target.read_bytes()).hexdigest(), bytes=target.stat().st_size)
     (output / 'runtime.json').write_text(json.dumps(metadata, sort_keys=True, indent=2) + '\n', encoding='utf-8')
     (output / 'gdi.pyz.sha256').write_text(metadata['sha256'] + '  gdi.pyz\n', encoding='ascii')
+    (output / 'agent.md').write_bytes(agent_document)
     return metadata
 
 
@@ -128,12 +133,11 @@ def main(argv=None):
             print(f'deploy: published {publication["head"]} ({publication["publication_id"]})', flush=True)
             stage = 'runtime upload'
             print(f'deploy: uploading runtime to {args.runtime_dir}', flush=True)
-            filenames = ('gdi.pyz', 'runtime.json', 'gdi.pyz.sha256')
-            for filename in filenames:
+            for filename in RUNTIME_FILES:
                 subprocess.run(['rclone', 'copyto', str(output / filename), args.runtime_dir.rstrip('/') + '/' + filename],
                                cwd=repository, env=process_environment, check=True)
             stage = 'runtime download verification'
-            for filename in filenames:
+            for filename in RUNTIME_FILES:
                 subprocess.run(['rclone', 'copyto', args.runtime_dir.rstrip('/') + '/' + filename,
                                 str(verification / filename)], cwd=repository, env=process_environment, check=True)
                 if (output / filename).read_bytes() != (verification / filename).read_bytes():

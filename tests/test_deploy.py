@@ -25,6 +25,8 @@ class DeployTests(unittest.TestCase):
         source = Path(__file__).resolve().parents[1]
         shutil.copytree(source / 'gdi', self.repo / 'gdi', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
         shutil.copytree(source / 'scripts', self.repo / 'scripts', ignore=shutil.ignore_patterns('__pycache__'))
+        (self.repo / 'docs').mkdir()
+        shutil.copyfile(source / 'docs/agent.md', self.repo / 'docs/agent.md')
         for name in ('LICENSE', '.gitignore'):
             shutil.copyfile(source / name, self.repo / name)
         self.output = self.root / 'runtime with spaces'
@@ -85,6 +87,7 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(metadata['ref'], 'refs/heads/main')
         self.assertEqual(metadata['sha256'], hashlib.sha256(data).hexdigest())
         self.assertEqual(metadata['bytes'], len(data))
+        self.assertEqual((self.output / 'agent.md').read_bytes(), (self.repo / 'docs/agent.md').read_bytes())
         with zipfile.ZipFile(self.output / 'gdi.pyz') as archive:
             self.assertIn('LICENSE', archive.namelist())
             self.assertEqual(json.loads(archive.read('GDI_RUNTIME.json'))['head'], self.head)
@@ -149,18 +152,22 @@ class DeployTests(unittest.TestCase):
         self.deploy('--runtime-dir', self.runtime_url)
         runtime = self.store / 'runtime'
         first_data = (runtime / 'gdi.pyz').read_bytes()
+        self.assertEqual((runtime / 'agent.md').read_bytes(), (self.repo / 'docs/agent.md').read_bytes())
         manifests = list((self.store / 'branches/main').glob('*.json'))
         self.assertEqual(len(manifests), 1)
         self.deploy('--runtime-dir', self.runtime_url)
         self.assertEqual(list((self.store / 'branches/main').glob('*.json')), manifests)
         self.assertEqual((runtime / 'gdi.pyz').read_bytes(), first_data)
         (self.repo / 'example.txt').write_text('new committed contents\n')
+        with (self.repo / 'docs/agent.md').open('a') as handle:
+            handle.write('\nUpdated deployment instructions.\n')
         self.commit()
         self.cli('push', 'drive')  # A delta first; deploy must still publish a full checkpoint.
         self.deploy('--runtime-dir', self.runtime_url)
         metadata = json.loads((runtime / 'runtime.json').read_text())
         self.assertEqual(metadata['head'], self.head)
         self.assertNotEqual((runtime / 'gdi.pyz').read_bytes(), first_data)
+        self.assertEqual((runtime / 'agent.md').read_bytes(), (self.repo / 'docs/agent.md').read_bytes())
         before = {path.name: path.read_bytes() for path in runtime.iterdir()}
         self.cli('gc', 'drive', '--apply', '--quiescent', '--keep-checkpoints', '1')
         self.assertEqual({path.name: path.read_bytes() for path in runtime.iterdir()}, before)
