@@ -507,7 +507,7 @@ python3 -m gdi agent clone --snapshot "$EXCHANGE_DIR/source/snapshot.json" \
    `target_folder` — логический путь **от общего Drive root**, не Drive folder ID.
    Найдите/создайте эти папки коннектором. `bundle_kind` показывает выбранный тип:
    по умолчанию передаётся incremental от опубликованного tip. Первая публикация
-   и периодический checkpoint используют full, как обычный push: после 19 дельт
+   и периодический checkpoint используют full, как обычный push: после 9 дельт
    создаётся новый full. `--full` принудительно выбирает полный bundle;
    `--checkpoint-every N` меняет период checkpoints.
    Canonical JSON, nonce, SHA256, ветки и quarantine совпадают с обычным push.

@@ -55,7 +55,7 @@ gdi pull
 | `gdi remote remove NAME` | Удаляет локальные настройки, оставляет удалённые данные и fetched refs |
 | `gdi push [NAME] [BRANCH]` | Первый bundle полный, следующие инкрементальные; повтор того же HEAD ничего не публикует |
 | `gdi push [NAME] [BRANCH] -f / --full` | Создаёт полный контрольный bundle, в том числе для уже опубликованного HEAD дельты |
-| `gdi push [NAME] [BRANCH] --checkpoint-every N` | Полный bundle после каждых N обновлений от предыдущего полного (по умолчанию 20) |
+| `gdi push [NAME] [BRANCH] --checkpoint-every N` | Полный bundle после каждых N обновлений от предыдущего полного (по умолчанию 10) |
 | `gdi push [NAME] --ci --worker ID [--profile full] [--json]` | Публикует commit и запрос CI в общую inbox |
 | `gdi ci status/wait/logs NAME JOB_ID` | Прогресс, streaming console и проверенный terminal result |
 | `gdi ci cancel NAME JOB_ID [--withdraw] [--json]` | Сохраняет отмену; --withdraw также снимает точное уведомление очереди |
@@ -194,8 +194,9 @@ publication ID и фактические prerequisites из bundle. Пропущ
 догружает последовательно; новый клиент начинает с последнего полного bundle.
 Обычно повторный push/fetch не скачивает уже проверенные bundles.
 
-После 20 обновлений от полного bundle автоматически создаётся новый полный: при
-значении 20 между полными бывает не более 19 дельт. `--checkpoint-every 1` всегда
+После 10 обновлений от полного bundle автоматически создаётся новый полный: при
+значении 10 между полными бывает не более 9 дельт. Значение по умолчанию задаётся
+константой `CHECKPOINT_EVERY` в `gdi/config.py`. `--checkpoint-every 1` всегда
 публикует полный bundle; `--full` позволяет сделать контрольную публикацию вручную.
 Большие новые файлы могут давать большие дельты.
 

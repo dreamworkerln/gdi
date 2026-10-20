@@ -7,7 +7,8 @@ import sys
 
 from . import __version__
 from .banner import render as render_banner
-from .exchange import CHECKPOINT_EVERY, Exchange, GdiMergeConflict
+from .config import CHECKPOINT_EVERY
+from .exchange import Exchange, GdiMergeConflict
 from .git import GdiError, Git
 
 

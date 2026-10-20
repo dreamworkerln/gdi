@@ -10,10 +10,11 @@ import uuid
 from .git import GdiError, Git
 from .branches import branch_directory
 from .cache import VerifiedCache
+from .config import CHECKPOINT_EVERY
 from .transport import Rclone, validate_url
 from .diagnostics import note, phase, timed
 # Keep existing import locations available while sharing the implementation.
-from .publication import (PROTOCOL_VERSION, CHECKPOINT_EVERY, full_checkpoint, bundle_prerequisites, decode, digest,
+from .publication import (PROTOCOL_VERSION, full_checkpoint, bundle_prerequisites, decode, digest,
                           encode, file_digest, hex_value, prepare_publication,
                           validate_repository, verify_bundle, validate_publications, bundle_sequence)
 

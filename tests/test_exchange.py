@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from gdi.cli import main
 from gdi.cache import VerifiedCache
+from gdi.config import CHECKPOINT_EVERY
 from gdi.exchange import Exchange, GdiMergeConflict, bundle_prerequisites, decode, digest, encode
 from gdi.git import GdiError, Git
 from gdi.transport import Rclone, validate_url
@@ -639,7 +640,7 @@ class ExchangeTests(ExchangeTestCase):
         with self.assertRaisesRegex(GdiError, "unfinished git operation"):
             self.eb.pull("drive")
 
-    def series(self, count, *, checkpoint_every=20):
+    def series(self, count, *, checkpoint_every=CHECKPOINT_EVERY):
         self.ea.push("drive")
         for number in range(count):
             self.commit(self.a, f"update {number}")

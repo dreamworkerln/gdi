@@ -10,12 +10,12 @@ import tempfile
 import uuid
 
 from .branches import branch_directory
+from .config import CHECKPOINT_EVERY
 from .diagnostics import phase
 from .git import GdiError, Git
 
 
 PROTOCOL_VERSION = 3
-CHECKPOINT_EVERY = 20
 
 
 def full_checkpoint(chain, *, full=False, checkpoint_every=CHECKPOINT_EVERY):

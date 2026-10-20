@@ -10,9 +10,10 @@ import tempfile
 from .branches import branch_directory
 from .cache import VerifiedObjects
 from .ci_protocol import atomic_write
+from .config import CHECKPOINT_EVERY
 from .git import GdiError, Git
 from .inbox import filename, notification
-from .publication import (CHECKPOINT_EVERY, full_checkpoint, decode, digest, encode, file_digest, hex_value,
+from .publication import (full_checkpoint, decode, digest, encode, file_digest, hex_value,
                           prepare_publication, verify_bundle, validate_manifest)
 from .snapshot import Snapshot, local_file, metadata_file
 
