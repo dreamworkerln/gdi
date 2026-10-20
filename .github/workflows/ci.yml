@@ -4,6 +4,7 @@ env:
   # The distro's rclone 1.60.1 cannot serve RC over a Unix socket.
   # RCLONE_VERSION would configure rclone's boolean --version flag.
   GDI_CI_RCLONE_VERSION: '1.75.1'
+  GDI_CI_ACT_VERSION: '0.2.89'
   GDI_CI_RUNNER_IMAGE: catthehacker/ubuntu:act-latest
 jobs:
   tests:
@@ -13,21 +14,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      - name: Install integration tools
-        run: |
-          # sudo drops proxy variables unless explicitly preserved.
-          sudo --preserve-env=http_proxy,https_proxy,HTTP_PROXY,HTTPS_PROXY,no_proxy,NO_PROXY apt-get update --error-on=any
-          sudo --preserve-env=http_proxy,https_proxy,HTTP_PROXY,HTTPS_PROXY,no_proxy,NO_PROXY apt-get install -y unzip
-          curl -fL "https://downloads.rclone.org/v${GDI_CI_RCLONE_VERSION}/rclone-v${GDI_CI_RCLONE_VERSION}-linux-amd64.zip" -o /tmp/rclone.zip
-          unzip -q /tmp/rclone.zip -d /tmp/gdi-rclone
-          sudo install -m 755 "/tmp/gdi-rclone/rclone-v${GDI_CI_RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
-          rclone version
-          curl -fL https://github.com/nektos/act/releases/download/v0.2.89/act_Linux_x86_64.tar.gz -o /tmp/act.tar.gz
-          mkdir -p /tmp/gdi-act
-          tar -xzf /tmp/act.tar.gz -C /tmp/gdi-act act
+      - name: Restore integration tools
+        uses: ./.github/actions/setup-ci-tools
       - name: Unit and integration tests
         env:
-          GDI_TEST_ACT: /tmp/gdi-act/act
           PYTHONDONTWRITEBYTECODE: '1'
         run: python -m unittest discover -s tests -v
   docker-acceptance:
@@ -37,28 +27,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      - name: Install tools and runner image
+      - name: Restore integration tools
+        uses: ./.github/actions/setup-ci-tools
+      - name: Check runner image
         run: |
-          # sudo drops proxy variables unless explicitly preserved.
-          sudo --preserve-env=http_proxy,https_proxy,HTTP_PROXY,HTTPS_PROXY,no_proxy,NO_PROXY apt-get update --error-on=any
-          sudo --preserve-env=http_proxy,https_proxy,HTTP_PROXY,HTTPS_PROXY,no_proxy,NO_PROXY apt-get install -y unzip
-          curl -fL "https://downloads.rclone.org/v${GDI_CI_RCLONE_VERSION}/rclone-v${GDI_CI_RCLONE_VERSION}-linux-amd64.zip" -o /tmp/rclone.zip
-          unzip -q /tmp/rclone.zip -d /tmp/gdi-rclone
-          sudo install -m 755 "/tmp/gdi-rclone/rclone-v${GDI_CI_RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone
-          rclone version
-          curl -fL https://github.com/nektos/act/releases/download/v0.2.89/act_Linux_x86_64.tar.gz -o /tmp/act.tar.gz
-          mkdir -p /tmp/gdi-act
-          tar -xzf /tmp/act.tar.gz -C /tmp/gdi-act act
           docker info >/dev/null
           if ! docker image inspect "$GDI_CI_RUNNER_IMAGE" >/dev/null 2>&1; then
             # Registry traffic must use this job's automatic network route,
             # rather than the Docker daemon's independent proxy settings.
+            # A prepared worker already has the image and never enters here.
+            sudo --preserve-env=http_proxy,https_proxy,HTTP_PROXY,HTTPS_PROXY,no_proxy,NO_PROXY apt-get update --error-on=any
             sudo --preserve-env=http_proxy,https_proxy,HTTP_PROXY,HTTPS_PROXY,no_proxy,NO_PROXY apt-get install -y skopeo
             skopeo copy "docker://$GDI_CI_RUNNER_IMAGE" "docker-daemon:$GDI_CI_RUNNER_IMAGE"
           fi
       - name: Docker workflows and crash cleanup
         env:
-          GDI_TEST_ACT: /tmp/gdi-act/act
           GDI_TEST_DOCKER: ${{ env.GDI_CI_RUNNER_IMAGE }}
           PYTHONDONTWRITEBYTECODE: '1'
         run: python -m unittest tests.test_v2_cli.DockerV2CliTests -v
