@@ -85,6 +85,21 @@ class MemoryTransport:
         self.deletions.append(path)
 
 
+    def enable_work(self, source):
+        self.data['repository.json'] = Path(source).read_bytes()
+
+    def delete_work_manifest(self, path):
+        return self.delete_bundle(path)
+
+    def remove_work_directory(self, path):
+        if self.fail in ('rmdir', path):
+            raise GdiError('network unavailable during rmdir')
+        if any(name.startswith(path + '/') for name in set(self.data) | self.directories):
+            raise GdiError('directory is not empty')
+        self.directories.discard(path)
+        self.deletions.append(path + '/')
+
+
 class ExchangeTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="gdi-test-")

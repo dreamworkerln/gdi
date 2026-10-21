@@ -349,3 +349,17 @@ CI logs/results этим GC не удаляются. Подробнее: [docs/g
 готовит bundle/manifest и CI request/ready/inbox, агент передаёт их коннектором
 и возвращает скачанные bytes для проверки. Команды, снимки, порядок загрузок
 и восстановление проектов: [docs/agent.md](docs/agent.md).
+
+## Получить законченную работу агента
+
+Новый work workflow (validation и ограничения: [docs/work.md](docs/work.md)):
+
+```bash
+gdi import
+gdi import --apply /путь/возвращённого/плана.json
+gdi push
+```
+
+Команды выполняются в исходной target-ветке. При нескольких готовых работах
+выберите одну либо задайте `--work WORK_ID`; чужая target не переопределяется
+текущим checkout. Незавершённые checkpoints не импортируются.

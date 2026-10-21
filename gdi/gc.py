@@ -50,10 +50,18 @@ class Snapshot:
     directories: tuple
     chains: dict
     bundles: dict
+    lifecycle: tuple = ()
 
 
 def snapshot(exchange, transport, repository_id):
     """Read every branch from one listing, rejecting unknown metadata/bundle paths."""
+    from .work_lifecycle import records, archived_chain
+    from .publication import digest, encode
+    retired = records(transport, repository_id, 'retired')
+    imports = records(transport, repository_id, 'imports')
+    lifecycle = tuple((kind, ident, digest(encode(value))) for kind, values in
+                      (('imports', imports), ('retired', retired)) for ident, value in sorted(values.items()))
+    retired_refs = {value['ref']: value for value in retired.values()}
     listing = transport.list("branches", recursive=True)
     metadata = {}
     directories = []
@@ -62,7 +70,8 @@ def snapshot(exchange, transport, repository_id):
         path = item["Path"]
         if item["IsDir"]:
             exchange.git.ref(directory_ref(path)[len("refs/heads/"):])
-            directories.append(path)
+            if directory_ref(path) not in retired_refs:
+                directories.append(path)
             continue
         if not re.fullmatch(r"[^/]+/[0-9a-f]{64}\.json", path):
             raise GdiError("GC found an unexpected metadata file: " + path)
@@ -76,12 +85,25 @@ def snapshot(exchange, transport, repository_id):
         exchange.git.ref(ref[len("refs/heads/"):])
         if path.split("/", 1)[0] != branch_directory(ref):
             raise GdiError("GC metadata directory does not match its branch ref")
+        if ref in retired_refs:
+            publication = path.rsplit('/', 1)[1][:-5]
+            if publication not in retired_refs[ref]['manifests'] or digest(raw) != publication:
+                raise GdiError('retired work has unexpected or changed metadata; keep clients paused')
+            continue
         refs.add(ref)
         metadata[path] = raw
+    archived = {}
+    for value in retired.values():
+        if value['archive']:
+            archived[value['ref']] = archived_chain(value)
+            prefix = branch_directory(value['ref']) + '/'
+            metadata.update({prefix + pub + '.json': raw.encode('utf-8')
+                             for pub, raw in value['manifests'].items()})
     # Reuse the reader's strict version, identity, checksum, base and chain checks.
     chains = {ref: exchange.publications(transport, repository_id, ref,
                                          listing=listing, metadata=metadata)
               for ref in sorted(refs)}
+    chains.update(archived)
     bundles = {}
     for item in transport.list("bundles", recursive=True):
         path = item["Path"]
@@ -98,7 +120,7 @@ def snapshot(exchange, transport, repository_id):
             path = data["bundle_sha256"] + ".bundle"
             if path in bundles and bundles[path] != data["bundle_bytes"]:
                 raise GdiError("GC bundle size does not match metadata: " + path)
-    return Snapshot(metadata, tuple(sorted(directories)), chains, bundles)
+    return Snapshot(metadata, tuple(sorted(directories)), chains, bundles, lifecycle)
 
 
 def plan_collection(state, repository_id, keep_checkpoints):
@@ -263,7 +285,7 @@ def collect(exchange, name, *, apply=False, keep_checkpoints=2, quiescent=False,
     expected_bundles = dict(state.bundles)
     for bundle in plan.candidates:
         del expected_bundles[bundle.path[len("bundles/"):]]
-    expected = Snapshot(state.metadata, state.directories, state.chains, expected_bundles)
+    expected = Snapshot(state.metadata, state.directories, state.chains, expected_bundles, state.lifecycle)
     final_transport, final_id = exchange.connect(name)
     if final_id != repository_id or snapshot(exchange, final_transport, final_id) != expected:
         raise GdiError("remote changed or deletion was not reflected after GC; inspect state before resuming clients")

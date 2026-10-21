@@ -28,6 +28,25 @@ Repository ID закрепляется в локальной конфигура�
 подключение доверяет прочитанному ID. Дальнейшие операции всегда сверяют ID. Имя,
 занятое обычным Git remote, запрещено для защиты tracking namespace.
 
+## Optional work lifecycle v1
+
+По отдельному согласованному переходу remote может иметь `"work_version":1`
+в repository.json вместе с прежними version=3, repository_id и object_format.
+Manifest schema/version не меняются. Старые клиенты отвергают неизвестное поле:
+перед `remote enable-work --quiescent --all-clients-updated` обновить все клиенты,
+worker и runtime. Existing remote/Repository ID не пересоздавать. Активация не
+выполняется автоматически при source update или обычном push.
+
+Новые immutable paths: `work/imports/<WORK_ID>.json`, `work/retired/<WORK_ID>.json`.
+Импорт связывает source final/marker, target/squash, подтверждённые publications,
+время и сквозной порядок. Retirement блокирует повторную публикацию/clone/fetch
+work ref и reuse ID, допускает удаление её manifests и пустой branch directory.
+Если CI зависит от ref, retirement сохраняет проверяемую manifest chain; reader CI
+может восстановить exact source SHA через архив, обычный fetch retired work ref
+отказывается её воскрешать. GC учитывает archive dependencies наряду с live refs.
+Точные команды/структура lifecycle: [work.md](work.md). Другие ветки продолжают
+следовать описанному ниже неизменяемому metadata протоколу.
+
 ## Файлы и metadata
 
 ```text

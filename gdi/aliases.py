@@ -11,7 +11,7 @@ from .git import GdiError
 
 
 BUILTIN_COMMANDS = frozenset(('remote', 'status', 'cache', 'gc', 'push', 'fetch',
-                              'pull', 'log', 'ci', 'agent', 'worker', 'alias'))
+                              'pull', 'log', 'ci', 'agent', 'worker', 'alias', 'import'))
 
 
 def config_path():

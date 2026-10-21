@@ -59,6 +59,53 @@ class RcCandidateTests(unittest.TestCase):
                  'commit', '-qm', subject)
         return git.oid('HEAD')
 
+    def test_native_work_retirement_removes_directory_without_purging_project(self):
+        from gdi import work, work_import, work_lifecycle
+        self.a.call('config', 'user.name', 'Gdi Test')
+        self.a.call('config', 'user.email', 'gdi@example.invalid')
+        self.exchange.push('drive')
+        work_lifecycle.enable(self.exchange, 'drive', quiescent=True, all_clients_updated=True)
+        work.start(self.a, '19', self.identity)
+        work.checkpoint(self.a, 'feat: native work', final=True)
+        self.exchange.push('drive')
+        target = self.root / 'operator'
+        self.a.call('clone', '--no-local', str(self.a.path), str(target))
+        operator = Git.discover(target)
+        operator.call('switch', 'main')
+        operator.call('config', 'user.name', 'Gdi Test')
+        operator.call('config', 'user.email', 'gdi@example.invalid')
+        exchange = Exchange(operator, self.server.transport)
+        exchange.add('drive', self.url, expected_id=self.identity)
+        available = work_import.candidates(exchange, 'drive')
+        plan = work_import.prepare(exchange, 'drive', available['choices'][0], available['target_head'])
+        result = work_import.apply(exchange, plan['plan_path'])
+        work_import.push(exchange, 'drive')
+        with self.assertRaisesRegex(GdiError, 'pending work notifications'):
+            exchange.gc('drive', keep_imported=0, apply=True, quiescent=True, report=lambda line: None)
+        from gdi.inbox import read
+        from gdi.ci import publication
+        inbox = self.server.transport(exchange.remote('drive')['inbox_root'])
+        for item in inbox.list('inbox'):
+            event = read(inbox, item['Path'])
+            if event['ref'] == 'refs/heads/gdi-work/19':
+                # Fixture исполняет обычную worker-последовательность, не GC deletion.
+                pub, _ = publication(exchange, self.server.transport(self.url), self.identity, event['publication_id'])
+                self.assertEqual((pub['head'], pub['ref']), (event['head'], event['ref']))
+                inbox.delete_notification('inbox/' + item['Path'])
+        exchange.gc('drive', keep_imported=0, apply=True, quiescent=True, report=lambda line: None)
+        self.assertFalse((self.remote / 'branches/gdi-work%2F19').exists())
+        self.assertTrue((self.remote / 'work/retired/19.json').is_file())
+        self.assertTrue((self.remote / 'repository.json').is_file())
+        self.assertTrue((self.remote / 'branches/main').is_dir())
+        self.assertEqual(operator.oid('HEAD'), result['squash'])
+        with self.assertRaisesRegex(GdiError, 'retired'):
+            self.exchange.push('drive', 'gdi-work/19')
+
+    def test_cli_transport_work_retirement_removes_directory_without_purging_project(self):
+        self.exchange.transport_factory = Rclone
+        with patch.object(self.server, 'transport', side_effect=Rclone):
+            self.test_native_work_retirement_removes_directory_without_purging_project()
+
     def metadata(self, raw, branch='main'):
         path = 'branches/' + branch_directory('refs/heads/' + branch) + '/' + digest(raw) + '.json'
         target = self.remote / path

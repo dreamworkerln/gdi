@@ -14,7 +14,10 @@ CI через обычный CLI с rclone и проверка на host пол�
 Короткий справочник человеку: **[QUICKSTART.md](QUICKSTART.md)**.
 Общая очередь и подключения `.gdi`: [docs/inbox.md](docs/inbox.md).
 Worker/systemd: [docs/worker.md](docs/worker.md). Архитектура: [ARCHITECTURE.md](ARCHITECTURE.md),
-состояние проверок и дальнейшие задачи: [TODO.md](TODO.md).
+текущие задачи: [TODO_INVENTORY.md](TODO_INVENTORY.md),
+правила ведения: [TODO_MANAGEMENT_POLICY.md](TODO_MANAGEMENT_POLICY.md).
+Work checkpoints и операторский squash import, с текущими ограничениями:
+[docs/work.md](docs/work.md).
 Профилирование времени команд и журнал всех вызовов rclone: [docs/profiling.md](docs/profiling.md).
 
 Агент с Drive-коннектором запускает `python3 -m gdi agent ...` из исходников
