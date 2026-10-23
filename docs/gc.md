@@ -126,9 +126,10 @@ GC на remote с CI. Все manifests сохраняются; worker может
 job SHA из нового полного checkpoint с проверкой ancestry. CI logs, chunks, results,
 artifacts и локальный spool этим GC не очищаются. Их retention — отдельный этап.
 
-## Opt-in work lifecycle
+## Work lifecycle
 
-После явной активации `work_version=1` GC также планирует retirement work-веток
+На remote с `work_version=1` (по умолчанию у новых `--init`; явная активация у
+существующих) GC также планирует retirement work-веток
 с подтверждённым импортом, по умолчанию сохраняя 10 последних. `--keep-imported N`
 меняет N, `--bundle-only` оставляет только описанный выше bundle GC. Apply требует
 той же согласованной паузы. Это отдельный согласованный lifecycle: в нём manifests

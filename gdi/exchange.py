@@ -78,9 +78,10 @@ class Exchange:
             transport.mkdir("")
             if transport.list(""):
                 raise GdiError("--init requires an empty dedicated folder; initialize it once only")
-            repository = {"version": PROTOCOL_VERSION, "repository_id": uuid.uuid4().hex, "object_format": "sha1"}
-            transport.mkdir("bundles")
-            transport.mkdir("branches")
+            repository = {"version": PROTOCOL_VERSION, "repository_id": uuid.uuid4().hex,
+                          "object_format": "sha1", "work_version": 1}
+            for directory in ("bundles", "branches", "work", "work/imports", "work/retired"):
+                transport.mkdir(directory)
             with tempfile.TemporaryDirectory(prefix="gdi-init-") as tmp:
                 path = Path(tmp) / "repository.json"
                 path.write_bytes(encode(repository))

@@ -45,7 +45,9 @@ gdi remote list
 gdi remote add drive gdrive:gdi/my-project --repository-id REPOSITORY_ID
 ```
 
-`--init` нужен только один раз для отдельной пустой папки. Подключение хранится в
+`--init` нужен только один раз для отдельной пустой папки; новый remote сразу
+создаётся с `work_version=1` для учёта импортов и retention work-веток. Подключение
+к существующему remote не меняет его режим. Подключение хранится в
 `.gdi/config.json`; добавьте `.gdi/` в `.gitignore`. По умолчанию общий inbox root —
 родитель URL проекта (`gdrive:gdi`); для вложенных путей есть `--inbox-root`.
 

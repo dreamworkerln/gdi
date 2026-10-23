@@ -14,7 +14,7 @@
 `repository.json`:
 
 ```json
-{"version":3,"repository_id":"0123456789abcdef0123456789abcdef","object_format":"sha1"}
+{"version":3,"repository_id":"0123456789abcdef0123456789abcdef","object_format":"sha1","work_version":1}
 ```
 
 Repository ID закрепляется в локальной конфигурации:
@@ -28,10 +28,13 @@ Repository ID закрепляется в локальной конфигура�
 подключение доверяет прочитанному ID. Дальнейшие операции всегда сверяют ID. Имя,
 занятое обычным Git remote, запрещено для защиты tracking namespace.
 
-## Optional work lifecycle v1
+## Work lifecycle v1
 
-По отдельному согласованному переходу remote может иметь `"work_version":1`
-в repository.json вместе с прежними version=3, repository_id и object_format.
+Новые пустые remote при `remote add --init` получают `"work_version":1` по умолчанию
+и пустые каталоги `work/imports/`, `work/retired/`. Existing v3 remote без флага
+поддерживаются; join, source update и обычный push их автоматически не активируют.
+Для них переход остаётся явным: `remote enable-work --quiescent --all-clients-updated`.
+В repository.json сохраняются version=3, repository_id и object_format.
 Manifest schema/version не меняются. Старые клиенты отвергают неизвестное поле:
 перед `remote enable-work --quiescent --all-clients-updated` обновить все клиенты,
 worker и runtime. Existing remote/Repository ID не пересоздавать. Активация не

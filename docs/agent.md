@@ -493,7 +493,8 @@ work-ветку по следующему разделу. Автоматичес
 ## Отдельная work-ветка и checkpoints разработки
 
 Для новых work-команд используйте обновлённый runtime/исходники GDI. Активацию
-work lifecycle в remote выполняет оператор после обновления всех клиентов/worker;
+work lifecycle в существующем remote выполняет оператор после обновления всех
+клиентов/worker; новые remote через `--init` уже имеют `work_version=1`;
 агент не меняет repository.json самостоятельно. При `work_version:1` новый snapshot
 должен дополнительно содержать полный listing `work/retired` (все страницы) и download
 retirement record выбранного Work-ID, если он есть. На старте новой работы listing

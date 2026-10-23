@@ -20,6 +20,10 @@ class WorkGcTests(ExchangeTestCase):
 
     def setUp(self):
         super().setUp()
+        # Exercise migration of an existing v3 remote as well as enabled operation.
+        repository = decode(self.store.data['repository.json'])
+        repository.pop('work_version')
+        self.store.data['repository.json'] = encode(repository)
         work_lifecycle.enable(self.ea, 'drive', quiescent=True, all_clients_updated=True)
 
     def snapshot(self, name, ref='refs/heads/main', bundles=False):

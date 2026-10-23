@@ -242,7 +242,8 @@ Agent work использует общий work validator и неизменён�
 клиента внутри agent_work нет. Operator import использует Exchange для восстановления
 и публикации, native Git для three-way merge и отдельный временный worktree.
 Подробности и текущие validation/retention ограничения: [docs/work.md](docs/work.md).
-Work lifecycle включается явно после обновления всех клиентов. Retirement удаляет
+Work lifecycle включён по умолчанию при `remote add --init` нового пустого remote;
+на существующих remote включается явно после обновления всех клиентов. Retirement удаляет
 папку work ref, сохраняя необходимые CI chains в metadata archive; общий GC snapshot
 учитывает такие архивы как защищённые histories. Source/scope и software evidence
 фиксируются в TODO_004; runtime публикация выполняется отдельно.

@@ -6,9 +6,13 @@ Work-ID назначает оператор/coordinator; он уникален �
 независим от TODO-ID/CI job ID и никогда не переиспользуется. Агент работает через
 коннектор, оператор — через обычный CLI. [Инструкция агента](agent.md) каноническая.
 
-Базовый work/import работает поверх Git protocol v3. Для подтверждённого порядка
-импортов и retirement включите lifecycle **перед рабочими импортами**, после обновления
-всех клиентов/worker/runtime и согласованной паузы обмена:
+Новый пустой remote, созданный через `gdi remote add NAME URL --init`, сразу получает
+`work_version: 1` и каталоги `work/imports/`, `work/retired/`. Отдельная активация
+для него не нужна. Подключение к существующему remote его metadata не меняет.
+
+Базовый work/import работает поверх Git protocol v3. Для существующего remote без
+флага включите lifecycle **перед рабочими импортами**, после обновления всех
+клиентов/worker/runtime и согласованной паузы обмена:
 
 ```bash
 gdi remote enable-work drive --quiescent --all-clients-updated

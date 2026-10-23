@@ -49,7 +49,7 @@ gdi pull
 | --- | --- |
 | `gdi alias set NAME "COMMAND [OPTIONS]"` | Создаёт или заменяет пользовательский алиас команды |
 | `gdi alias list` / `gdi alias remove NAME` | Показывает алиасы / удаляет выбранный алиас |
-| `gdi remote add NAME URL --init` | Один раз создаёт протокол в пустой папке, сохраняет repository ID локально |
+| `gdi remote add NAME URL --init` | Создаёт протокол с `work_version=1` в пустой папке, сохраняет repository ID локально |
 | `gdi remote add NAME URL [--repository-id ID]` | Подключает существующий remote; без ID доверяет идентичности при первом подключении |
 | `gdi remote default NAME` | Выбирает подключение для коротких команд |
 | `gdi log [NAME] [BRANCH] [-n N] [--json]` | Проверенная история публикаций ветки, новые первыми; по умолчанию 20 записей |

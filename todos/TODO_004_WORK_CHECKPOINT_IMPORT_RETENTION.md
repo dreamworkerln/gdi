@@ -1,10 +1,12 @@
 # TODO_004 — Work checkpoints, squash import и retention
 
-Status: IMPLEMENTED / SOFTWARE VALIDATION PASS / RUNTIME NOT PUBLISHED.
-Implementation: DONE. Validation: PASS (локальный software scope ниже); service/real Drive NOT RUN.
+Status: IMPLEMENTED / RUNTIME 435df3c PUBLISHED / INIT-DEFAULT CHANGE NOT VALIDATED.
+Implementation: DONE. Validation: 401 software checks PASS для 435df3c; новая правка
+инициализации после него — tests NOT RUN. Service/real Drive work-retirement NOT RUN.
 Created: 2026-10-21. Updated: 2026-10-22 (Europe/Moscow).
-Source base: `dev@20c6359de147a0dc66f542d3a467a24685020a39` + текущие незакоммиченные
-source/tests/docs. Work-ID независим от этого TODO-ID и CI job ID.
+Текущая правка default initialization: `dev@435df3c7fd01a1cb6bb3b38b2e8565fe71568ec3`
++ незакоммиченные source/tests/docs. Исходная реализация и сохранённые software evidence:
+`dev@20c6359de147a0dc66f542d3a467a24685020a39` + patch из evidence ниже. Work-ID независим от этого TODO-ID и CI job ID.
 
 ## Источник и задача
 
@@ -121,11 +123,15 @@ tree=FINAL. Message связывает final/target/squash/parent squash. Обы
 
 ### Lifecycle и пылесос
 
-Активация только после обновления всех клиентов/worker/runtime:
+Новый пустой remote через `remote add --init` сразу получает `work_version=1`
+и каталоги `work/imports/`, `work/retired/`; отдельной активации не требует.
+Подключение к существующему remote не меняет его metadata.
+Для существующих remote активация только после обновления всех клиентов/worker/runtime:
 `gdi remote enable-work NAME --quiescent --all-clients-updated`.
 Добавляется `work_version=1` в repository.json, сохраняются version=3, Repository ID
 и существующая история. Manifest format прежний. Старые клиенты отвергают unknown
-field, а не игнорируют retirement. Реальные remote в рамках реализации не мигрировались.
+field, а не игнорируют retirement. После deploy lifecycle активирован отдельно; затем по поручению оператора включён
+на всех шести remote общего root gdrive:gdi с сохранением Repository IDs.
 
 `work/imports/<ID>.json` — immutable подтверждение target/work publications, SHA,
 времени и порядка импорта. `work/retired/<ID>.json` — durable tombstone с зависимостями.
@@ -169,7 +175,12 @@ GC deletion общего inbox было отклонено automatic approval re
 - [x] Заключительный локальный run software команд workflow с act 0.2.89/rclone 1.75.1:
   discovery — 404 tests / 397.055 s, OK (5 skips); отдельно Docker — 2 tests /
   65.687 s, OK без skips. Итого 401 выполненная проверка PASS; 3 service opt-in NOT RUN.
-- [ ] Commit/push/deploy runtime — только по отдельному поручению оператора.
+- [x] По отдельному поручению commit 435df3c, Git/GDI push и deploy runtime + agent.md;
+  файлы проверены обратным скачиванием.
+- [x] Активация lifecycle только на remote проекта GDI с сохранением Repository ID;
+  свободный worker остановлен перед активацией и запущен после.
+- [x] По новому указанию default `work_version=1` при `--init`, документация и regressions.
+- [ ] Проверки новой правки initialization: NOT RUN; новый commit/push/deploy не выполнялся.
 
 ## Checkpoint/evidence и границы
 
@@ -196,8 +207,13 @@ ServiceV2CliTests требуют явно настроенной acceptance user
 Перезапусков после успешного заключительного run не было.
 Это локальное исполнение software checks; сервер/GitHub CI нового code commit не
 запускался. Отдельный backlog паритета local entrypoint — TODO_001 — не закрывается
-этой задачей. Real Drive/service acceptance NOT RUN; runtime/agent.md на Drive не
-обновлялся, commit/push/deploy не выполнялись.
+этой задачей. На момент software run real Drive/service acceptance, commit/push/deploy
+не выполнялись. Последующий deploy 435df3c выполнен и подтверждён:
+`deployment-summary.json` в том же evidence-каталоге. Runtime/agent.md опубликованы.
+Активация GDI remote сохранена в
+`/home/dream/coding/journal_of_experiments/20261021T212200Z_gdi_work_activation/result.json`.
+Это не acceptance work-retirement на реальном Drive. Новая правка default initialization
+ещё не коммитилась и не публиковалась; тесты для неё не запускались.
 
 ## История решений
 
@@ -207,3 +223,15 @@ ServiceV2CliTests требуют явно настроенной acceptance user
 после отдельного вопроса разрешил несовместимый lifecycle. Первоначальная попытка
 ввести его до явного согласия была остановлена auto-review, затем применена после
 согласия. Неавторизованное расширение удаления на общий inbox заменено read-only guard.
+
+2026-10-22: после публикации 435df3c и активации GDI remote оператор поручил создавать
+новые пустые remote сразу с work_version=1. Existing join/remote не активируются
+автоматически. Добавлены regression cases и обновлены connector/legacy fixtures;
+tests NOT RUN, только статическая проверка. Новый тематический TODO не требуется.
+
+2026-10-22: по поручению «включай ща все репы» проверены все шесть repository.json
+общего root gdrive:gdi. Включены serialterminal, lora-sack, codec2-sdk, codex-uploader
+и gdi-ci-smoke-20261010T110004Z; у gdi подтверждён уже включённый режим. Worker был
+остановлен при отсутствии pending jobs, затем запущен обратно. GC/fetch/pull/commits
+не выполнялись. Before/after metadata и результаты:
+`/home/dream/coding/journal_of_experiments/20261021T213229Z_gdi_all_work_activation/result.json`.
