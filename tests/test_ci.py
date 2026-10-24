@@ -381,7 +381,7 @@ class LocalAutonomousTests(unittest.TestCase):
             commit('bad')
             command(['git', 'clone', '-q', str(agent), str(user)])
             url = 'gditest:' + str(remote)
-            gdi('remote', 'add', 'drive', url, '--init')
+            gdi('remote', 'create', 'drive', url)
             identity = decode((remote / 'repository.json').read_bytes())['repository_id']
             gdi('remote', 'add', 'drive', url, '--repository-id', identity, cwd=user)
             script = "import time; from pathlib import Path; print('EARLY-CONSOLE',flush=True); time.sleep(1.5); assert Path('file.txt').read_text() == 'fixed', 'broken source'; print('ALL-PASSED')"

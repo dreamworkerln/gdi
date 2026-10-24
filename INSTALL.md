@@ -1,8 +1,8 @@
-# Установка и запуск gdi 0.3 (pre-alpha)
+# Установка и запуск gdi 0.4 (pre-alpha)
 
 Руководство для Linux Mint / Ubuntu / Debian и Bash. Проверено с Python **3.10.12**,
 Git 2.34.1 и rclone 1.75.1. Другие версии rclone отдельно не проверялись.
-В этой версии работают `remote add/list/remove`, `push`, `fetch`, `pull`, `cache clear`,
+В этой версии работают `init`, `clone`, `remote create/add/list/remove`, `push`, `fetch`, `pull`, `cache clear`,
 ручной `gc`, справка `gdi -h`/`--help` и версия `gdi -v`/`--version` с ASCII-эмблемой.
 Реализован автономный CI: job queue, постоянный worker, live progress/console,
 проверенные результаты и `pull --passed`. Короткий справочник:
@@ -139,7 +139,7 @@ command -v gdi
 gdi --version
 ```
 
-Ожидается путь `$HOME/.local/bin/gdi`, затем `gdi 0.3.0` и ASCII-эмблема.
+Ожидается путь `$HOME/.local/bin/gdi`, затем `gdi 0.4.0` и ASCII-эмблема.
 `gdi -v` и `gdi --version` показывают одинаковые версию и эмблему без подписей;
 в терминале используется золотой ANSI color. Справка и примеры находятся в
 `gdi -h`/`gdi --help`, эти команды тоже эквивалентны.
@@ -312,24 +312,33 @@ ssh -L 53682:127.0.0.1:53682 user@remote-host
 
 ## 5. Первый проект: компьютер A
 
-Перейдите **в Git-репозиторий, который хотите передавать**. Это может быть любой
-поддерживаемый проект, а не обязательно исходники самой gdi.
+Создайте локальный проект. `gdi init` сам подготавливает Git и локальную `.gdi`:
 
 ```bash
-cd /путь/к/моему-проекту
-git status
-git branch --show-current
-gdi remote add drive gdrive:gdi/my-project --init
+gdi init -b main my-project
+cd my-project
+# Добавьте исходники проекта, затем создайте первый commit.
+git add .
+git commit -m "Initial commit"
+gdi remote create drive gdrive:gdi/my-project
 gdi remote list
 gdi push drive
 ```
 
-`--init` используйте только при первом создании dedicated пустой папки. Gdi создаст
-её самостоятельно, запишет protocol metadata и выведет постоянный repository ID.
-Сохраните ID, чтобы сверить подключение второго компьютера. Старые папки с bundles
-не подходят для `--init`; выберите новую папку, например `gdi/my-project`.
+Для уже существующего локального Git-проекта перейдите в его корень и выполните
+`gdi init`, затем `remote create` для нового remote либо `remote add` для
+существующего. Инициализация сохраняет branch/HEAD/index/worktree и подключения;
+`.gdi` исключается из `git add .` через `.git/info/exclude`. Флаг `-b` задаёт ветку
+только при создании нового Git-репозитория; без него используется настройка Git.
 
-`push` передаёт только committed состояние. Если изменения ещё не закоммичены,
+`remote create` используйте только при первом создании dedicated пустой папки.
+Gdi создаст её самостоятельно, запишет protocol metadata и выведет постоянный
+repository ID. Сохраните ID, чтобы сверить подключение второго компьютера.
+Старые папки с bundles не подходят для `remote create`; выберите новую папку,
+например `gdi/my-project`. Прежний `remote add --init` удалён из обычного CLI.
+
+`push` передаёт только committed состояние в уже существующий remote и не создаёт
+удалённый репозиторий автоматически. Если изменения ещё не закоммичены,
 сначала создайте commit обычным Git. Незакоммиченные файлы останутся локальными.
 
 Здесь `drive` — **имя gdi remote**, `gdrive:` — **rclone remote**, `gdi/my-project` —
@@ -347,6 +356,7 @@ advanced `root_folder_id`. Tutorial с одним account проще для пе
 
 ```bash
 cd /путь/к/clone
+gdi init
 gdi remote add drive gdrive:gdi/my-project --repository-id ID_ИЗ_ВЫВОДА_НА_A
 gdi fetch drive
 git log --oneline --graph --decorate --all -20
@@ -358,22 +368,29 @@ gdi pull drive
 После fetch текущая ветка и файлы не меняются. После pull HEAD должен совпасть с
 опубликованным HEAD. Можно сразу выполнить pull без отдельного fetch.
 
-### Clone пока нет: загрузить в пустой Git repo
+### Clone пока нет: получить проект одной командой
 
 На A узнайте имя опубликованной ветки: `git branch --show-current`. Например, это `main`:
 
 ```bash
-mkdir my-project-copy
+gdi clone gdrive:gdi/my-project my-project-copy --branch main \
+  --repository-id ID_ИЗ_ВЫВОДА_НА_A
 cd my-project-copy
-git init -b main
-gdi remote add drive gdrive:gdi/my-project --repository-id ID_ИЗ_ВЫВОДА_НА_A
-gdi pull drive
 git log -1 --oneline
 ```
 
-Для ветки `dev` используйте `git init -b dev`. Gdi не угадывает имя branch.
-`remote add` без `--repository-id` тоже работает, но доверяет ID первого подключения.
-Повторно выполнять `--init` на B не нужно.
+Для ветки `dev` используйте `--branch dev`. Единственная опубликованная ветка
+выбирается автоматически; при нескольких требуется `--branch`. Clone скачивает
+все опубликованные ветки в `refs/remotes/drive/*`, делает checkout выбранной и
+сохраняет подключение `drive`. Пустой remote клонируется без commits.
+
+Если папка назначения не указана, её имя берётся из URL (`my-project`). Папка
+должна отсутствовать либо быть пустой; текущий рабочий каталог оболочки (`.`)
+нельзя использовать как цель. Символьные ссылки и существующие файлы
+не перезаписываются. Загрузка и проверка происходят во временном каталоге рядом
+с целью; при ошибке или прерывании загрузки/проверки готовый checkout не появляется.
+`clone` и `remote add` без `--repository-id` доверяют ID первого подключения;
+последующие операции всегда сверяют закреплённую идентичность.
 
 ### Обычный цикл работы в обе стороны
 
@@ -650,20 +667,19 @@ export RCLONE_CONFIG_GDILOCAL_TYPE=local
 gdi_demo_root=$(mktemp -d /tmp/gdi-demo.XXXXXX)
 mkdir "$gdi_demo_root/a" "$gdi_demo_root/b"
 cd "$gdi_demo_root/a"
-git init -b main
+gdi init -b main
 printf 'hello gdi\n' > hello.txt
 git add hello.txt
 git -c user.name=Demo -c user.email=demo@example.invalid commit -m "First commit"
-gdi remote add drive "gdilocal:$gdi_demo_root/transport" --init
+gdi remote create drive "gdilocal:$gdi_demo_root/transport"
 gdi push drive
 printf 'hello gdi incremental\n' > hello.txt
 git add hello.txt
 git -c user.name=Demo -c user.email=demo@example.invalid commit -m "Incremental update"
 gdi push drive
-cd "$gdi_demo_root/b"
-git init -b main
-gdi remote add drive "gdilocal:$gdi_demo_root/transport"
-gdi pull drive
+cd "$gdi_demo_root"
+gdi clone "gdilocal:$gdi_demo_root/transport" b
+cd b
 cat hello.txt
 git log -1 --oneline
 ```
@@ -691,7 +707,9 @@ cd "$INSTALL_DIR"
 | `invalid_grant` / token expired | `rclone config reconnect gdrive:`; проверьте Audience/Testing и заново разрешите доступ |
 | API disabled / `accessNotConfigured` | Включите Google Drive API именно в проекте OAuth client |
 | Папка не видна | Проверьте account, URL, sharing, root_folder_id и scope |
-| `--init requires an empty dedicated folder` | Подключайте существующий протокол без `--init`; для нового выберите пустую папку |
+| `remote create requires an empty dedicated folder` | Подключайте существующий remote через `remote add`/`clone`; для нового выберите пустую папку |
+| `remote has multiple published branches` | Укажите `gdi clone URL --branch BRANCH`; имя ветки выбирается явно |
+| `clone destination must be absent or an empty directory` | Выберите новую либо пустую папку; существующие файлы сохраняются |
 | `repository ID mismatch` | Адрес ведёт в другой/заменённый remote. Сверьте `gdi remote list` с ожидаемым ID; не меняйте ID вслепую |
 | `no completed publication` | Проверьте имя ветки, дождитесь завершения push на A |
 | checksum/ref/HEAD mismatch | Полученные данные не принимаются. Проверьте полный upload и содержимое remote; не отключайте проверки |
@@ -738,12 +756,12 @@ mv .gdi/config.json .gdi/config.pre-v3.json
 удалили старый remote, и создайте новый Repository ID:
 
 ```bash
-gdi remote add drive gdrive:gdi/my-project-v3 --init
+gdi remote create drive gdrive:gdi/my-project-v3
 gdi push
 gdi status
 ```
 
-На остальных компьютерах подключитесь к тому же URL без `--init`:
+На остальных компьютерах подключитесь к тому же URL через `remote add`:
 
 ```bash
 gdi remote add drive gdrive:gdi/my-project-v3 --repository-id НОВЫЙ_ID_С_ПЕРВОГО_КОМПЬЮТЕРА

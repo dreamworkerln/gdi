@@ -46,7 +46,9 @@ def report_auto_merge():
 
 
 def print_interruption(args):
-    if args.command == 'pull':
+    if args.command in ('init', 'clone'):
+        message = 'gdi: ' + args.command + ' interrupted'
+    elif args.command == 'pull':
         message = 'gdi: pull interrupted; inspect git status before retrying'
     elif args.command == 'worker' and (args.operation == 'logs' or
                                       args.operation == 'job' and args.job_operation == 'logs'):
@@ -117,9 +119,11 @@ def parser():
     cli = argparse.ArgumentParser(
         prog="gdi", description="Verified git bundle exchange through rclone.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""Quick start (run exchange commands inside a git worktree):
-  gdi remote add drive gdrive:gdi/my-project --init   # empty Drive folder, once
+        epilog="""Quick start:
+  gdi init my-project                                 # local Git repository and .gdi
+  gdi remote create drive gdrive:gdi/my-project       # inside the project; create an empty remote once
   gdi push                                            # publish committed branch HEAD
+  gdi clone gdrive:gdi/my-project                     # download into a new local worktree
   gdi remote add drive gdrive:gdi/my-project          # join from another clone
   gdi fetch                                           # import without changing files
   gdi pull                                            # clean worktree, fast-forward or conflict-free merge
@@ -142,6 +146,17 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
     cli.add_argument("-v", "--version", action=VersionAction, nargs=0, help="show version and the GDI emblem")
     diagnostics_arguments(cli)
     commands = cli.add_subparsers(dest="command", required=True)
+    init = commands.add_parser('init', help='initialize a local Git repository and .gdi; no remote changes')
+    diagnostics_arguments(init)
+    init.add_argument('directory', nargs='?', default='.', help='local directory (default: current directory)')
+    init.add_argument('-b', '--initial-branch', help='initial branch for a new Git repository')
+    clone = commands.add_parser('clone', help='clone an existing GDI remote into a new local worktree')
+    diagnostics_arguments(clone)
+    clone.add_argument('url', help='e.g. gdrive:gdi/my-project')
+    clone.add_argument('directory', nargs='?', help='absent or empty destination other than cwd (default: remote folder name)')
+    clone.add_argument('-b', '--branch', help='branch to check out; required if several branches are published')
+    clone.add_argument('--repository-id', help='require this known identity when cloning')
+    clone.add_argument('--inbox-root', help='shared exchange root (default: parent of repository URL)')
     alias = commands.add_parser('alias', help='manage user command aliases (works outside git)')
     alias_ops = alias.add_subparsers(dest='operation', required=True)
     for operation in ('set', 'list', 'remove'):
@@ -153,13 +168,17 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             sub.add_argument('expansion', help='quoted command and options, e.g. "push --ci"')
     remote = commands.add_parser("remote", help="configure a dedicated rclone folder for this repository")
     operations = remote.add_subparsers(dest="operation", required=True)
-    add = operations.add_parser("add", help="join an existing remote, or initialize an empty folder")
+    add = operations.add_parser("add", help="connect to an existing remote without creating remote files")
     diagnostics_arguments(add)
     add.add_argument("name")
     add.add_argument("url", help="e.g. gdrive:gdi/my-project")
-    add.add_argument("--init", action="store_true", help="initialize a new empty remote folder once")
     add.add_argument("--inbox-root", help="shared exchange root (default: parent of repository URL)")
     add.add_argument("--repository-id", help="require this known identity when joining an existing remote")
+    create = operations.add_parser('create', help='create an empty remote repository and save its local connection')
+    diagnostics_arguments(create)
+    create.add_argument('name')
+    create.add_argument('url', help='absent or empty dedicated folder, e.g. gdrive:gdi/my-project')
+    create.add_argument('--inbox-root', help='shared exchange root (default: parent of repository URL)')
     diagnostics_arguments(operations.add_parser("list", help="list local gdi remotes"))
     remove = operations.add_parser("remove", help="remove local config; retain remote files and fetched refs")
     diagnostics_arguments(remove)
@@ -378,7 +397,7 @@ def main(argv=None):
                              path=getattr(args, 'profile_log', None), progress=getattr(args, 'progress', None)) as diagnostics:
             code = 1
             try:
-                if args.command in ('agent', 'alias') or (args.command == 'worker' and args.operation in
+                if args.command in ('agent', 'alias', 'init') or (args.command == 'worker' and args.operation in
                                               ('start', 'restart', 'status', 'stop', 'logs', 'job')):
                     code = execute(args)
                 else:
@@ -401,6 +420,19 @@ def main(argv=None):
 
 def execute(args, *, transport_factory=None):
     try:
+        if args.command == 'init':
+            from .repository import initialize
+            git = initialize(args.directory, branch=args.initial_branch)
+            print('Initialized GDI repository in ' + str(git.path))
+            return 0
+        if args.command == 'clone':
+            from .repository import clone
+            value = clone(args.url, args.directory, branch=args.branch, expected_id=args.repository_id,
+                          inbox_root=args.inbox_root,
+                          **({'transport_factory': transport_factory} if transport_factory is not None else {}))
+            print(f"Cloned {args.url} into {value['destination']}\nRepository ID: {value['repository_id']}\n"
+                  f"Branch: {value['branch']}\nHEAD: {value['head'] or '(no commits)'}")
+            return 0
         if args.command == 'alias':
             from .aliases import execute as execute_alias
             return execute_alias(args)
@@ -560,7 +592,10 @@ def execute(args, *, transport_factory=None):
                     print(f"Connection: {args.remote} — {settings['url']}\nBranch: {branch}", flush=True)
             if args.command == "remote":
                 if args.operation == "add":
-                    identity = exchange.add(args.name, args.url, initialize=args.init, expected_id=args.repository_id, inbox_root=args.inbox_root)
+                    identity = exchange.add(args.name, args.url, expected_id=args.repository_id, inbox_root=args.inbox_root)
+                    print(f"Remote {args.name}: {args.url}\nRepository ID: {identity}")
+                elif args.operation == 'create':
+                    identity = exchange.create(args.name, args.url, inbox_root=args.inbox_root)
                     print(f"Remote {args.name}: {args.url}\nRepository ID: {identity}")
                 elif args.operation == "remove":
                     exchange.remove(args.name)

@@ -26,10 +26,12 @@ Worker в простое делает только non-recursive listing `inbox`
 ## Подключение проекта
 
 ```bash
-gdi remote add drive gdrive:gdi/my-project --init
+gdi init
+gdi remote create drive gdrive:gdi/my-project
 ```
 
-`--init` нужен только для новой пустой папки проекта. Подключение сохраняется в
+`remote create` создаёт новую пустую папку проекта; `remote add` подключает уже
+существующий remote без удалённых изменений. Подключение сохраняется в
 `.gdi/config.json` (в linked worktrees — в `.gdi` основного worktree):
 
 ```json
@@ -49,7 +51,8 @@ gdi remote add drive gdrive:gdi/my-project --init
 По умолчанию общий корень — родитель URL проекта. При вложенной структуре задайте
 его явно: `gdi remote add drive gdrive:gdi/repos/my-project --inbox-root gdrive:gdi`.
 Адрес проекта обязан находиться внутри этого корня. Локальная `.gdi` не передаётся
-в commits; добавьте `.gdi/` в `.gitignore`. Push отвергает commit с tracked `.gdi`.
+в commits; `gdi init` исключает её через локальную `.git/info/exclude`.
+Для проектов без `gdi init` добавьте `.gdi/` в `.gitignore`. Push отвергает commit с tracked `.gdi`.
 Установка подключения не изменяет `.git/config`, `.gitignore` или другие файлы проекта.
 
 Первое подключение выбирается по умолчанию для `gdi push`, `gdi fetch`, `gdi pull` и `gdi log`.

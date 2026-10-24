@@ -87,8 +87,8 @@ def main():
         ids = {}
         for mode in ('cli', 'rc'):
             ids[mode] = measure('init ' + mode, mode,
-                lambda factory, server, mode=mode: Exchange(git, factory).add(
-                    mode, owned_root + '/' + mode, initialize=True))
+                lambda factory, server, mode=mode: Exchange(git, factory).create(
+                    mode, owned_root + '/' + mode))
         for mode in ('cli', 'rc'):
             pushed = measure('full push ' + mode, mode,
                 lambda factory, server, mode=mode: Exchange(git, factory).push(mode))
@@ -206,7 +206,7 @@ def main():
             name = 'replace-' + stage
             url = owned_root + '/' + name
             exchange = Exchange(git, factory)
-            exchange.add(name, url, initialize=True)
+            exchange.create(name, url)
             if stage == 'connect':
                 exchange.connect(name)
                 replace_repository(url)

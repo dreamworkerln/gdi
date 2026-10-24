@@ -1,6 +1,6 @@
 # Ручная очистка remote bundles
 
-GC в gdi 0.3 удаляет устаревшие упаковки Git-истории из папки remote. Commits,
+GC в gdi 0.4 удаляет устаревшие упаковки Git-истории из папки remote. Commits,
 manifests, настройки remote, рабочие файлы и локальный кеш остаются. Protocol v3
 не меняется. GC никогда не запускается автоматически после push или CI.
 
@@ -108,7 +108,7 @@ GC удаляет лишние упаковки, но последний пол�
 
 ## CI jobs
 
-В gdi 0.3 `--apply` отказывает при legacy queue pointer, неполном request/ready v1/v2,
+В gdi 0.4 `--apply` отказывает при legacy queue pointer, неполном request/ready v1/v2,
 отсутствующем terminal result или отсутствующем объявленном artifact. Даже готовый
 result с оставшимся queue marker должен сначала быть подтверждён worker и удалён
 из очереди обычным recovery. Не удаляйте claim/queue вручную ради обхода защиты.

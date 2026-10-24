@@ -32,21 +32,35 @@ gdi alias list
 
 ## Один раз для проекта
 
-На первой машине, из Git-репозитория:
+Для нового локального проекта: `gdi init -b main my-project`, затем `cd my-project`.
+Для существующего Git-проекта перейдите в его корень. После создания первого commit:
 
 ```bash
-gdi remote add drive gdrive:gdi/my-project --init
+gdi init
+gdi remote create drive gdrive:gdi/my-project
 gdi remote list
+gdi push
 ```
 
-Сохраните выведенный Repository ID. На другой машине, из clone того же проекта:
+Сохраните выведенный Repository ID. На другой машине получите проект одной командой:
+
+```bash
+gdi clone gdrive:gdi/my-project my-project-copy --branch main --repository-id REPOSITORY_ID
+```
+
+При единственной опубликованной ветке `--branch` можно опустить; при нескольких
+выберите её явно. Clone подготавливает Git и `.gdi`, сохраняет подключение `drive`
+и получает все опубликованные ветки. Выберите новую либо пустую папку, отличную
+от текущего каталога оболочки. Для уже существующего локального clone:
 
 ```bash
 gdi remote add drive gdrive:gdi/my-project --repository-id REPOSITORY_ID
 ```
 
-`--init` нужен только один раз для отдельной пустой папки. Подключение хранится в
-`.gdi/config.json`; добавьте `.gdi/` в `.gitignore`. По умолчанию общий inbox root —
+`remote create` нужен только один раз для отдельной пустой папки. Подключение хранится в
+`.gdi/config.json`; `gdi init` исключает `.gdi/` через `.git/info/exclude`.
+`remote add --init` заменён на `remote create`; `push` только отправляет commits
+в существующий remote. По умолчанию общий inbox root —
 родитель URL проекта (`gdrive:gdi`); для вложенных путей есть `--inbox-root`.
 
 ## Один раз для CI host

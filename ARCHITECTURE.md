@@ -1,4 +1,4 @@
-# Архитектура gdi 0.3: автономный агент и host CI
+# Архитектура gdi 0.4: автономный агент и host CI
 
 Реализованы Git protocol v3 и CI protocol v1/v2. Обычный обмен работает без worker;
 автономный CI требует один раз настроенного host. Python 3.10.12, стандартная
@@ -30,6 +30,7 @@ flowchart LR
 
 | Модуль | Ответственность |
 | --- | --- |
+| `repository.py` | Локальный `init`, исключение `.gdi`, проверенный online clone со сборкой во временном каталоге |
 | `exchange.py`, `cache.py`, `git.py` | Git metadata chains, full/delta bundles, quarantine, cache, fast-forward |
 | `transport.py` | rclone: immutable artifacts, ограниченные mutable snapshots, scoped deletion |
 | `ci_protocol.py` | CI request/result schemas, identities, canonical JSON, checksums, durable writes |

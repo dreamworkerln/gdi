@@ -66,7 +66,7 @@ class InboxTestCase(ExchangeTestCase):
             Exchange(git).remove('drive')
         self.ea = Exchange(self.a, self.factory)
         self.eb = Exchange(self.b, self.factory)
-        self.identity = self.ea.add('drive', 'memory:hub/repos/a', initialize=True, inbox_root='memory:hub')
+        self.identity = self.ea.create('drive', 'memory:hub/repos/a', inbox_root='memory:hub')
         self.eb.add('drive', 'memory:hub/repos/a', inbox_root='memory:hub')
         self.fake = self.root / 'fake-act'
         self.counter = self.root / 'executions'
@@ -145,7 +145,7 @@ class InboxTests(InboxTestCase):
         other.call('add', '.github')
         self.commit(other, 'fixed')
         other_exchange = Exchange(other, self.factory)
-        other_exchange.add('drive', 'memory:hub/repos/b', initialize=True, inbox_root='memory:hub')
+        other_exchange.create('drive', 'memory:hub/repos/b', inbox_root='memory:hub')
         a, req_a = self.submit(worker)
         b, req_b = self.submit(worker, other_exchange)
         self.assertEqual(len(self.ci_events()), 2)
@@ -508,7 +508,7 @@ class RealInboxTests(ExchangeTestCase):
             self.ea, self.eb = Exchange(self.a), Exchange(self.b)
             root_url = 'gditest:' + str(self.root / 'drive')
             url = root_url + '/project'
-            self.identity = self.ea.add('drive', url, initialize=True, inbox_root=root_url)
+            self.identity = self.ea.create('drive', url, inbox_root=root_url)
             self.eb.add('drive', url, inbox_root=root_url)
             workflow = self.a.path / '.github/workflows/ci.yml'
             workflow.parent.mkdir(parents=True)

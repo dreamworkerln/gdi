@@ -50,7 +50,8 @@ def select(git, name=None):
     if len(data['remotes']) == 1:
         return next(iter(data['remotes']))
     if not data['remotes']:
-        raise GdiError('no gdi connections: gdi remote add drive <rclone:path> --init')
+        raise GdiError('no gdi connections: gdi remote add drive <rclone:path> for an existing repository, '
+                       'or gdi remote create drive <rclone:path> for a new one')
     raise GdiError('multiple connections: specify a remote or run gdi remote default <name>')
 
 

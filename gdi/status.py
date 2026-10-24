@@ -57,7 +57,8 @@ def display(value):
     worktree = colorize(worktree, 31 if value['dirty'] else 32)
     print('Worktree: ' + worktree)
     if not value['connections']:
-        print('Connections: none; gdi remote add drive <rclone:path> --init')
+        print('Connections: none; gdi remote add drive <rclone:path> (existing) '
+              'or gdi remote create drive <rclone:path> (new)')
     descriptions = {'published': 'Nothing to push.', 'unpublished': 'branch is not published',
                     'ahead': 'local HEAD is ahead; push needed', 'behind': 'local HEAD is behind; pull needed',
                     'diverged': 'histories diverged', 'unknown': 'remote HEAD is missing locally; fetch to compare',

@@ -296,7 +296,7 @@ class LocalGcTests(ExchangeTestCase):
                                     text=True, capture_output=True, timeout=60)
             self.assertEqual(result.returncode, exit_code, result.stdout + result.stderr)
             return result.stdout + result.stderr
-        cli(self.a.path, "remote", "add", "localdrive", "gditest:" + str(remote), "--init")
+        cli(self.a.path, "remote", "create", "localdrive", "gditest:" + str(remote))
         cli(self.a.path, "push", "localdrive")
         for number in range(1, 6):
             self.commit(self.a, f"real update {number}")

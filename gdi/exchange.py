@@ -55,8 +55,15 @@ class Exchange:
         from .local_config import get
         return get(self.git, name)
 
-    @timed('initialize/join remote')
-    def add(self, name, url, *, initialize=False, expected_id=None, inbox_root=None):
+    @timed('join remote')
+    def add(self, name, url, *, expected_id=None, inbox_root=None):
+        return self._configure(name, url, expected_id=expected_id, inbox_root=inbox_root)
+
+    @timed('create remote')
+    def create(self, name, url, *, inbox_root=None):
+        return self._configure(name, url, create=True, inbox_root=inbox_root)
+
+    def _configure(self, name, url, *, create=False, expected_id=None, inbox_root=None):
         from .local_config import load, save, inferred_root, repository_path
         remote_name(name)
         validate_url(url)
@@ -70,13 +77,13 @@ class Exchange:
             raise GdiError(f"git remote {name} already uses this tracking namespace; choose another name")
         if expected_id is not None and not hex_value(expected_id, 32):
             raise GdiError("repository ID must be 32 lowercase hexadecimal characters")
-        if initialize and expected_id is not None:
-            raise GdiError("--repository-id is for joining an existing remote; omit it with --init")
+        if self.git.call('ls-files', '--', '.gdi').stdout:
+            raise GdiError('.gdi is local metadata and must not be tracked by git')
         transport = self.transport_factory(url)
-        if initialize:
+        if create:
             transport.mkdir("")
             if transport.list(""):
-                raise GdiError("--init requires an empty dedicated folder; initialize it once only")
+                raise GdiError("remote create requires an empty dedicated folder; create it once only")
             repository = {"version": PROTOCOL_VERSION, "repository_id": uuid.uuid4().hex, "object_format": "sha1"}
             transport.mkdir("bundles")
             transport.mkdir("branches")
@@ -117,7 +124,20 @@ class Exchange:
         if self.git.config(f"remote.{name}.url") is not None:
             raise GdiError(f"git remote {name} conflicts with the gdi tracking namespace")
         transport = self.transport_factory(settings["url"])
-        self.verify_identity(transport, repository_id)
+        try:
+            self.verify_identity(transport, repository_id)
+        except GdiError as exc:
+            optional = getattr(transport, 'read_optional', None)
+            if callable(optional):
+                try:
+                    missing = optional('repository.json') is None
+                except GdiError:
+                    missing = False
+                if missing:
+                    raise GdiError('remote has no repository.json; push/fetch/pull require an existing GDI '
+                                   'repository. Use gdi remote create NEW_NAME ' + shlex.quote(settings['url']) +
+                                   ' to create one in an empty folder') from exc
+            raise
         return transport, repository_id
 
     def verify_identity(self, transport, repository_id):

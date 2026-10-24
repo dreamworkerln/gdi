@@ -94,7 +94,7 @@ class ExchangeTestCase(unittest.TestCase):
         self.b = self.repo("b", clone=self.a)
         self.ea = Exchange(self.a, lambda url: self.store)
         self.eb = Exchange(self.b, lambda url: self.store)
-        self.identity = self.ea.add("drive", "memory:project", initialize=True)
+        self.identity = self.ea.create("drive", "memory:project")
         self.eb.add("drive", "memory:project", expected_id=self.identity)
 
     def tearDown(self):
@@ -562,7 +562,7 @@ class ExchangeTests(ExchangeTestCase):
     def test_multiple_projects_are_independent(self):
         other = MemoryTransport()
         ec = Exchange(self.b, lambda url: other)
-        other_id = ec.add("other", "memory:other", initialize=True)
+        other_id = ec.create("other", "memory:other")
         self.assertNotEqual(other_id, self.identity)
         self.commit(self.b, "other project")
         ec.push("other")
@@ -576,7 +576,7 @@ class ExchangeTests(ExchangeTestCase):
         with self.assertRaisesRegex(GdiError, "already exists"):
             self.ea.add("drive", "memory:project")
         with self.assertRaisesRegex(GdiError, "empty dedicated folder"):
-            self.ea.add("another", "memory:project", initialize=True)
+            self.ea.create("another", "memory:project")
         with self.assertRaisesRegex(GdiError, "repository ID mismatch"):
             self.ea.add("another", "memory:project", expected_id="0" * 32)
         self.ea.remove("drive")
@@ -986,7 +986,7 @@ class LocalTransportTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 return result.stdout
 
-            cli(source, "remote", "add", "drive", url, "--init")
+            cli(source, "remote", "create", "drive", url)
             self.assertIn("Bundle: full", cli(source, "push", "drive"))
             self.assertIn("Already published", cli(source, "push", "drive"))
             for number in range(2):

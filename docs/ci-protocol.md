@@ -1,4 +1,4 @@
-# CI protocol v1/v2 — gdi 0.3
+# CI protocol v1/v2 — gdi 0.4
 
 Отдельный от [Git protocol v3](protocol.md) namespace `ci/`. Один назначенный
 worker на запрос; несколько workers общего root используют разные worker_id.

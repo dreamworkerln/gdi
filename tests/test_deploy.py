@@ -65,7 +65,7 @@ class DeployTests(unittest.TestCase):
         self.store = self.root / 'drive/project'
         self.url = 'gdideploytest:' + str(self.store)
         self.runtime_url = self.url + '/runtime'
-        self.cli('remote', 'add', 'drive', self.url, '--init')
+        self.cli('remote', 'create', 'drive', self.url)
         self.identity = json.loads((self.store / 'repository.json').read_text())['repository_id']
 
     def snapshot(self):

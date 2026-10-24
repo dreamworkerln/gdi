@@ -1,4 +1,4 @@
-# gdi 0.3.0 (pre-alpha)
+# gdi 0.4.0 (pre-alpha)
 
 Обмен Git-историей через Google Drive и настроенный rclone: инкрементальные bundles,
 проверка metadata и SHA256, fetch в отдельные refs, pull с fast-forward или безопасным auto merge.
@@ -25,28 +25,55 @@ Worker/systemd: [docs/worker.md](docs/worker.md). Архитектура: [ARCHI
 `GDI_TRANSPORT=cli` выбирает прежний транспорт для диагностики; форматы данных сохранены.
 
 ```bash
-# В первом локальном Git-репозитории; отдельная пустая папка на Drive.
-gdi remote add drive gdrive:gdi/my-project --init
+# Новый локальный проект; Git и .gdi создаются одной командой.
+gdi init -b main my-project
+cd my-project
+# Добавьте файлы проекта, затем создайте commit.
+git add .
+git commit -m "Initial commit"
+gdi remote create drive gdrive:gdi/my-project
 gdi push
 
-# В другом clone того же проекта; --init здесь уже не нужен.
-gdi remote add drive gdrive:gdi/my-project
-gdi fetch
-git log --oneline HEAD..refs/remotes/drive/main
-gdi pull
+# На другом компьютере: получить существующий remote в новую папку.
+gdi clone gdrive:gdi/my-project my-project-copy --branch main
 ```
 
 `drive` — локальное имя подключения gdi; `gdrive` — имя remote в rclone.
 `main` в примере замените на имя вашей ветки. Для нового проекта используйте отдельную
 папку, например `gdrive:gdi/another-project`.
 
+Для существующего локального Git-проекта выполните `gdi init` в его корне, затем
+`gdi remote add drive URL` для подключения существующего remote либо
+`gdi remote create drive URL` для создания нового. `remote add` читает metadata
+и закрепляет repository ID, но не создаёт файлов на Drive. `push` отправляет только
+commits в уже созданный remote; он не инициализирует remote и не делает commit.
+Прежняя команда `remote add --init` заменена на `remote create`.
+
+`gdi init` сохраняет существующие Git branch/HEAD/index/worktree и подключения.
+Локальная `.gdi` исключается из `git add .` через `.git/info/exclude`;
+пользовательская `.gitignore` не меняется. Git по-прежнему нужен для всех операций
+с историей, rclone — для обычного обмена с Drive.
+Если правила проекта явно возвращают `.gdi` из исключений, init/clone завершаются
+с подсказкой исправить `.gitignore`, чтобы локальные настройки не попали в commits.
+
+`gdi clone` скачивает все опубликованные ветки в `refs/remotes/drive/*` и делает
+checkout выбранной ветки. Если опубликована одна ветка, `--branch` можно опустить;
+при нескольких требуется явный выбор. Пустой remote клонируется без commits.
+Без имени папки используется последнее имя в URL. Цель должна отсутствовать либо
+быть пустым каталогом вне текущего рабочего каталога оболочки; символьные ссылки
+и непустые каталоги отвергаются. Для clone выберите отдельную папку, а не `.`.
+История и bundles проверяются во временном каталоге до появления готового checkout.
+Для проверки заранее известного ID используйте `clone --repository-id ID`.
+
 ## CLI
 
 | Команда | Поведение |
 | --- | --- |
+| `gdi init [DIR] [-b BRANCH]` | Создаёт локальный Git-репозиторий и `.gdi`; существующий репозиторий сохраняется |
+| `gdi clone URL [DIR] [-b BRANCH] [--repository-id ID]` | Скачивает существующий remote и сохраняет подключение `drive`; при нескольких ветках требуется `--branch` |
 | `gdi alias set NAME "COMMAND [OPTIONS]"` | Создаёт или заменяет пользовательский алиас команды |
 | `gdi alias list` / `gdi alias remove NAME` | Показывает алиасы / удаляет выбранный алиас |
-| `gdi remote add NAME URL --init` | Один раз создаёт протокол в пустой папке, сохраняет repository ID локально |
+| `gdi remote create NAME URL` | Один раз создаёт пустой remote и сохраняет repository ID локально |
 | `gdi remote add NAME URL [--repository-id ID]` | Подключает существующий remote; без ID доверяет идентичности при первом подключении |
 | `gdi remote default NAME` | Выбирает подключение для коротких команд |
 | `gdi log [NAME] [BRANCH] [-n N] [--json]` | Проверенная история публикаций ветки, новые первыми; по умолчанию 20 записей |
@@ -90,7 +117,8 @@ Timeout/Ctrl+C клиента не отменяют job. JSON stdout отдел�
 
 Подключения gdi хранятся в `.gdi/config.json`; `.git/config` не изменяется.
 Общий inbox root по умолчанию — родитель URL проекта; для вложенной структуры
-задайте `remote add --inbox-root gdrive:gdi`. Добавьте `.gdi/` в `.gitignore`.
+задайте `remote add --inbox-root gdrive:gdi`. `gdi init` локально исключает `.gdi/`
+через `.git/info/exclude`; для проектов без инициализации добавьте её в `.gitignore`.
 
 ### Пользовательские алиасы
 
@@ -205,7 +233,7 @@ publication ID и фактические prerequisites из bundle. Пропущ
 повреждённый кеш восстанавливается из remote; ручная очистка — `gdi cache clear NAME`.
 
 **Протокол v3 несовместим с v1/v2.** Для старого remote заведите новую пустую папку и
-один раз выполните `remote add --init`, затем подключите остальные клиенты к новому ID.
+один раз выполните `remote create`, затем подключите остальные клиенты к новому ID.
 Local config v1 тоже требует пересоздания; новый config v2 содержит `default_remote`.
 Старый remote автоматически не переписывается. Порядок перехода есть в INSTALL.md.
 
@@ -239,7 +267,8 @@ GC не запускается автоматически. Он удаляет �
 - При наличии submodules или LFS pointers в публикуемом commit операция отвергается.
   История передаётся как Git objects; внешние данные старых commits не переносятся.
 - Push/fetch/pull работают с одной веткой на команду; GC проверяет все опубликованные
-  ветки. Tags, удаление веток, force push, refspecs и clone не реализованы.
+  ветки; clone получает все опубликованные ветки. Tags, удаление веток, force push
+  и refspecs не реализованы.
   Metadata, orphan bundles и локальный кеш накапливаются; фонового GC нет.
 - Drive Changes API/push notifications и CI/local spool retention пока не реализованы.
   Общие immutable уведомления через rclone inbox уже поддерживаются.

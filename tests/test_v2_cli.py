@@ -90,7 +90,7 @@ jobs:
         self.commit('broken', add=['.github', 'file.txt'])
         self.command(['git', 'clone', '-q', str(self.agent), str(self.user)])
         url = self.remote_root + '/project'
-        self.gdi('remote', 'add', 'drive', url, '--init', '--inbox-root', self.remote_root)
+        self.gdi('remote', 'create', 'drive', url, '--inbox-root', self.remote_root)
         self.gdi('remote', 'add', 'drive', url, '--inbox-root', self.remote_root, cwd=self.user)
         with socket.socket() as port:
             port.bind(('127.0.0.1', 0))

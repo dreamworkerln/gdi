@@ -10,7 +10,7 @@ import shlex
 from .git import GdiError
 
 
-BUILTIN_COMMANDS = frozenset(('remote', 'status', 'cache', 'gc', 'push', 'fetch',
+BUILTIN_COMMANDS = frozenset(('init', 'clone', 'remote', 'status', 'cache', 'gc', 'push', 'fetch',
                               'pull', 'log', 'ci', 'agent', 'worker', 'alias'))
 
 

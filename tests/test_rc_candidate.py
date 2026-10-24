@@ -43,7 +43,7 @@ class RcCandidateTests(unittest.TestCase):
         self.a = self.repo('a')
         self.first = self.commit(self.a, 'first')
         self.exchange = Exchange(self.a, self.server.transport)
-        self.identity = self.exchange.add('drive', self.url, initialize=True)
+        self.identity = self.exchange.create('drive', self.url)
 
     def repo(self, name):
         path = self.root / name

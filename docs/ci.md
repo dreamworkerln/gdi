@@ -1,6 +1,6 @@
 # CI через GDI и rclone
 
-Актуально для gdi 0.3.0: Git protocol v3, CI protocol v1/v2. Пользователь или агент
+Актуально для gdi 0.4.0: Git protocol v3, CI protocol v1/v2. Пользователь или агент
 с настроенным rclone публикует точный commit, постоянный worker пользователя запускает
 выбранные `.github/workflows` через act, клиент получает проверенный результат
 и весь консольный вывод.
@@ -49,7 +49,8 @@ git branch --show-current
 gdi remote add drive gdrive:gdi/my-project --repository-id REPOSITORY_ID
 ```
 
-Не используйте `--init` на существующей папке. Не устанавливайте службу и не меняйте
+Для создания нового remote используйте отдельную команду `remote create` с пустой
+папкой; `remote add` только подключает существующий. Не устанавливайте службу и не меняйте
 credentials пользователя в рамках задачи с исходниками. Host должен уже быть
 настроен его владельцем. Не запускайте два worker с одним worker_id и общим root.
 

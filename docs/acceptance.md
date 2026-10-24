@@ -5,6 +5,24 @@
 к Google Drive и не запускает Docker; интеграции включаются явными environment flags.
 В начале каждого блока задайте `INSTALL_DIR` — абсолютный путь к исходникам gdi.
 
+## Обычные init, clone и remote create
+
+```bash
+INSTALL_DIR="/путь/к/gdi"
+cd "$INSTALL_DIR"
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_repository -v
+```
+
+Проверяются локальный init без rclone, повторная инициализация с сохранением
+Git-состояния и подключений, linked worktrees и исключение `.gdi` из `git add .`.
+Clone проверяется на полной и incremental истории, нескольких ветках, неверном ID,
+повреждённом bundle, прерывании, замене remote и появлении файлов в целевой папке.
+Занятые и символьные цели, а также текущий каталог оболочки отвергаются.
+Отдельный цикл настоящего CLI `init → remote create → push → clone` использует
+local backend rclone через CLI и native RC, без Google credentials. Проверяется,
+что clone/remote add не меняют удалённые файлы, а push не создаёт отсутствующий remote.
+Этот модуль также входит в общий discovery, запускаемый через `bash test.sh`.
+
 ## Отмена и замена worker без сети
 
 ```bash
