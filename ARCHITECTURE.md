@@ -31,6 +31,12 @@ flowchart LR
 | Модуль | Ответственность |
 | --- | --- |
 | `repository.py` | Локальный `init`, исключение `.gdi`, проверенный online clone со сборкой во временном каталоге |
+| `publication.py` | Общее transport-independent ядро подготовки/проверки Git publications |
+| `work.py` | Git work binding, нумерованные части и пустой import marker, без сетевого I/O |
+| `agent_work.py` | Offline snapshot adapter команд `agent work`, без rclone |
+| `work_lifecycle.py` | Opt-in repository capability, confirmed import order, retirement schemas/archives и защита stale refs |
+| `work_gc.py` | Work retention и удаление папок, использует общий GC verifier/dependency plan |
+| `work_import.py` | Операторские pinned squash plans, pending journal, завершение marker delivery через Exchange |
 | `exchange.py`, `cache.py`, `git.py` | Git metadata chains, full/delta bundles, quarantine, cache, fast-forward |
 | `transport.py` | rclone: immutable artifacts, ограниченные mutable snapshots, scoped deletion |
 | `ci_protocol.py` | CI request/result schemas, identities, canonical JSON, checksums, durable writes |
@@ -230,3 +236,15 @@ CI snapshot перепроверяется после восстановлени
 
 Следующие этапы: CI retention/local spool quotas, оптимизация listings/changes API,
 дальнейшая изоляция исполнения. Ограничения и оставшиеся проверки: [TODO.md](TODO.md).
+
+## Work lifecycle — текущая реализация
+
+Agent work использует общий work validator и неизменённый publication core; сетевого
+клиента внутри agent_work нет. Operator import использует Exchange для восстановления
+и публикации, native Git для three-way merge и отдельный временный worktree.
+Подробности и текущие validation/retention ограничения: [docs/work.md](docs/work.md).
+Work lifecycle включён по умолчанию при `remote create` нового пустого remote;
+на существующих remote включается явно после обновления всех клиентов. Retirement удаляет
+папку work ref, сохраняя необходимые CI chains в metadata archive; общий GC snapshot
+учитывает такие архивы как защищённые histories. Source/scope и software evidence
+фиксируются в TODO_004; runtime публикация выполняется отдельно.

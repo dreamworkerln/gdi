@@ -10,11 +10,13 @@ import tempfile
 from .branches import branch_directory
 from .cache import VerifiedObjects
 from .ci_protocol import atomic_write
+from .config import CHECKPOINT_EVERY
 from .git import GdiError, Git
 from .inbox import filename, notification
-from .publication import (CHECKPOINT_EVERY, full_checkpoint, decode, digest, encode, file_digest, hex_value,
+from .publication import (full_checkpoint, decode, digest, encode, file_digest, hex_value,
                           prepare_publication, verify_bundle, validate_manifest)
 from .snapshot import Snapshot, local_file, metadata_file
+from .work_lifecycle import require_active
 
 
 @contextmanager
@@ -221,6 +223,7 @@ def prepare(git, snapshot_path, expected_id, output, branch=None, *, full=False,
             checkpoint_every=CHECKPOINT_EVERY):
     ref = git.ref(branch if branch is not None else git.branch())
     snapshot = Snapshot(snapshot_path, expected_id, ref=ref)
+    require_active(snapshot, expected_id, ref)
     is_full = full_checkpoint(snapshot.chain, full=full, checkpoint_every=checkpoint_every)
     head = git.oid(ref)
     if head is None:
@@ -268,6 +271,7 @@ def check(output, snapshot_path, expected_id):
     with plan_lock(output) as directory:
         value, data = publication_plan(directory, expected_id)
         snapshot = Snapshot(snapshot_path, expected_id, ref=value['ref'])
+        require_active(snapshot, expected_id, value['ref'])
         same_base(snapshot, value)
         if value['state'] == 'accepted':
             raise GdiError('publication was already accepted; use accept with a fresh snapshot')
@@ -283,6 +287,7 @@ def accept(output, snapshot_path, expected_id):
     with plan_lock(output) as directory:
         value, data = publication_plan(directory, expected_id)
         snapshot = Snapshot(snapshot_path, expected_id, ref=value['ref'])
+        require_active(snapshot, expected_id, value['ref'])
         same_route(snapshot, value)
         if [identity for identity, _ in snapshot.chain] != value['base_chain'] + [value['publication_id']]:
             raise GdiError('publication is missing or remote advanced/conflicted; no acceptance')
@@ -301,6 +306,7 @@ def clone(snapshot_path, expected_id, destination):
     """Restore a new worktree using only downloaded checkpoint/prerequisite bundles."""
     from .exchange import Exchange
     snapshot = Snapshot(snapshot_path, expected_id)
+    require_active(snapshot, expected_id, snapshot.ref)
     if not snapshot.chain:
         raise GdiError('snapshot has no completed publication')
     with plan_lock(destination) as directory:

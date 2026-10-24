@@ -162,3 +162,38 @@ class Rclone:
         if not re.fullmatch(r"bundles/[0-9a-f]{64}\.bundle", relative):
             raise GdiError("GC may delete only a single content-addressed bundle")
         self.call("deletefile", self.path(relative))
+
+    def enable_work(self, source):
+        # Разрешённая миграция меняет только work_version, не identity/history.
+        from .publication import decode, validate_repository
+        before = validate_repository(decode(self.read('repository.json')))
+        after = validate_repository(decode(Path(source).read_bytes()))
+        if after != {**before, 'work_version': 1}:
+            raise GdiError('work activation may only add work_version=1 to the same repository')
+        self.call('copyto', str(source), self.path('repository.json'), '--ignore-times')
+
+    def delete_work_manifest(self, relative):
+        validate_work_manifest_path(relative)
+        self.call('deletefile', self.path(relative))
+
+    def remove_work_directory(self, relative):
+        validate_work_directory(relative)
+        self.call('rmdir', self.path(relative))
+
+
+def validate_work_directory(relative):
+    from .branches import directory_ref
+    from .work import PREFIX, work_id
+    if not relative.startswith('branches/'):
+        raise GdiError('only a retired work branch directory may be removed')
+    ref = directory_ref(relative[len('branches/'):])
+    if not ref.startswith(PREFIX):
+        raise GdiError('ordinary branch directories must not be removed')
+    work_id(ref[len(PREFIX):])
+
+
+def validate_work_manifest_path(relative):
+    parent, separator, name = relative.rpartition('/')
+    validate_work_directory(parent)
+    if not separator or not re.fullmatch(r'[0-9a-f]{64}\.json', name):
+        raise GdiError('only an exact retired work manifest may be removed')

@@ -1,0 +1,29 @@
+Date: 2026-10-24
+Source BASE: b5886b0731e3bfadc576e18e7f38f85e4b38f4b1
+Source patch SHA256: 7fd721fd7b6034ab044b63396f0010ba99026e7e7a5c14200ad6079144bc21e9
+Python: 3.12.3 (main, Mar 23 2026, 19:04:32) [GCC 13.3.0]
+Platform: Linux-6.8.0-110-generic-x86_64-with-glibc2.39
+Full command: bash test.sh
+Result: OK; 434 discovered tests, 429 passed, 5 skipped
+Skipped: 2 opt-in Docker tests (GDI_TEST_DOCKER not set); 3 opt-in acceptance user-service tests
+Full log: merge-full-tests.txt
+Targeted command: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_repository tests.test_exchange tests.test_work tests.test_work_gc -v
+Targeted result: 127 passed; log merge-focused-tests.txt
+Fixtures: temporary local repositories and rclone local backend, CLI and native RC
+Live Google Drive/service acceptance: NOT RUN
+
+git:
+git version 2.43.0
+
+rclone:
+rclone v1.75.1
+- os/version: linuxmint 22.3 (64 bit)
+- os/kernel: 6.8.0-110-generic (x86_64)
+- os/type: linux
+- os/arch: amd64
+- go/version: go1.26.8
+- go/linking: static
+- go/tags: none
+
+act:
+act version 0.2.89

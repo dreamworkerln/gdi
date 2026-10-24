@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from gdi.cli import main
 from gdi.cache import VerifiedCache
+from gdi.config import CHECKPOINT_EVERY
 from gdi.exchange import Exchange, GdiMergeConflict, bundle_prerequisites, decode, digest, encode
 from gdi.git import GdiError, Git
 from gdi.transport import Rclone, validate_url
@@ -84,6 +85,21 @@ class MemoryTransport:
         self.deletions.append(path)
 
 
+    def enable_work(self, source):
+        self.data['repository.json'] = Path(source).read_bytes()
+
+    def delete_work_manifest(self, path):
+        return self.delete_bundle(path)
+
+    def remove_work_directory(self, path):
+        if self.fail in ('rmdir', path):
+            raise GdiError('network unavailable during rmdir')
+        if any(name.startswith(path + '/') for name in set(self.data) | self.directories):
+            raise GdiError('directory is not empty')
+        self.directories.discard(path)
+        self.deletions.append(path + '/')
+
+
 class ExchangeTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="gdi-test-")
@@ -142,6 +158,31 @@ class ExchangeTestCase(unittest.TestCase):
 
 
 class ExchangeTests(ExchangeTestCase):
+    def test_new_remote_has_usable_work_retention_without_activation(self):
+        repository = decode(self.store.data['repository.json'])
+        self.assertEqual(repository['work_version'], 1)
+        self.assertEqual(repository['repository_id'], self.identity)
+        self.assertTrue({'work', 'work/imports', 'work/retired'} <= self.store.directories)
+        self.ea.push('drive')
+        plan = self.eb.gc('drive', keep_imported=0, report=lambda line: None)
+        self.assertEqual(plan['retire'], [])
+        self.assertEqual(plan['keep_imported'], 0)
+        self.eb.pull('drive')
+        self.assertEqual(self.b.oid('HEAD'), self.first)
+
+    def test_join_existing_remote_does_not_activate_lifecycle(self):
+        self.ea.push('drive')
+        repository = decode(self.store.data['repository.json'])
+        repository.pop('work_version')
+        self.store.data['repository.json'] = encode(repository)
+        before = copy.deepcopy(self.store.data)
+        client = self.repo('existing-remote-client')
+        exchange = Exchange(client, lambda url: self.store)
+        self.assertEqual(exchange.add('drive', 'memory:project', expected_id=self.identity), self.identity)
+        exchange.pull('drive')
+        self.assertEqual(client.oid('HEAD'), self.first)
+        self.assertEqual(self.store.data, before)
+
     def test_roundtrip_and_publication_order(self):
         second = self.commit(self.a, "second")
         head, _, created = self.ea.push("drive")
@@ -639,7 +680,7 @@ class ExchangeTests(ExchangeTestCase):
         with self.assertRaisesRegex(GdiError, "unfinished git operation"):
             self.eb.pull("drive")
 
-    def series(self, count, *, checkpoint_every=20):
+    def series(self, count, *, checkpoint_every=CHECKPOINT_EVERY):
         self.ea.push("drive")
         for number in range(count):
             self.commit(self.a, f"update {number}")

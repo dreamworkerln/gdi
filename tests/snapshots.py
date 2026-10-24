@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from gdi.exchange import encode
+from gdi.exchange import decode, encode
 from gdi.branches import branch_directory
 
 
@@ -12,6 +12,9 @@ def export_snapshot(root, transport, *, repository_path='project', ref='refs/hea
     root.mkdir(parents=True, exist_ok=True)
     include = set(include or ('', 'branches', 'branches/' + branch_directory(ref)))
     include.add('')
+    # Enabled remotes require complete retirement listings in connector snapshots.
+    if decode(transport.read('repository.json')).get('work_version') == 1:
+        include.update(('work', 'work/imports', 'work/retired'))
     # Resolve directory and file IDs by path, independent of page ordering.
     value = {'snapshot_version': 1, 'repository_path': repository_path,
              'repository_folder_id': 'id-root', 'ref': ref, 'listings': [], 'files': []}

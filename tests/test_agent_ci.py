@@ -3,7 +3,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from gdi import agent_ci
+from gdi import agent_ci, agent_work, work_import, work_lifecycle
 from gdi.exchange import decode, encode
 from gdi.git import GdiError
 from gdi.inbox import filename
@@ -12,9 +12,10 @@ from tests.test_inbox import InboxTestCase
 
 
 class AgentCiTests(InboxTestCase):
-    def snapshot(self, name='snapshot', job=None, result=False):
+    def snapshot(self, name='snapshot', job=None, result=False, ref='refs/heads/main'):
         transport = self.factory('memory:hub/repos/a')
-        include = ['', 'branches', 'branches/main']
+        from gdi.branches import branch_directory
+        include = ['', 'branches', 'branches/' + branch_directory(ref), 'work', 'work/imports', 'work/retired']
         if job:
             include.extend(['ci', 'ci/jobs', 'ci/jobs/' + job])
             if result:
@@ -24,7 +25,7 @@ class AgentCiTests(InboxTestCase):
                 if result:
                     include.extend(['ci/jobs/' + job + '/cancelled/artifacts',
                                     'ci/jobs/' + job + '/cancelled/log-chunks'])
-        return export_snapshot(self.root / name, transport, repository_path='repos/a', include=include)
+        return export_snapshot(self.root / name, transport, repository_path='repos/a', ref=ref, include=include)
 
     def capabilities(self):
         target = self.root / 'capabilities.json'
@@ -95,6 +96,87 @@ class AgentCiTests(InboxTestCase):
             self.assertTrue((Path(result['local_artifacts']) / 'build.log').exists())
             worker.tick()
             self.assertEqual(self.counter.read_text(), 'x')
+
+    def run_intermediate_checkpoint_ci(self):
+        worker = self.worker()
+        self.ea.push('drive')
+        base = self.a.oid('HEAD')
+        agent_work.start(self.a, self.snapshot('assigned'), self.identity, '19')
+        first = agent_work.checkpoint(self.a, self.identity, 'wip: check intermediate result')
+        self.assertEqual(first['state'], 'active')
+        _, publication, _ = self.ea.push('drive')
+        ref = first['ref']
+        plan = self.root / 'work-ci-plan'
+        with patch('gdi.transport.Rclone.call', side_effect=AssertionError('no rclone')), \
+                patch('gdi.rc_transport.RcServer.__enter__', side_effect=AssertionError('no RC')):
+            value = agent_ci.prepare(self.a, self.snapshot('work-published', ref=ref), self.identity,
+                                     plan, publication, 'user-host', 'full', self.capabilities())
+            self.assertEqual((value['ref'], value['head']), (ref, first['head']))
+            self.transfer(value, 'request', 'ready')
+            agent_ci.check(self.a, plan, self.snapshot('work-ready', value['job_id'], ref=ref),
+                           self.identity, capabilities_path=self.capabilities())
+            self.transfer(value, 'inbox')
+            agent_ci.accept(self.a, plan, self.snapshot('work-accepted', value['job_id'], ref=ref),
+                            self.identity, capabilities_path=self.capabilities(), inbox_proof=self.proof(value))
+            second = agent_work.checkpoint(self.a, self.identity, 'wip: next checkpoint')
+            self.ea.push('drive')
+            self.assertNotEqual(second['head'], first['head'])
+            worker.tick()
+            result = agent_ci.result(self.a, plan,
+                                     self.snapshot('work-result', value['job_id'], True, ref=ref), self.identity)
+            self.assertEqual((result['state'], result['verified'], result['head']), ('PASS', True, first['head']))
+            self.assertEqual(self.a.oid('refs/heads/main'), base)
+            self.assertEqual(self.a.branch(), 'gdi-work/19')
+        return worker, first, value, ref
+
+    def test_intermediate_work_checkpoint_runs_ci_at_its_exact_published_sha(self):
+        self.run_intermediate_checkpoint_ci()
+
+    def test_ci_result_and_retry_survive_retired_work_folder_with_cold_restore(self):
+        work_lifecycle.enable(self.ea, 'drive', quiescent=True, all_clients_updated=True)
+        worker, first, value, ref = self.run_intermediate_checkpoint_ci()
+        agent_work.checkpoint(self.a, self.identity, 'feat: final result', final=True)
+        self.ea.push('drive')
+        self.eb.pull('drive')
+        choices = work_import.candidates(self.eb, 'drive')
+        plan = work_import.prepare(self.eb, 'drive', choices['choices'][0], choices['target_head'])
+        work_import.apply(self.eb, plan['plan_path'])
+        work_import.push(self.eb, 'drive')
+        worker.tick()  # Обычный worker подтверждает publication notifications до паузы GC.
+        self.eb.gc('drive', keep_imported=0, apply=True, quiescent=True, report=lambda line: None)
+        from gdi.branches import branch_directory
+        from gdi.ci import publication
+        from gdi.exchange import Exchange
+        from gdi.publication import decode
+        directory = 'repos/a/branches/' + branch_directory(ref)
+        self.assertNotIn(directory, self.store.directories)
+        retired = decode(self.store.data['repos/a/work/retired/19.json'])
+        self.assertTrue(retired['archive'])
+        remote = self.factory('memory:hub/repos/a')
+        pub, chain = publication(self.eb, remote, self.identity, value['publication_id'])
+        cold = self.repo('cold-ci-source')
+        cache = Exchange(cold, self.factory).restore(remote, self.identity, chain)
+        cold.import_objects(cache.path, first['head'])
+        self.assertEqual(pub['head'], first['head'])
+        self.assertTrue(cold.has_commit(first['head']))
+        result_snapshot = self.snapshot('retired-result', value['job_id'], True, ref=ref)
+        result = agent_ci.result(self.a, self.root / 'work-ci-plan', result_snapshot, self.identity)
+        self.assertEqual((result['state'], result['verified']), ('PASS', True))
+        retry_plan = self.root / 'retired-retry-plan'
+        retry = agent_ci.prepare(self.a, result_snapshot, self.identity, retry_plan,
+                                 value['publication_id'], 'user-host', 'full', self.capabilities(),
+                                 retry_of=value['job_id'])
+        self.transfer(retry, 'request', 'ready')
+        agent_ci.check(self.a, retry_plan, self.snapshot('retry-ready', retry['job_id'], ref=ref),
+                       self.identity, capabilities_path=self.capabilities())
+        self.transfer(retry, 'inbox')
+        agent_ci.accept(self.a, retry_plan, self.snapshot('retry-accepted', retry['job_id'], ref=ref),
+                        self.identity, capabilities_path=self.capabilities(), inbox_proof=self.proof(retry))
+        worker.tick()
+        result = agent_ci.result(self.a, retry_plan,
+                                 self.snapshot('retry-result', retry['job_id'], True, ref=ref), self.identity)
+        self.assertEqual((result['state'], result['verified'], result['head']), ('PASS', True, first['head']))
+        self.assertEqual(self.counter.read_text(), 'xx')
 
     def test_stale_capabilities_and_exact_request_ready_bytes(self):
         worker = self.worker()

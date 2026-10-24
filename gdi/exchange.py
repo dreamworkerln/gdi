@@ -10,10 +10,11 @@ import uuid
 from .git import GdiError, Git
 from .branches import branch_directory
 from .cache import VerifiedCache
+from .config import CHECKPOINT_EVERY
 from .transport import Rclone, validate_url
 from .diagnostics import note, phase, timed
 # Keep existing import locations available while sharing the implementation.
-from .publication import (PROTOCOL_VERSION, CHECKPOINT_EVERY, full_checkpoint, bundle_prerequisites, decode, digest,
+from .publication import (PROTOCOL_VERSION, full_checkpoint, bundle_prerequisites, decode, digest,
                           encode, file_digest, hex_value, prepare_publication,
                           validate_repository, verify_bundle, validate_publications, bundle_sequence)
 
@@ -84,9 +85,10 @@ class Exchange:
             transport.mkdir("")
             if transport.list(""):
                 raise GdiError("remote create requires an empty dedicated folder; create it once only")
-            repository = {"version": PROTOCOL_VERSION, "repository_id": uuid.uuid4().hex, "object_format": "sha1"}
-            transport.mkdir("bundles")
-            transport.mkdir("branches")
+            repository = {"version": PROTOCOL_VERSION, "repository_id": uuid.uuid4().hex,
+                          "object_format": "sha1", "work_version": 1}
+            for directory in ("bundles", "branches", "work", "work/imports", "work/retired"):
+                transport.mkdir(directory)
             with tempfile.TemporaryDirectory(prefix="gdi-init-") as tmp:
                 path = Path(tmp) / "repository.json"
                 path.write_bytes(encode(repository))
@@ -144,6 +146,7 @@ class Exchange:
         repository = validate_repository(decode(transport.read('repository.json')))
         if repository['repository_id'] != repository_id:
             raise GdiError('repository ID mismatch; remote was replaced or configuration points to another project')
+        transport.repository = repository
 
     @timed('publish inbox notification')
     def notify_publication(self, name, publication_id):
@@ -168,6 +171,8 @@ class Exchange:
 
     @timed('read/verify publication chain')
     def publications(self, transport, repository_id, ref, *, listing=None, metadata=None):
+        from .work_lifecycle import require_active
+        require_active(transport, repository_id, ref)
         prefix = branch_directory(ref) + "/"
         if listing is None:
             selected_listing = getattr(transport, 'publication_listing', None)
@@ -210,7 +215,21 @@ class Exchange:
         return {'remote': name, 'url': self.remote(name)['url'], 'repository_id': repository_id,
                 'branch': branch, 'total': len(chain), 'publications': records}
 
-    def gc(self, name, *, apply=False, keep_checkpoints=2, quiescent=False, report=print):
+    def gc(self, name, *, apply=False, keep_checkpoints=2, keep_imported=None,
+           bundle_only=False, quiescent=False, report=print):
+        if type(keep_checkpoints) is not int or keep_checkpoints < 1:
+            raise GdiError('GC keep-checkpoints must be a positive integer')
+        if apply and not quiescent:
+            raise GdiError('GC --apply requires --quiescent: pause ALL clients and workers first')
+        if bundle_only and keep_imported is not None:
+            raise GdiError('choose --bundle-only or --keep-imported')
+        from .work_lifecycle import enabled
+        transport, repository_id = self.connect(name)
+        if not bundle_only and (keep_imported is not None or enabled(transport, repository_id)):
+            from .work_gc import collect, DEFAULT_KEEP_IMPORTED
+            return collect(self, name, apply=apply, keep_checkpoints=keep_checkpoints,
+                           keep_imported=DEFAULT_KEEP_IMPORTED if keep_imported is None else keep_imported,
+                           quiescent=quiescent, report=report)
         from .gc import collect
         return collect(self, name, apply=apply, keep_checkpoints=keep_checkpoints,
                        quiescent=quiescent, report=report)

@@ -56,6 +56,16 @@ class PrefixTransport:
         return self.store.delete_bundle(self.path(path))
 
 
+    def enable_work(self, source):
+        self.store.data[self.path('repository.json')] = Path(source).read_bytes()
+
+    def delete_work_manifest(self, path):
+        return self.store.delete_work_manifest(self.path(path))
+
+    def remove_work_directory(self, path):
+        return self.store.remove_work_directory(self.path(path))
+
+
 class InboxTestCase(ExchangeTestCase):
     def setUp(self):
         super().setUp()

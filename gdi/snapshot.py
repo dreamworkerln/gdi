@@ -147,6 +147,9 @@ class Snapshot:
         self.repository_id = self.repository['repository_id']
         if self.repository_id != expected_id:
             raise GdiError('repository ID mismatch; snapshot is for a replaced or different repository')
+        from . import work, work_lifecycle
+        self.retired = (work_lifecycle.retirement(self, expected_id, self.ref[len(work.PREFIX):])
+                        if self.ref.startswith(work.PREFIX) else None)
         directory = branch_directory(self.ref)
         parent = self.list('branches')
         selected = [item for item in parent if item['Path'] == directory]
@@ -156,7 +159,8 @@ class Snapshot:
                     for item in self.list('branches/' + directory)] if selected else [])
         manifests = {item['Path']: self.read('branches/' + item['Path']) for item in listing
                      if not item['IsDir'] and item['Path'].endswith('.json')}
-        self.chain = validate_publications(expected_id, self.ref, listing, manifests)
+        self.chain = (work_lifecycle.archived_chain(self.retired) if self.retired else
+                      validate_publications(expected_id, self.ref, listing, manifests))
         self.fingerprint = digest(self.read('repository.json') + b''.join(
             identity.encode('ascii') for identity, _ in self.chain))
 

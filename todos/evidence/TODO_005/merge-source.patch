@@ -1,0 +1,720 @@
+diff --git a/gdi/__init__.py b/gdi/__init__.py
+index c125d75..a33ec06 100644
+--- a/gdi/__init__.py
++++ b/gdi/__init__.py
+@@ -3 +3 @@
+-__version__ = "0.3.0"
++__version__ = "0.4.0"
+diff --git a/gdi/aliases.py b/gdi/aliases.py
+index 7aed082..eb565e8 100644
+--- a/gdi/aliases.py
++++ b/gdi/aliases.py
+@@ -13 +13 @@ from .git import GdiError
+-BUILTIN_COMMANDS = frozenset(('remote', 'status', 'cache', 'gc', 'push', 'fetch',
++BUILTIN_COMMANDS = frozenset(('init', 'clone', 'remote', 'status', 'cache', 'gc', 'push', 'fetch',
+diff --git a/gdi/cli.py b/gdi/cli.py
+index 6c777ce..f64c6c4 100644
+--- a/gdi/cli.py
++++ b/gdi/cli.py
+@@ -50 +50,3 @@ def print_interruption(args):
+-    if args.command == 'pull':
++    if args.command in ('init', 'clone'):
++        message = 'gdi: ' + args.command + ' interrupted'
++    elif args.command == 'pull':
+@@ -121,2 +123,3 @@ def parser():
+-        epilog="""Quick start (run exchange commands inside a git worktree):
+-  gdi remote add drive gdrive:gdi/my-project --init   # empty Drive folder, once
++        epilog="""Quick start:
++  gdi init my-project                                 # local Git repository and .gdi
++  gdi remote create drive gdrive:gdi/my-project       # inside the project; create an empty remote once
+@@ -123,0 +127 @@ def parser():
++  gdi clone gdrive:gdi/my-project                     # download into a new local worktree
+@@ -145,0 +150,11 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
++    init = commands.add_parser('init', help='initialize a local Git repository and .gdi; no remote changes')
++    diagnostics_arguments(init)
++    init.add_argument('directory', nargs='?', default='.', help='local directory (default: current directory)')
++    init.add_argument('-b', '--initial-branch', help='initial branch for a new Git repository')
++    clone = commands.add_parser('clone', help='clone an existing GDI remote into a new local worktree')
++    diagnostics_arguments(clone)
++    clone.add_argument('url', help='e.g. gdrive:gdi/my-project')
++    clone.add_argument('directory', nargs='?', help='absent or empty destination other than cwd (default: remote folder name)')
++    clone.add_argument('-b', '--branch', help='branch to check out; required if several branches are published')
++    clone.add_argument('--repository-id', help='require this known identity when cloning')
++    clone.add_argument('--inbox-root', help='shared exchange root (default: parent of repository URL)')
+@@ -157 +172 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
+-    add = operations.add_parser("add", help="join an existing remote, or initialize an empty folder")
++    add = operations.add_parser("add", help="connect to an existing remote without creating remote files")
+@@ -161 +175,0 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
+-    add.add_argument("--init", action="store_true", help="initialize a new empty remote folder once")
+@@ -163,0 +178,5 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
++    create = operations.add_parser('create', help='create an empty remote repository and save its local connection')
++    diagnostics_arguments(create)
++    create.add_argument('name')
++    create.add_argument('url', help='absent or empty dedicated folder, e.g. gdrive:gdi/my-project')
++    create.add_argument('--inbox-root', help='shared exchange root (default: parent of repository URL)')
+@@ -412 +431 @@ def main(argv=None):
+-                if args.command in ('agent', 'alias') or (args.command == 'worker' and args.operation in
++                if args.command in ('agent', 'alias', 'init') or (args.command == 'worker' and args.operation in
+@@ -434,0 +454,13 @@ def execute(args, *, transport_factory=None):
++        if args.command == 'init':
++            from .repository import initialize
++            git = initialize(args.directory, branch=args.initial_branch)
++            print('Initialized GDI repository in ' + str(git.path))
++            return 0
++        if args.command == 'clone':
++            from .repository import clone
++            value = clone(args.url, args.directory, branch=args.branch, expected_id=args.repository_id,
++                          inbox_root=args.inbox_root,
++                          **({'transport_factory': transport_factory} if transport_factory is not None else {}))
++            print(f"Cloned {args.url} into {value['destination']}\nRepository ID: {value['repository_id']}\n"
++                  f"Branch: {value['branch']}\nHEAD: {value['head'] or '(no commits)'}")
++            return 0
+@@ -644 +676,4 @@ def execute(args, *, transport_factory=None):
+-                    identity = exchange.add(args.name, args.url, initialize=args.init, expected_id=args.repository_id, inbox_root=args.inbox_root)
++                    identity = exchange.add(args.name, args.url, expected_id=args.repository_id, inbox_root=args.inbox_root)
++                    print(f"Remote {args.name}: {args.url}\nRepository ID: {identity}")
++                elif args.operation == 'create':
++                    identity = exchange.create(args.name, args.url, inbox_root=args.inbox_root)
+diff --git a/gdi/exchange.py b/gdi/exchange.py
+index 4dc3c45..a5a0474 100644
+--- a/gdi/exchange.py
++++ b/gdi/exchange.py
+@@ -59,2 +59,9 @@ class Exchange:
+-    @timed('initialize/join remote')
+-    def add(self, name, url, *, initialize=False, expected_id=None, inbox_root=None):
++    @timed('join remote')
++    def add(self, name, url, *, expected_id=None, inbox_root=None):
++        return self._configure(name, url, expected_id=expected_id, inbox_root=inbox_root)
++
++    @timed('create remote')
++    def create(self, name, url, *, inbox_root=None):
++        return self._configure(name, url, create=True, inbox_root=inbox_root)
++
++    def _configure(self, name, url, *, create=False, expected_id=None, inbox_root=None):
+@@ -74,2 +81,2 @@ class Exchange:
+-        if initialize and expected_id is not None:
+-            raise GdiError("--repository-id is for joining an existing remote; omit it with --init")
++        if self.git.call('ls-files', '--', '.gdi').stdout:
++            raise GdiError('.gdi is local metadata and must not be tracked by git')
+@@ -77 +84 @@ class Exchange:
+-        if initialize:
++        if create:
+@@ -80 +87 @@ class Exchange:
+-                raise GdiError("--init requires an empty dedicated folder; initialize it once only")
++                raise GdiError("remote create requires an empty dedicated folder; create it once only")
+@@ -122 +129,14 @@ class Exchange:
+-        self.verify_identity(transport, repository_id)
++        try:
++            self.verify_identity(transport, repository_id)
++        except GdiError as exc:
++            optional = getattr(transport, 'read_optional', None)
++            if callable(optional):
++                try:
++                    missing = optional('repository.json') is None
++                except GdiError:
++                    missing = False
++                if missing:
++                    raise GdiError('remote has no repository.json; push/fetch/pull require an existing GDI '
++                                   'repository. Use gdi remote create NEW_NAME ' + shlex.quote(settings['url']) +
++                                   ' to create one in an empty folder') from exc
++            raise
+diff --git a/gdi/local_config.py b/gdi/local_config.py
+index afd7034..e942d02 100644
+--- a/gdi/local_config.py
++++ b/gdi/local_config.py
+@@ -53 +53,2 @@ def select(git, name=None):
+-        raise GdiError('no gdi connections: gdi remote add drive <rclone:path> --init')
++        raise GdiError('no gdi connections: gdi remote add drive <rclone:path> for an existing repository, '
++                       'or gdi remote create drive <rclone:path> for a new one')
+diff --git a/gdi/repository.py b/gdi/repository.py
+new file mode 100644
+index 0000000..43bfc3a
+--- /dev/null
++++ b/gdi/repository.py
+@@ -0,0 +1,104 @@
++"""Local initialization and verified online clones for the ordinary CLI."""
++
++import os
++from pathlib import Path
++import tempfile
++
++from .branches import directory_ref
++from .exchange import Exchange
++from .git import GdiError, Git
++from .local_config import load, save
++from .transport import Rclone, validate_url
++
++
++def initialize(path='.', *, branch=None):
++    target = Path(path).expanduser().absolute()
++    if target.is_symlink():
++        raise GdiError('init destination must not be a symlink')
++    target.mkdir(parents=True, exist_ok=True)
++    git = Git(target)
++    if branch is not None:
++        git.ref(branch)
++    marker = target / '.git'
++    if marker.is_symlink():
++        raise GdiError('.git must not be a symlink')
++    if not marker.exists():
++        bare = git.call('rev-parse', '--is-bare-repository', allowed=(0, 128))
++        if bare.returncode == 0 and bare.stdout.strip() == 'true':
++            raise GdiError('gdi requires a git worktree; bare user repositories are unsupported')
++        options = ('--initial-branch=' + branch,) if branch is not None else ()
++        git.call('init', '--quiet', '--object-format=sha1', '--template=', *options)
++    git = Git.discover(target)
++    if git.call('ls-files', '--', '.gdi').stdout:
++        raise GdiError('.gdi is local metadata and must not be tracked by git')
++    with git.lock():
++        settings = load(git)
++        if not (git.gdi_dir() / 'config.json').exists():
++            save(git, settings)
++        exclude = Path(git.text('rev-parse', '--git-path', 'info/exclude'))
++        if not exclude.is_absolute():
++            exclude = git.path / exclude
++        if exclude.is_symlink():
++            raise GdiError('git info/exclude must not be a symlink')
++        previous = exclude.read_bytes() if exclude.exists() else b''
++        if previous.splitlines()[-1:] != [b'/.gdi/']:
++            exclude.parent.mkdir(parents=True, exist_ok=True)
++            with exclude.open('ab') as output:
++                output.write((b'\n' if previous and not previous.endswith(b'\n') else b'') + b'/.gdi/\n')
++        if git.call('check-ignore', '-q', '--', '.gdi/config.json', allowed=(0, 1)).returncode:
++            raise GdiError('project ignore rules reinclude .gdi; add /.gdi/ to .gitignore before using GDI')
++    return git
++
++
++def clone(url, destination=None, *, branch=None, expected_id=None, inbox_root=None,
++          transport_factory=Rclone):
++    validate_url(url)
++    target = Path(destination if destination is not None else url.split(':', 1)[1].rsplit('/', 1)[-1])
++    target = target.expanduser().absolute()
++
++    def check_destination():
++        if target.is_symlink() or target.exists() and (not target.is_dir() or any(target.iterdir())):
++            raise GdiError('clone destination must be absent or an empty directory; existing files are preserved')
++        # Замена inode текущего каталога оставила бы вызывающую оболочку в удалённой папке.
++        if target.exists() and target.samefile(Path.cwd()):
++            raise GdiError('clone destination must not be the current directory; choose a new or another empty directory')
++
++    check_destination()
++    target.parent.mkdir(parents=True, exist_ok=True)
++    # До полной проверки данные находятся рядом с целью; отказ не оставляет частичный checkout.
++    with tempfile.TemporaryDirectory(prefix='.gdi-clone-', dir=target.parent) as temporary:
++        source = Path(temporary) / 'repository'
++        git = initialize(source, branch=branch)
++        exchange = Exchange(git, transport_factory)
++        with git.lock():
++            identity = exchange.add('drive', url, expected_id=expected_id, inbox_root=inbox_root)
++            transport, repository_id = exchange.connect('drive')
++            published = []
++            for entry in transport.list('branches'):
++                if not entry['IsDir']:
++                    raise GdiError('remote branches must contain only branch directories')
++                ref = directory_ref(entry['Path'])
++                git.ref(ref[11:])
++                if exchange.publications(transport, repository_id, ref):
++                    published.append(ref[11:])
++            published.sort()
++            selected = branch
++            if selected is not None and selected not in published:
++                raise GdiError('no completed publication for refs/heads/' + selected)
++            if selected is None:
++                if len(published) > 1:
++                    raise GdiError('remote has multiple published branches; choose --branch NAME: ' +
++                                   ', '.join(published))
++                selected = published[0] if published else None
++            for name in published:
++                exchange.fetch('drive', name)
++            if selected is not None:
++                git.call('checkout', '--quiet', '--no-track', '-b', selected, 'refs/remotes/drive/' + selected)
++            if git.call('check-ignore', '-q', '--', '.gdi/config.json', allowed=(0, 1)).returncode:
++                raise GdiError('project ignore rules reinclude .gdi; add /.gdi/ to the source .gitignore before cloning')
++            exchange.verify_identity(transport, identity)
++            result = {'destination': str(target), 'repository_id': identity, 'branch': git.branch(),
++                      'head': git.oid('HEAD'), 'branches': published}
++        check_destination()
++        os.rename(source, target)
++    return result
+diff --git a/gdi/status.py b/gdi/status.py
+index d8374a8..599710d 100644
+--- a/gdi/status.py
++++ b/gdi/status.py
+@@ -60 +60,2 @@ def display(value):
+-        print('Connections: none; gdi remote add drive <rclone:path> --init')
++        print('Connections: none; gdi remote add drive <rclone:path> (existing) '
++              'or gdi remote create drive <rclone:path> (new)')
+diff --git a/pyproject.toml b/pyproject.toml
+index a28dfbd..689a74e 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -7 +7 @@ name = "gdi"
+-version = "0.3.0"
++version = "0.4.0"
+diff --git a/tests/rc_drive_check.py b/tests/rc_drive_check.py
+index b117480..c796770 100644
+--- a/tests/rc_drive_check.py
++++ b/tests/rc_drive_check.py
+@@ -90,2 +90,2 @@ def main():
+-                lambda factory, server, mode=mode: Exchange(git, factory).add(
+-                    mode, owned_root + '/' + mode, initialize=True))
++                lambda factory, server, mode=mode: Exchange(git, factory).create(
++                    mode, owned_root + '/' + mode))
+@@ -209 +209 @@ def main():
+-            exchange.add(name, url, initialize=True)
++            exchange.create(name, url)
+diff --git a/tests/test_ci.py b/tests/test_ci.py
+index 54fca26..def7189 100644
+--- a/tests/test_ci.py
++++ b/tests/test_ci.py
+@@ -384 +384 @@ class LocalAutonomousTests(unittest.TestCase):
+-            gdi('remote', 'add', 'drive', url, '--init')
++            gdi('remote', 'create', 'drive', url)
+diff --git a/tests/test_deploy.py b/tests/test_deploy.py
+index 1efa2cb..d34a122 100644
+--- a/tests/test_deploy.py
++++ b/tests/test_deploy.py
+@@ -68 +68 @@ class DeployTests(unittest.TestCase):
+-        self.cli('remote', 'add', 'drive', self.url, '--init')
++        self.cli('remote', 'create', 'drive', self.url)
+diff --git a/tests/test_exchange.py b/tests/test_exchange.py
+index 6d7e36b..bb860af 100644
+--- a/tests/test_exchange.py
++++ b/tests/test_exchange.py
+@@ -113 +113 @@ class ExchangeTestCase(unittest.TestCase):
+-        self.identity = self.ea.add("drive", "memory:project", initialize=True)
++        self.identity = self.ea.create("drive", "memory:project")
+@@ -606 +606 @@ class ExchangeTests(ExchangeTestCase):
+-        other_id = ec.add("other", "memory:other", initialize=True)
++        other_id = ec.create("other", "memory:other")
+@@ -620 +620 @@ class ExchangeTests(ExchangeTestCase):
+-            self.ea.add("another", "memory:project", initialize=True)
++            self.ea.create("another", "memory:project")
+@@ -1030 +1030 @@ class LocalTransportTests(unittest.TestCase):
+-            cli(source, "remote", "add", "drive", url, "--init")
++            cli(source, "remote", "create", "drive", url)
+diff --git a/tests/test_gc.py b/tests/test_gc.py
+index 247ca1c..5d39f2f 100644
+--- a/tests/test_gc.py
++++ b/tests/test_gc.py
+@@ -309 +309 @@ class LocalGcTests(ExchangeTestCase):
+-        cli(self.a.path, "remote", "add", "localdrive", "gditest:" + str(remote), "--init")
++        cli(self.a.path, "remote", "create", "localdrive", "gditest:" + str(remote))
+diff --git a/tests/test_inbox.py b/tests/test_inbox.py
+index 0cb8fab..d5cbc85 100644
+--- a/tests/test_inbox.py
++++ b/tests/test_inbox.py
+@@ -79 +79 @@ class InboxTestCase(ExchangeTestCase):
+-        self.identity = self.ea.add('drive', 'memory:hub/repos/a', initialize=True, inbox_root='memory:hub')
++        self.identity = self.ea.create('drive', 'memory:hub/repos/a', inbox_root='memory:hub')
+@@ -158 +158 @@ class InboxTests(InboxTestCase):
+-        other_exchange.add('drive', 'memory:hub/repos/b', initialize=True, inbox_root='memory:hub')
++        other_exchange.create('drive', 'memory:hub/repos/b', inbox_root='memory:hub')
+@@ -521 +521 @@ class RealInboxTests(ExchangeTestCase):
+-            self.identity = self.ea.add('drive', url, initialize=True, inbox_root=root_url)
++            self.identity = self.ea.create('drive', url, inbox_root=root_url)
+diff --git a/tests/test_rc_candidate.py b/tests/test_rc_candidate.py
+index b28ab65..7018046 100644
+--- a/tests/test_rc_candidate.py
++++ b/tests/test_rc_candidate.py
+@@ -46 +46 @@ class RcCandidateTests(unittest.TestCase):
+-        self.identity = self.exchange.add('drive', self.url, initialize=True)
++        self.identity = self.exchange.create('drive', self.url)
+diff --git a/tests/test_repository.py b/tests/test_repository.py
+new file mode 100644
+index 0000000..ccddb98
+--- /dev/null
++++ b/tests/test_repository.py
+@@ -0,0 +1,385 @@
++"""Ordinary init/clone/create commands preserve local data and verify remote history."""
++
++import contextlib
++import copy
++import io
++import os
++from pathlib import Path
++import shutil
++import subprocess
++import sys
++import tempfile
++import unittest
++from unittest.mock import patch
++
++from gdi.aliases import expand, validate_name
++from gdi.cli import main, parser
++from gdi.exchange import Exchange, decode, encode
++from gdi.git import GdiError, Git
++from gdi.local_config import load
++from gdi.repository import clone, initialize
++from tests.test_exchange import ExchangeTestCase, MemoryTransport
++
++
++@contextlib.contextmanager
++def working_directory(path):
++    previous = Path.cwd()
++    os.chdir(path)
++    try:
++        yield
++    finally:
++        os.chdir(previous)
++
++
++class InitTests(unittest.TestCase):
++    def setUp(self):
++        temporary = tempfile.TemporaryDirectory(prefix='gdi-init-')
++        self.addCleanup(temporary.cleanup)
++        self.root = Path(temporary.name)
++
++    def test_init_without_git_or_transport_and_git_add_does_not_track_gdi(self):
++        target = self.root / 'project'
++        with patch('gdi.rc_transport.TransportSession', side_effect=AssertionError('local command')), \
++                patch.dict(os.environ, {'XDG_CONFIG_HOME': str(self.root / 'config')}), \
++                contextlib.redirect_stdout(io.StringIO()) as output:
++            self.assertEqual(main(['init', str(target), '-b', 'main']), 0)
++        self.assertIn(str(target), output.getvalue())
++        git = Git.discover(target)
++        self.assertEqual(git.branch(), 'main')
++        self.assertIsNone(git.oid('HEAD'))
++        self.assertEqual(load(git), {'config_version': 2, 'default_remote': None, 'remotes': {}})
++        (target / 'hello.txt').write_text('hello\n')
++        git.call('add', '.')
++        self.assertEqual(git.text('ls-files'), 'hello.txt')
++
++    def test_repeated_init_preserves_git_state_connections_and_exclude(self):
++        git = initialize(self.root / 'project', branch='main')
++        (git.path / 'hello.txt').write_text('first\n')
++        git.call('add', 'hello.txt')
++        git.call('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'first')
++        Exchange(git, lambda url: MemoryTransport()).create('drive', 'memory:project')
++        (git.path / 'hello.txt').write_text('staged\n')
++        git.call('add', 'hello.txt')
++        (git.path / 'hello.txt').write_text('unstaged\n')
++        (git.path / 'untracked').write_text('keep\n')
++        paths = [git.path / '.git/config', git.path / '.git/index', git.path / '.git/info/exclude',
++                 git.path / '.gdi/config.json']
++        before = git.snapshot(), {path: path.read_bytes() for path in paths}
++        initialize(git.path, branch='other')
++        self.assertEqual(before, (git.snapshot(), {path: path.read_bytes() for path in paths}))
++
++    def test_init_preserves_existing_exclude_without_trailing_newline(self):
++        target = self.root / 'project'
++        target.mkdir()
++        Git(target).call('init', '-q', '-b', 'main', '--template=')
++        exclude = target / '.git/info/exclude'
++        exclude.parent.mkdir(parents=True, exist_ok=True)
++        exclude.write_bytes(b'local-only')
++        initialize(target)
++        self.assertEqual(exclude.read_bytes(), b'local-only\n/.gdi/\n')
++
++    def test_init_handles_local_ignore_negation_and_reports_project_override(self):
++        git = initialize(self.root / 'project', branch='main')
++        exclude = git.path / '.git/info/exclude'
++        exclude.write_bytes(b'/.gdi/\n!/.gdi/\n')
++        initialize(git.path)
++        self.assertEqual(exclude.read_bytes(), b'/.gdi/\n!/.gdi/\n/.gdi/\n')
++        (git.path / '.gitignore').write_text('!/.gdi/\n')
++        with self.assertRaisesRegex(GdiError, 'ignore rules reinclude'):
++            initialize(git.path)
++        self.assertEqual((git.path / '.gitignore').read_text(), '!/.gdi/\n')
++
++    def test_init_does_not_attach_a_new_directory_to_its_parent_repository(self):
++        parent = initialize(self.root / 'parent', branch='main')
++        child = initialize(parent.path / 'child', branch='other')
++        self.assertEqual(child.path, parent.path / 'child')
++        self.assertEqual(child.branch(), 'other')
++        self.assertEqual(parent.branch(), 'main')
++
++    def test_init_refuses_bare_and_symlink_destinations(self):
++        bare = self.root / 'bare'
++        bare.mkdir()
++        Git(bare).call('init', '--bare', '-q')
++        with self.assertRaisesRegex(GdiError, 'bare'):
++            initialize(bare)
++        self.assertFalse((bare / '.gdi').exists())
++        link = self.root / 'link'
++        link.symlink_to(bare, target_is_directory=True)
++        with self.assertRaisesRegex(GdiError, 'symlink'):
++            initialize(link)
++
++    def test_init_in_linked_worktree_uses_shared_gdi_without_changing_detached_head(self):
++        git = initialize(self.root / 'project', branch='main')
++        git.call('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
++                 'commit', '--allow-empty', '-qm', 'first')
++        Exchange(git, lambda url: MemoryTransport()).create('drive', 'memory:project')
++        linked = self.root / 'linked'
++        git.call('worktree', 'add', '--detach', str(linked), 'HEAD')
++        config = (git.gdi_dir() / 'config.json').read_bytes()
++        received = initialize(linked)
++        self.assertEqual(received.gdi_dir(), git.gdi_dir())
++        self.assertEqual((git.gdi_dir() / 'config.json').read_bytes(), config)
++        self.assertEqual(received.oid('HEAD'), git.oid('HEAD'))
++        self.assertEqual(received.call('symbolic-ref', '-q', 'HEAD', allowed=(0, 1)).returncode, 1)
++
++    def test_init_refuses_tracked_gdi_and_preserves_invalid_local_config(self):
++        git = initialize(self.root / 'project', branch='main')
++        path = git.path / '.gdi/config.json'
++        path.write_text('{"config_version":1}\n')
++        before = path.read_bytes()
++        with self.assertRaisesRegex(GdiError, 'config version 2'):
++            initialize(git.path)
++        self.assertEqual(path.read_bytes(), before)
++        git.call('add', '-f', '.gdi/config.json')
++        with self.assertRaisesRegex(GdiError, 'must not be tracked'):
++            initialize(git.path)
++        self.assertEqual(path.read_bytes(), before)
++
++    def test_parser_and_aliases_expose_new_commands_and_reject_old_init_flag(self):
++        for name in ('init', 'clone'):
++            with self.subTest(name=name), self.assertRaisesRegex(GdiError, 'built-in'):
++                validate_name(name)
++        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
++            parser().parse_args(['remote', 'add', 'drive', 'memory:project', '--init'])
++        self.assertEqual(raised.exception.code, 2)
++        with patch.dict(os.environ, {'XDG_CONFIG_HOME': str(self.root / 'config')}):
++            config = self.root / 'config/gdi/aliases.ini'
++            config.parent.mkdir(parents=True)
++            config.write_text('[alias]\nget = clone\n')
++            self.assertEqual(expand(['get', 'memory:project']), ['clone', 'memory:project'])
++
++
++class CloneTests(ExchangeTestCase):
++    def setUp(self):
++        super().setUp()
++        self.ea.push('drive')
++
++    def receive(self, destination, **options):
++        return clone('memory:project', destination, transport_factory=lambda url: self.store, **options)
++
++    def assert_no_partial_clone(self):
++        self.assertEqual(list(self.root.glob('.gdi-clone-*')), [])
++
++    def test_clone_restores_incremental_history_and_all_remote_branches(self):
++        second = self.commit(self.a, 'second')
++        self.ea.push('drive')
++        self.a.call('branch', 'feature/ветка%25', second)
++        self.ea.push('drive', 'feature/ветка%25')
++        before = copy.deepcopy(self.store.data), list(self.store.uploads)
++        target = self.root / 'clone'
++        result = self.receive(target, branch='main', expected_id=self.identity)
++        git = Git.discover(target)
++        self.assertEqual((git.branch(), git.oid('HEAD')), ('main', second))
++        self.assertEqual(git.oid('refs/remotes/drive/main'), second)
++        self.assertEqual(git.oid('refs/remotes/drive/feature/ветка%25'), second)
++        self.assertTrue(git.ancestor(self.first, second))
++        self.assertEqual((target / 'file.txt').read_text(), 'second\n')
++        self.assertEqual(git.snapshot()[2], '')
++        self.assertEqual(load(git)['remotes']['drive']['repository_id'], self.identity)
++        self.assertEqual(result['branches'], ['feature/ветка%25', 'main'])
++        self.assertEqual(before, (self.store.data, self.store.uploads))
++        self.assert_no_partial_clone()
++
++    def test_clone_single_branch_infers_destination_and_branch(self):
++        with working_directory(self.root):
++            result = clone('memory:project', transport_factory=lambda url: self.store)
++        self.assertEqual(result['destination'], str(self.root / 'project'))
++        self.assertEqual((result['branch'], result['head']), ('main', self.first))
++        self.assertEqual(Git.discover(self.root / 'project').oid('HEAD'), self.first)
++
++    def test_clone_accepts_an_existing_empty_directory(self):
++        target = self.root / 'clone'
++        target.mkdir()
++        self.receive(target)
++        self.assertEqual(Git.discover(target).oid('HEAD'), self.first)
++
++    def test_clone_refuses_replacing_the_calling_shell_current_directory(self):
++        target = self.root / 'clone'
++        target.mkdir()
++        inode = target.stat().st_ino
++        with working_directory(target), self.assertRaisesRegex(GdiError, 'current directory'):
++            self.receive('.')
++        self.assertEqual(target.stat().st_ino, inode)
++        self.assertEqual(list(target.iterdir()), [])
++
++    def test_multiple_branches_require_explicit_selection_without_leaving_checkout(self):
++        self.a.call('branch', 'other', self.first)
++        self.ea.push('drive', 'other')
++        for exists in (False, True):
++            target = self.root / ('existing' if exists else 'absent')
++            if exists:
++                target.mkdir()
++            with self.subTest(exists=exists), self.assertRaisesRegex(GdiError, 'choose --branch'):
++                self.receive(target)
++            self.assertEqual(target.exists(), exists)
++            if exists:
++                self.assertEqual(list(target.iterdir()), [])
++            self.assert_no_partial_clone()
++
++    def test_wrong_identity_unknown_branch_and_invalid_branch_leave_no_checkout(self):
++        for options, message in (({'expected_id': '0' * 32}, 'repository ID mismatch'),
++                                 ({'branch': 'absent'}, 'no completed publication'),
++                                 ({'branch': '../bad'}, 'git failed')):
++            target = self.root / 'clone'
++            with self.subTest(options=options), self.assertRaisesRegex(GdiError, message):
++                self.receive(target, **options)
++            self.assertFalse(target.exists())
++            self.assert_no_partial_clone()
++
++    def test_occupied_or_symlink_destination_is_preserved_before_network_access(self):
++        target = self.root / 'occupied'
++        target.mkdir()
++        sentinel = target / 'keep'
++        sentinel.write_text('original')
++        link = self.root / 'link'
++        link.symlink_to(target, target_is_directory=True)
++        for path in (target, sentinel, link):
++            with self.subTest(path=path), patch.object(self.store, 'read', side_effect=AssertionError('no reads')), \
++                    self.assertRaisesRegex(GdiError, 'destination'):
++                self.receive(path)
++        self.assertEqual(sentinel.read_text(), 'original')
++        self.assertTrue(link.is_symlink())
++
++    def test_corrupt_bundle_preserves_empty_target_and_remote_files(self):
++        target = self.root / 'clone'
++        target.mkdir()
++        path = next(name for name in self.store.data if name.startswith('bundles/'))
++        self.store.data[path] += b'corrupt'
++        before = copy.deepcopy(self.store.data)
++        with self.assertRaisesRegex(GdiError, 'SHA256'):
++            self.receive(target)
++        self.assertEqual(list(target.iterdir()), [])
++        self.assertEqual(self.store.data, before)
++        self.assert_no_partial_clone()
++
++    def test_interrupted_download_leaves_destination_absent(self):
++        def interrupt():
++            raise KeyboardInterrupt()
++        self.store.after_download = interrupt
++        target = self.root / 'clone'
++        with self.assertRaises(KeyboardInterrupt):
++            self.receive(target)
++        self.assertFalse(target.exists())
++        self.assert_no_partial_clone()
++
++    def test_identity_change_during_download_is_rejected_before_checkout_is_published(self):
++        def replace_identity():
++            value = decode(self.store.data['repository.json'])
++            value['repository_id'] = '0' * 32
++            self.store.data['repository.json'] = encode(value)
++        self.store.after_download = replace_identity
++        target = self.root / 'clone'
++        with self.assertRaisesRegex(GdiError, 'repository ID mismatch'):
++            self.receive(target)
++        self.assertFalse(target.exists())
++        self.assert_no_partial_clone()
++
++    def test_concurrent_destination_file_is_not_overwritten(self):
++        target = self.root / 'clone'
++        target.mkdir()
++        self.store.after_download = lambda: (target / 'keep').write_text('concurrent data')
++        with self.assertRaisesRegex(GdiError, 'destination'):
++            self.receive(target)
++        self.assertEqual((target / 'keep').read_text(), 'concurrent data')
++        self.assert_no_partial_clone()
++
++    def test_empty_remote_can_be_cloned_without_creating_remote_files(self):
++        self.store.data = {'repository.json': self.store.data['repository.json']}
++        before = copy.deepcopy(self.store.data)
++        target = self.root / 'clone'
++        result = self.receive(target)
++        self.assertIsNone(result['head'])
++        self.assertEqual(result['branches'], [])
++        self.assertEqual(Git.discover(target).snapshot()[2], '')
++        self.assertEqual(self.store.data, before)
++
++    def test_clone_rejects_a_project_ignore_override_exposing_local_gdi(self):
++        (self.a.path / '.gitignore').write_text('!/.gdi/\n')
++        self.a.call('add', '.gitignore')
++        self.a.call('commit', '-qm', 'project ignore override')
++        self.ea.push('drive')
++        target = self.root / 'clone'
++        with self.assertRaisesRegex(GdiError, 'ignore rules reinclude'):
++            self.receive(target)
++        self.assertFalse(target.exists())
++        self.assert_no_partial_clone()
++
++    def test_cli_clone_runs_outside_a_git_repository(self):
++        target = self.root / 'clone'
++        with working_directory(self.root), patch.dict(os.environ, {'XDG_CONFIG_HOME': str(self.root / 'config')}), \
++                patch('gdi.rc_transport.TransportSession') as session, \
++                contextlib.redirect_stdout(io.StringIO()) as output:
++            session.return_value.__enter__.return_value = lambda url: self.store
++            self.assertEqual(main(['clone', 'memory:project', str(target), '--repository-id', self.identity]), 0)
++        self.assertIn('Cloned memory:project', output.getvalue())
++        self.assertEqual(Git.discover(target).oid('HEAD'), self.first)
++
++    def test_remote_add_only_reads_and_create_refuses_existing_remote(self):
++        before = copy.deepcopy(self.store.data), list(self.store.uploads)
++        self.ea.add('backup', 'memory:project', expected_id=self.identity)
++        self.assertEqual(before, (self.store.data, self.store.uploads))
++        with self.assertRaisesRegex(GdiError, 'empty dedicated folder'):
++            self.ea.create('new', 'memory:project')
++        self.assertEqual(before, (self.store.data, self.store.uploads))
++        self.assertNotIn('new', load(self.a)['remotes'])
++
++    def test_push_missing_remote_does_not_create_files_and_suggests_remote_create(self):
++        self.store.data.clear()
++        self.store.directories = {''}
++        with patch.object(self.store, 'read_optional', return_value=None, create=True), \
++                self.assertRaisesRegex(GdiError, 'gdi remote create'):
++            self.ea.push('drive')
++        self.assertEqual(self.store.data, {})
++        self.assertEqual(self.store.directories, {''})
++
++    def test_create_does_not_mutate_remote_when_local_gdi_is_tracked(self):
++        self.a.call('add', '-f', '.gdi/config.json')
++        empty = MemoryTransport()
++        exchange = Exchange(self.a, lambda url: empty)
++        with self.assertRaisesRegex(GdiError, 'must not be tracked'):
++            exchange.create('new', 'memory:new')
++        self.assertEqual(empty.data, {})
++        self.assertEqual(empty.directories, {''})
++
++
++@unittest.skipUnless(shutil.which('rclone'), 'rclone required for local backend integration')
++class RepositoryCliIntegrationTests(unittest.TestCase):
++    def test_init_create_push_clone_roundtrip_with_real_cli_and_local_backend(self):
++        self.roundtrip('cli')
++
++    @unittest.skipUnless(sys.platform.startswith('linux'), 'native RC requires Linux parent-death protection')
++    def test_init_create_push_clone_roundtrip_with_native_rc(self):
++        self.roundtrip('rc')
++
++    def roundtrip(self, mode):
++        with tempfile.TemporaryDirectory(prefix='gdi-repository-cli-') as temporary:
++            root = Path(temporary)
++            source, target, remote = root / 'source', root / 'target', root / 'remote'
++            environment = {**os.environ, 'PYTHONPATH': str(Path(__file__).resolve().parents[1]),
++                           'PYTHONDONTWRITEBYTECODE': '1', 'XDG_CONFIG_HOME': str(root / 'config'),
++                           'GDI_TRANSPORT': mode, 'RCLONE_CONFIG': '/dev/null',
++                           'RCLONE_CONFIG_GDIREPOTEST_TYPE': 'local'}
++            def cli(cwd, *arguments, expected=0):
++                result = subprocess.run([sys.executable, '-m', 'gdi', '--no-progress', *arguments],
++                                        cwd=cwd, env=environment, capture_output=True, text=True, timeout=60)
++                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
++                return result.stdout + result.stderr
++            cli(root, 'init', str(source), '-b', 'main')
++            git = Git.discover(source)
++            (source / 'hello.txt').write_text('hello\n')
++            git.call('add', '.')
++            git.call('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'first')
++            self.assertEqual(git.text('ls-files'), 'hello.txt')
++            url = 'gdirepotest:' + str(remote)
++            cli(source, 'remote', 'create', 'drive', url)
++            cli(source, 'push')
++            before = {path.relative_to(remote): path.read_bytes() for path in remote.rglob('*') if path.is_file()}
++            cli(root, 'clone', url, str(target))
++            received = Git.discover(target)
++            self.assertEqual(received.oid('HEAD'), git.oid('HEAD'))
++            self.assertEqual((target / 'hello.txt').read_text(), 'hello\n')
++            self.assertEqual(before, {path.relative_to(remote): path.read_bytes()
++                                      for path in remote.rglob('*') if path.is_file()})
++            self.assertIn('Already published', cli(target, 'push'))
++            self.assertIn('unrecognized arguments: --init',
++                          cli(target, 'remote', 'add', 'other', url, '--init', expected=2))
+diff --git a/tests/test_v2_cli.py b/tests/test_v2_cli.py
+index a7d48a1..c5f224f 100644
+--- a/tests/test_v2_cli.py
++++ b/tests/test_v2_cli.py
+@@ -93 +93 @@ jobs:
+-        self.gdi('remote', 'add', 'drive', url, '--init', '--inbox-root', self.remote_root)
++        self.gdi('remote', 'create', 'drive', url, '--inbox-root', self.remote_root)

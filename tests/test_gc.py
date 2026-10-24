@@ -15,6 +15,13 @@ from tests.test_exchange import ExchangeTestCase
 
 
 class GcTests(ExchangeTestCase):
+    def setUp(self):
+        super().setUp()
+        # This suite exercises the existing remote without work lifecycle.
+        repository = decode(self.store.data['repository.json'])
+        repository.pop('work_version')
+        self.store.data['repository.json'] = encode(repository)
+
     def chain(self):
         return self.ea.publications(self.store, self.identity, "refs/heads/main")
 
@@ -292,6 +299,9 @@ class LocalGcTests(ExchangeTestCase):
         env = {**os.environ, "RCLONE_CONFIG_GDITEST_TYPE": "local", "RCLONE_CONFIG": "/dev/null",
                "PYTHONPATH": str(Path(__file__).resolve().parents[1]), "PYTHONDONTWRITEBYTECODE": "1"}
         def cli(path, *args, exit_code=0):
+            # Bundle-only acceptance remains independent of work-retention output.
+            if args[0] == "gc":
+                args = (*args, "--bundle-only")
             result = subprocess.run([sys.executable, "-m", "gdi", *args], cwd=path, env=env,
                                     text=True, capture_output=True, timeout=60)
             self.assertEqual(result.returncode, exit_code, result.stdout + result.stderr)

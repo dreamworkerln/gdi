@@ -14,7 +14,10 @@ CI через обычный CLI с rclone и проверка на host пол�
 Короткий справочник человеку: **[QUICKSTART.md](QUICKSTART.md)**.
 Общая очередь и подключения `.gdi`: [docs/inbox.md](docs/inbox.md).
 Worker/systemd: [docs/worker.md](docs/worker.md). Архитектура: [ARCHITECTURE.md](ARCHITECTURE.md),
-состояние проверок и дальнейшие задачи: [TODO.md](TODO.md).
+текущие задачи: [TODO_INVENTORY.md](TODO_INVENTORY.md),
+правила ведения: [TODO_MANAGEMENT_POLICY.md](TODO_MANAGEMENT_POLICY.md).
+Work checkpoints и операторский squash import, с текущими ограничениями:
+[docs/work.md](docs/work.md).
 Профилирование времени команд и журнал всех вызовов rclone: [docs/profiling.md](docs/profiling.md).
 
 Агент с Drive-коннектором запускает `python3 -m gdi agent ...` из исходников
@@ -73,7 +76,7 @@ checkout выбранной ветки. Если опубликована одн
 | `gdi clone URL [DIR] [-b BRANCH] [--repository-id ID]` | Скачивает существующий remote и сохраняет подключение `drive`; при нескольких ветках требуется `--branch` |
 | `gdi alias set NAME "COMMAND [OPTIONS]"` | Создаёт или заменяет пользовательский алиас команды |
 | `gdi alias list` / `gdi alias remove NAME` | Показывает алиасы / удаляет выбранный алиас |
-| `gdi remote create NAME URL` | Один раз создаёт пустой remote и сохраняет repository ID локально |
+| `gdi remote create NAME URL` | Один раз создаёт пустой remote с `work_version=1` и сохраняет repository ID локально |
 | `gdi remote add NAME URL [--repository-id ID]` | Подключает существующий remote; без ID доверяет идентичности при первом подключении |
 | `gdi remote default NAME` | Выбирает подключение для коротких команд |
 | `gdi log [NAME] [BRANCH] [-n N] [--json]` | Проверенная история публикаций ветки, новые первыми; по умолчанию 20 записей |
@@ -82,7 +85,7 @@ checkout выбранной ветки. Если опубликована одн
 | `gdi remote remove NAME` | Удаляет локальные настройки, оставляет удалённые данные и fetched refs |
 | `gdi push [NAME] [BRANCH]` | Первый bundle полный, следующие инкрементальные; повтор того же HEAD ничего не публикует |
 | `gdi push [NAME] [BRANCH] -f / --full` | Создаёт полный контрольный bundle, в том числе для уже опубликованного HEAD дельты |
-| `gdi push [NAME] [BRANCH] --checkpoint-every N` | Полный bundle после каждых N обновлений от предыдущего полного (по умолчанию 20) |
+| `gdi push [NAME] [BRANCH] --checkpoint-every N` | Полный bundle после каждых N обновлений от предыдущего полного (по умолчанию 10) |
 | `gdi push [NAME] --ci --worker ID [--profile full] [--json]` | Публикует commit и запрос CI в общую inbox |
 | `gdi ci status/wait/logs NAME JOB_ID` | Прогресс, streaming console и проверенный terminal result |
 | `gdi ci cancel NAME JOB_ID [--withdraw] [--json]` | Сохраняет отмену; --withdraw также снимает точное уведомление очереди |
@@ -222,8 +225,9 @@ publication ID и фактические prerequisites из bundle. Пропущ
 догружает последовательно; новый клиент начинает с последнего полного bundle.
 Обычно повторный push/fetch не скачивает уже проверенные bundles.
 
-После 20 обновлений от полного bundle автоматически создаётся новый полный: при
-значении 20 между полными бывает не более 19 дельт. `--checkpoint-every 1` всегда
+После 10 обновлений от полного bundle автоматически создаётся новый полный: при
+значении 10 между полными бывает не более 9 дельт. Значение по умолчанию задаётся
+константой `CHECKPOINT_EVERY` в `gdi/config.py`. `--checkpoint-every 1` всегда
 публикует полный bundle; `--full` позволяет сделать контрольную публикацию вручную.
 Большие новые файлы могут давать большие дельты.
 

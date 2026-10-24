@@ -1,6 +1,6 @@
 # Ручная очистка remote bundles
 
-GC в gdi 0.4 удаляет устаревшие упаковки Git-истории из папки remote. Commits,
+Базовый bundle GC в gdi 0.4 удаляет устаревшие упаковки Git-истории из папки remote. Commits,
 manifests, настройки remote, рабочие файлы и локальный кеш остаются. Protocol v3
 не меняется. GC никогда не запускается автоматически после push или CI.
 
@@ -125,3 +125,14 @@ Withdrawal старого worker с `worker_cancellation_supported:false` не �
 GC на remote с CI. Все manifests сохраняются; worker может восстановить старый
 job SHA из нового полного checkpoint с проверкой ancestry. CI logs, chunks, results,
 artifacts и локальный spool этим GC не очищаются. Их retention — отдельный этап.
+
+## Work lifecycle
+
+На remote с `work_version=1` (по умолчанию у новых `--init`; явная активация у
+существующих) GC также планирует retirement work-веток
+с подтверждённым импортом, по умолчанию сохраняя 10 последних. `--keep-imported N`
+меняет N, `--bundle-only` оставляет только описанный выше bundle GC. Apply требует
+той же согласованной паузы. Это отдельный согласованный lifecycle: в нём manifests
+выбранной work-ветки и её пустая папка на Drive удаляются после tombstone; нужные
+CI chains архивируются и bundles сохраняются. Полный контракт, активация и recovery:
+[work.md](work.md). Ordinary branches и CI artifacts не удаляются.

@@ -1,0 +1,18 @@
+name: Cached GDI CI tools
+description: Restore and validate versioned act and rclone executables
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache/restore@v4
+      id: tools
+      with:
+        path: ~/.cache/gdi-ci-tools
+        key: gdi-tools-${{ runner.os }}-${{ runner.arch }}-act-${{ env.GDI_CI_ACT_VERSION }}-rclone-${{ env.GDI_CI_RCLONE_VERSION }}-${{ hashFiles('scripts/ci_tools.py') }}
+    - name: Prepare cached executables
+      shell: bash
+      run: python scripts/ci_tools.py
+    - uses: actions/cache/save@v4
+      if: steps.tools.outputs.cache-hit != 'true'
+      with:
+        path: ~/.cache/gdi-ci-tools
+        key: ${{ steps.tools.outputs.cache-primary-key }}

@@ -24,6 +24,15 @@ def publication(exchange, transport, repository_id, publication_id):
         raise GdiError("publication ID must be 64 lowercase hexadecimal characters")
     listing = transport.list("branches", recursive=True)
     paths = [entry["Path"] for entry in listing if not entry["IsDir"] and entry["Path"].endswith('/' + publication_id + '.json')]
+    if not paths:
+        from .work_lifecycle import records, archived_chain
+        found = []
+        for value in records(transport, repository_id, 'retired').values():
+            if publication_id in value['manifests'] and value['archive']:
+                chain = archived_chain(value)
+                found.append((dict(chain)[publication_id], chain))
+        if len(found) == 1:
+            return found[0]
     if len(paths) != 1:
         raise GdiError("CI publication not found or ambiguous")
     data = decode(transport.read("branches/" + paths[0]))

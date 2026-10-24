@@ -18,7 +18,7 @@
 `repository.json`:
 
 ```json
-{"version":3,"repository_id":"0123456789abcdef0123456789abcdef","object_format":"sha1"}
+{"version":3,"repository_id":"0123456789abcdef0123456789abcdef","object_format":"sha1","work_version":1}
 ```
 
 Repository ID закрепляется в локальной конфигурации:
@@ -33,6 +33,28 @@ remote и URL; `gdi init` исключает `.gdi` через `.git/info/exclud
 `--repository-id` сверяет известную идентичность при подключении; без него первое
 подключение доверяет прочитанному ID. Дальнейшие операции всегда сверяют ID. Имя,
 занятое обычным Git remote, запрещено для защиты tracking namespace.
+
+## Work lifecycle v1
+
+Новые пустые remote при `remote create` получают `"work_version":1` по умолчанию
+и пустые каталоги `work/imports/`, `work/retired/`. Existing v3 remote без флага
+поддерживаются; join, source update и обычный push их автоматически не активируют.
+Для них переход остаётся явным: `remote enable-work --quiescent --all-clients-updated`.
+В repository.json сохраняются version=3, repository_id и object_format.
+Manifest schema/version не меняются. Старые клиенты отвергают неизвестное поле:
+перед `remote enable-work --quiescent --all-clients-updated` обновить все клиенты,
+worker и runtime. Existing remote/Repository ID не пересоздавать. Активация не
+выполняется автоматически при source update или обычном push.
+
+Новые immutable paths: `work/imports/<WORK_ID>.json`, `work/retired/<WORK_ID>.json`.
+Импорт связывает source final/marker, target/squash, подтверждённые publications,
+время и сквозной порядок. Retirement блокирует повторную публикацию/clone/fetch
+work ref и reuse ID, допускает удаление её manifests и пустой branch directory.
+Если CI зависит от ref, retirement сохраняет проверяемую manifest chain; reader CI
+может восстановить exact source SHA через архив, обычный fetch retired work ref
+отказывается её воскрешать. GC учитывает archive dependencies наряду с live refs.
+Точные команды/структура lifecycle: [work.md](work.md). Другие ветки продолжают
+следовать описанному ниже неизменяемому metadata протоколу.
 
 ## Файлы и metadata
 
@@ -102,8 +124,8 @@ Git может записать несколько prerequisites даже при
 историю. Затем выполняются git bundle verify, импорт с fetch.fsckObjects, проверка
 advertised ref, точного HEAD, типа commit, ancestry к previous HEAD и LFS/gitlinks.
 
-После каждых N обновлений от полного bundle создаётся новый полный. Default N=20:
-между полными бывает не более 19 дельт. `--checkpoint-every N` действует только для
+После каждых N обновлений от полного bundle создаётся новый полный. Default N=10:
+между полными бывает не более 9 дельт. `--checkpoint-every N` действует только для
 текущего push; N=1 всегда создаёт полный bundle при новом HEAD. `--full` создаёт полный
 контрольный bundle, в том числе для текущего HEAD, если последняя публикация была
 дельтой. Повтор --full для уже полного того же HEAD — no-op.

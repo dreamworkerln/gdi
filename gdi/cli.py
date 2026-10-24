@@ -7,7 +7,8 @@ import sys
 
 from . import __version__
 from .banner import render as render_banner
-from .exchange import CHECKPOINT_EVERY, Exchange, GdiMergeConflict
+from .config import CHECKPOINT_EVERY
+from .exchange import Exchange, GdiMergeConflict
 from .git import GdiError, Git
 
 
@@ -186,6 +187,11 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
     default = operations.add_parser("default", help="choose the connection for short commands")
     diagnostics_arguments(default)
     default.add_argument("name")
+    enable_work = operations.add_parser('enable-work', help='activate work lifecycle after upgrading every client/worker/runtime')
+    diagnostics_arguments(enable_work)
+    enable_work.add_argument('name')
+    enable_work.add_argument('--quiescent', action='store_true')
+    enable_work.add_argument('--all-clients-updated', action='store_true')
     status = commands.add_parser("status", help="show branch, HEAD, connections and fresh publication state")
     diagnostics_arguments(status)
     status.add_argument("remote", nargs="?", help="inspect this connection (default: all)")
@@ -200,6 +206,9 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
     gc.add_argument("remote", help="local gdi remote name; inspect every published branch")
     gc.add_argument("--keep-checkpoints", type=int, default=2,
                     help="keep this many latest full checkpoints and following bundles per branch (default: 2)")
+    gc.add_argument('--keep-imported', type=nonnegative_count,
+                    help='keep N latest imported work branches (default: 10 when work lifecycle is enabled)')
+    gc.add_argument('--bundle-only', action='store_true', help='compact bundles without retiring work branches')
     gc.add_argument("--apply", action="store_true", help="verify retained history from scratch, then delete planned bundles")
     gc.add_argument("--quiescent", action="store_true",
                     help="confirm ALL clients have paused push/fetch/pull/gc; required with --apply, not a distributed lock")
@@ -229,6 +238,13 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             command.add_argument("--passed", action="store_true", help="apply exactly the selected verified PASS commit")
             command.add_argument("--job", help="explicit CI job ID; required with --passed")
             command.add_argument("--profile", help="required CI profile; required with --passed")
+    importing = commands.add_parser('import', help='select completed work and plan/apply a squash into its assigned target')
+    diagnostics_arguments(importing)
+    importing.add_argument('remote', nargs='?', help='default GDI connection when omitted')
+    importing.add_argument('--work', help='operator-assigned work ID; required for noninteractive multiple-choice selection')
+    importing.add_argument('--output', help='save a new pinned import plan to this path')
+    importing.add_argument('--apply', metavar='PLAN', help='apply an existing exact plan, without automatic retargeting')
+    importing.add_argument('--json', action='store_true')
     ci = commands.add_parser("ci", help="submit jobs, inspect progress and retrieve verified CI results")
     ci_ops = ci.add_subparsers(dest="operation", required=True)
     for operation in ("submit", "status", "wait", "logs", "retry", "cancel", "workers", "supervise"):
@@ -286,6 +302,21 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             sub.add_argument('--plan', required=True, help='saved plan directory')
         if operation == 'clone':
             sub.add_argument('--destination', required=True, help='new worktree directory, must not exist')
+    agent_work = agent_ops.add_parser('work', help='offline isolated agent work branches and checkpoints')
+    agent_work_ops = agent_work.add_subparsers(dest='work_operation', required=True)
+    for operation in ('start', 'status', 'checkpoint'):
+        sub = agent_work_ops.add_parser(operation)
+        diagnostics_arguments(sub)
+        sub.set_defaults(json=True)
+        sub.add_argument('--repo', default='.')
+        sub.add_argument('--repository-id', required=True)
+        if operation == 'start':
+            sub.add_argument('work_id', help='unique work number assigned by the operator')
+            sub.add_argument('--snapshot', required=True)
+        elif operation == 'checkpoint':
+            sub.add_argument('-m', '--message', required=True, help='commit subject without generated prefix')
+            sub.add_argument('--body-file', help='UTF-8 commit body; final body becomes the squash body')
+            sub.add_argument('--final', action='store_true', help='mark the completed and validated work with !')
     agent_ci = agent_ops.add_parser('ci', help='offline CI request and result exchange')
     agent_ci_ops = agent_ci.add_subparsers(dest='ci_operation', required=True)
     for operation in ('prepare', 'check', 'accept', 'result', 'cancel', 'cancel-check', 'workers', 'supervise'):
@@ -438,7 +469,20 @@ def execute(args, *, transport_factory=None):
             return execute_alias(args)
         if args.command == 'agent':
             from . import agent
-            if args.operation == 'snapshot':
+            if args.operation == 'work':
+                from . import agent_work
+                git = Git.discover(args.repo)
+                with git.lock():
+                    if args.work_operation == 'start':
+                        value = agent_work.start(git, args.snapshot, args.repository_id, args.work_id)
+                    elif args.work_operation == 'status':
+                        value = agent_work.status(git, args.repository_id)
+                    else:
+                        from pathlib import Path
+                        body = Path(args.body_file).read_text(encoding='utf-8') if args.body_file else ''
+                        value = agent_work.checkpoint(git, args.repository_id, args.message,
+                                                      body=body, final=args.final)
+            elif args.operation == 'snapshot':
                 from .snapshot import Snapshot
                 snapshot = Snapshot(args.snapshot, args.repository_id)
                 value = {'repository_id': snapshot.repository_id, 'repository_path': snapshot.repository_path,
@@ -590,6 +634,43 @@ def execute(args, *, transport_factory=None):
                 settings = exchange.remote(args.remote)
                 if not getattr(args, 'json', False):
                     print(f"Connection: {args.remote} — {settings['url']}\nBranch: {branch}", flush=True)
+            if args.command == 'import':
+                from .local_config import select
+                from . import work_import
+                if args.apply:
+                    if args.work or args.output:
+                        raise GdiError('--apply uses the saved plan; do not supply --work or --output')
+                    plan = work_import.load_plan(args.apply)
+                    if args.remote is not None and args.remote != plan['remote']:
+                        raise GdiError('explicit connection differs from the saved import plan')
+                    value = work_import.apply(exchange, args.apply)
+                else:
+                    name = select(git, args.remote)
+                    available = work_import.candidates(exchange, name)
+                    choices = available['choices']
+                    if args.work:
+                        choices = [item for item in choices if item['work'] == args.work]
+                        if not choices:
+                            raise GdiError('requested work is not ready for this target: ' + args.work)
+                    if len(choices) > 1 and not args.json and sys.stdin.isatty():
+                        from .terminal import display_path
+                        for number, item in enumerate(choices, 1):
+                            title = display_path(item['message'].split('\n', 1)[0])
+                            print(f"{number}. Work {item['work']}: {title} ({item['final'][:12]})")
+                        try:
+                            selection = int(input('Select work number: '))
+                        except (ValueError, EOFError) as exc:
+                            raise GdiError('select one displayed work number or use --work WORK_ID') from exc
+                        if not 1 <= selection <= len(choices):
+                            raise GdiError('selection is outside the displayed work list')
+                        choices = [choices[selection - 1]]
+                    if len(choices) != 1:
+                        value = {**available, 'state': 'no_ready_work' if not choices else 'selection_required',
+                                 'next_step': 'gdi import --work WORK_ID' if choices else 'wait_for_final_checkpoint'}
+                    else:
+                        value = work_import.prepare(exchange, name, choices[0], available['target_head'], args.output)
+                emit(value, args.json)
+                return 0
             if args.command == "remote":
                 if args.operation == "add":
                     identity = exchange.add(args.name, args.url, expected_id=args.repository_id, inbox_root=args.inbox_root)
@@ -597,6 +678,10 @@ def execute(args, *, transport_factory=None):
                 elif args.operation == 'create':
                     identity = exchange.create(args.name, args.url, inbox_root=args.inbox_root)
                     print(f"Remote {args.name}: {args.url}\nRepository ID: {identity}")
+                elif args.operation == 'enable-work':
+                    from .work_lifecycle import enable
+                    emit(enable(exchange, args.name, quiescent=args.quiescent,
+                                all_clients_updated=args.all_clients_updated), True)
                 elif args.operation == "remove":
                     exchange.remove(args.name)
                     print(f"Removed local configuration for {args.name}; files and fetched refs retained")
@@ -637,7 +722,8 @@ def execute(args, *, transport_factory=None):
                 exchange.clear_cache(args.remote)
                 print(f"Cleared local verified-object cache for {args.remote}")
             elif args.command == "gc":
-                exchange.gc(args.remote, apply=args.apply, keep_checkpoints=args.keep_checkpoints, quiescent=args.quiescent)
+                exchange.gc(args.remote, apply=args.apply, keep_checkpoints=args.keep_checkpoints,
+                            keep_imported=args.keep_imported, bundle_only=args.bundle_only, quiescent=args.quiescent)
             elif args.command == "push":
                 if args.ci:
                     from .ci import CiClient
@@ -652,11 +738,14 @@ def execute(args, *, transport_factory=None):
                         if head is None:
                             raise GdiError("branch has no committed HEAD to check")
                         validate_selection(git, head, selector)
-                head, pub, created = exchange.push(args.remote, args.branch, full=args.full, checkpoint_every=args.checkpoint_every)
+                from .work_import import push as push_with_imports
+                (head, pub, created), completed_imports = push_with_imports(
+                    exchange, args.remote, args.branch, full=args.full, checkpoint_every=args.checkpoint_every)
                 data = exchange.last_publication
                 value = {"remote": args.remote, "url": settings['url'], "branch": branch,
                          "head": head, "publication_id": pub, "created": created,
-                         "bundle_kind": data["bundle_kind"], "bundle_bytes": data["bundle_bytes"]}
+                         "bundle_kind": data["bundle_kind"], "bundle_bytes": data["bundle_bytes"],
+                         "completed_imports": completed_imports}
                 if args.ci:
                     from .ci import CiClient
                     if args.worker:
@@ -671,6 +760,8 @@ def execute(args, *, transport_factory=None):
                     message = 'Published' if created else colorize('Already published', 33)
                     print(f"{message} {head}\nPublication: {pub}")
                     print(f"Bundle: {data['bundle_kind']}, {data['bundle_bytes']} bytes")
+                    for imported in completed_imports:
+                        print(f"Work {imported['work']}: GDI-IMPORTED marker published")
                     if args.ci:
                         print(f"CI job: {value['job_id']}\nWorker/profile: {value['worker_id']}/{value['profile_id']}")
             else:

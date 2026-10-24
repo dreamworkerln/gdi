@@ -439,6 +439,27 @@ class RcTransport(Rclone):
         self.api('operations/deletefile', fs=self.url, remote=relative)
 
 
+    def enable_work(self, source):
+        from .publication import decode, validate_repository
+        before = validate_repository(decode(self.read('repository.json')))
+        after = validate_repository(decode(Path(source).read_bytes()))
+        if after != {**before, 'work_version': 1}:
+            raise GdiError('work activation may only add work_version=1 to the same repository')
+        self.transfer_api('operations/copyfile', label='enable work lifecycle',
+                          srcFs=str(Path(source).parent), srcRemote=Path(source).name,
+                          dstFs=self.url, dstRemote='repository.json', _config={'IgnoreTimes': True})
+
+    def delete_work_manifest(self, relative):
+        from .transport import validate_work_manifest_path
+        validate_work_manifest_path(relative)
+        self.api('operations/deletefile', fs=self.url, remote=relative)
+
+    def remove_work_directory(self, relative):
+        from .transport import validate_work_directory
+        validate_work_directory(relative)
+        self.api('operations/rmdir', fs=self.url, remote=relative)
+
+
 class TransportSession:
     """Lazy RC process shared only within one command or one worker operation."""
 

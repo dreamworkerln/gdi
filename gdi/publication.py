@@ -10,12 +10,12 @@ import tempfile
 import uuid
 
 from .branches import branch_directory
+from .config import CHECKPOINT_EVERY
 from .diagnostics import phase
 from .git import GdiError, Git
 
 
 PROTOCOL_VERSION = 3
-CHECKPOINT_EVERY = 20
 
 
 def full_checkpoint(chain, *, full=False, checkpoint_every=CHECKPOINT_EVERY):
@@ -70,7 +70,9 @@ def hex_value(value, length):
 
 
 def validate_repository(data):
-    if (set(data) != {"version", "repository_id", "object_format"} or
+    if (set(data) not in ({"version", "repository_id", "object_format"},
+                          {"version", "repository_id", "object_format", "work_version"}) or
+            ("work_version" in data and (type(data["work_version"]) is not int or data["work_version"] != 1)) or
             type(data.get("version")) is not int or data["version"] != PROTOCOL_VERSION or
             not hex_value(data.get("repository_id"), 32) or data.get("object_format") != "sha1"):
         raise GdiError("unsupported repository metadata: expected protocol v3, SHA-1; recreate the remote in an empty folder")
@@ -166,6 +168,9 @@ def prepare_publication(git, repository_id, ref, head, directory, *, previous=No
         if incremental and base['head'] == head:
             raise GdiError('incremental publication must advance HEAD')
     git.check_payload(head)
+    from .work import PREFIX, validate as validate_work
+    if ref.startswith(PREFIX):
+        validate_work(git, ref, head, repository_id)
     root = Path(directory).resolve()
     root.mkdir(parents=True, exist_ok=True)
     bundle, manifest = root / 'source.bundle', root / 'publication.json'
