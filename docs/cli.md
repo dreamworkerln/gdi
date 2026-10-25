@@ -1,0 +1,379 @@
+# Справочник CLI и эксплуатации gdi 0.4.0 (pre-alpha)
+
+Введение в проект: [README.md](../README.md). Команды ниже выполняются из корня
+репозитория, если не указан другой каталог.
+
+Обмен Git-историей через Google Drive и настроенный rclone: инкрементальные bundles,
+проверка metadata и SHA256, fetch в отдельные refs, pull с fast-forward или безопасным auto merge.
+Постоянный worker опрашивает общую inbox всех проектов и выполняет GitHub Actions
+workflows из точного commit через act + Docker; агент
+получает progress, консоль и проверенный PASS/FAIL и повторяет исправления автономно.
+Работает на Linux с Python 3.10+, включая 3.10.12. Python runtime dependencies нет.
+
+Полная установка, настройка Bash, Google Cloud OAuth и rclone: **[INSTALL.md](../INSTALL.md)**.
+Формат данных и гарантии: [docs/protocol.md](protocol.md).
+CI через обычный CLI с rclone и проверка на host пользователя:
+[docs/ci.md](ci.md).
+Короткий справочник человеку: **[QUICKSTART.md](../QUICKSTART.md)**.
+Общая очередь и подключения `.gdi`: [docs/inbox.md](inbox.md).
+Worker/systemd: [docs/worker.md](worker.md). Архитектура: [ARCHITECTURE.md](../ARCHITECTURE.md),
+текущие задачи: [TODO_INVENTORY.md](../TODO_INVENTORY.md),
+правила ведения: [TODO_MANAGEMENT_POLICY.md](../TODO_MANAGEMENT_POLICY.md).
+Work checkpoints и операторский squash import, с текущими ограничениями:
+[docs/work.md](work.md).
+Профилирование времени команд и журнал всех вызовов rclone: [docs/profiling.md](profiling.md).
+
+Агент с Drive-коннектором запускает `python3 -m gdi agent ...` из исходников
+без rclone и сторонних Python-пакетов: [docs/agent.md](agent.md).
+
+На Linux CLI и worker используют временные процессы native rclone RC с ограничением
+жизни операцией, свежей проверкой repository ID и остановкой при гибели родителя.
+`GDI_TRANSPORT=cli` выбирает прежний транспорт для диагностики; форматы данных сохранены.
+
+```bash
+# Новый локальный проект; Git и .gdi создаются одной командой.
+gdi init -b main my-project
+cd my-project
+# Добавьте файлы проекта, затем создайте commit.
+git add .
+git commit -m "Initial commit"
+gdi remote create drive gdrive:gdi/my-project
+gdi push
+
+# На другом компьютере: получить существующий remote в новую папку.
+gdi clone gdrive:gdi/my-project my-project-copy --branch main
+```
+
+`drive` — локальное имя подключения gdi; `gdrive` — имя remote в rclone.
+`main` в примере замените на имя вашей ветки. Для нового проекта используйте отдельную
+папку, например `gdrive:gdi/another-project`.
+
+Для существующего локального Git-проекта выполните `gdi init` в его корне, затем
+`gdi remote add drive URL` для подключения существующего remote либо
+`gdi remote create drive URL` для создания нового. `remote add` читает metadata
+и закрепляет repository ID, но не создаёт файлов на Drive. `push` отправляет только
+commits в уже созданный remote; он не инициализирует remote и не делает commit.
+Прежняя команда `remote add --init` заменена на `remote create`.
+
+`gdi init` сохраняет существующие Git branch/HEAD/index/worktree и подключения.
+Локальная `.gdi` исключается из `git add .` через `.git/info/exclude`;
+пользовательская `.gitignore` не меняется. Git по-прежнему нужен для всех операций
+с историей, rclone — для обычного обмена с Drive.
+Если правила проекта явно возвращают `.gdi` из исключений, init/clone завершаются
+с подсказкой исправить `.gitignore`, чтобы локальные настройки не попали в commits.
+
+`gdi clone` скачивает все опубликованные ветки в `refs/remotes/drive/*` и делает
+checkout выбранной ветки. Если опубликована одна ветка, `--branch` можно опустить;
+при нескольких требуется явный выбор. Пустой remote клонируется без commits.
+Без имени папки используется последнее имя в URL. Цель должна отсутствовать либо
+быть пустым каталогом вне текущего рабочего каталога оболочки; символьные ссылки
+и непустые каталоги отвергаются. Для clone выберите отдельную папку, а не `.`.
+История и bundles проверяются во временном каталоге до появления готового checkout.
+Для проверки заранее известного ID используйте `clone --repository-id ID`.
+
+## CLI
+
+| Команда | Поведение |
+| --- | --- |
+| `gdi init [DIR] [-b BRANCH]` | Создаёт локальный Git-репозиторий и `.gdi`; существующий репозиторий сохраняется |
+| `gdi clone URL [DIR] [-b BRANCH] [--repository-id ID]` | Скачивает существующий remote и сохраняет подключение `drive`; при нескольких ветках требуется `--branch` |
+| `gdi alias set NAME "COMMAND [OPTIONS]"` | Создаёт или заменяет пользовательский алиас команды |
+| `gdi alias list` / `gdi alias remove NAME` | Показывает алиасы / удаляет выбранный алиас |
+| `gdi remote create NAME URL` | Один раз создаёт пустой remote с `work_version=1` и сохраняет repository ID локально |
+| `gdi remote add NAME URL [--repository-id ID]` | Подключает существующий remote; без ID доверяет идентичности при первом подключении |
+| `gdi remote default NAME` | Выбирает подключение для коротких команд |
+| `gdi log [NAME] [BRANCH] [-n N] [--json]` | Проверенная история публикаций ветки, новые первыми; по умолчанию 20 записей |
+| `gdi status [NAME] [--json]` | Ветка, HEAD, worktree, подключения и свежий статус публикации без скачивания bundles |
+| `gdi remote list` | Показывает имена, адреса и закреплённые repository IDs |
+| `gdi remote remove NAME` | Удаляет локальные настройки, оставляет удалённые данные и fetched refs |
+| `gdi push [NAME] [BRANCH]` | Первый bundle полный, следующие инкрементальные; повтор того же HEAD ничего не публикует |
+| `gdi push [NAME] [BRANCH] -f / --full` | Создаёт полный контрольный bundle, в том числе для уже опубликованного HEAD дельты |
+| `gdi push [NAME] [BRANCH] --checkpoint-every N` | Полный bundle после каждых N обновлений от предыдущего полного (по умолчанию 10) |
+| `gdi push [NAME] --ci --worker ID [--profile full] [--json]` | Публикует commit и запрос CI в общую inbox |
+| `gdi ci status/wait/logs NAME JOB_ID` | Прогресс, streaming console и проверенный terminal result |
+| `gdi ci cancel NAME JOB_ID [--withdraw] [--json]` | Сохраняет отмену; --withdraw также снимает точное уведомление очереди |
+| `gdi ci retry NAME JOB_ID [--worker ID] [--json]` | Новая попытка по проверенному результату либо поддерживаемой отмене; можно сменить worker |
+| `gdi pull [NAME] --passed --job ID --profile full` | Fast-forward именно на SHA выбранного проверенного PASS |
+| `gdi worker check/run/install --config PATH` | Проверка config, foreground worker, явная установка user service |
+| `gdi worker start/restart/status/stop` | Управление постоянной systemd user service; restart перечитывает config и код |
+| `gdi worker logs [-f] [-n N] [-b]` | Последние 100 сообщений службы; follow, число строк, текущая загрузка |
+| `gdi worker job logs [-f] [-n N] [--config PATH]` | Локальная консоль последнего запущенного job: последние 10 строк и follow до его завершения, без Drive |
+| `gdi fetch [NAME] [BRANCH]` | Восстанавливает недостающую историю, обновляет `refs/remotes/NAME/BRANCH` |
+| `gdi pull [NAME]` | Получает текущую ветку; при расхождении делает merge без конфликтов |
+| `gdi cache clear NAME` | Удаляет только локальный кеш проверенных объектов этого repository ID |
+| `gdi gc NAME [--keep-checkpoints N]` | Показывает план очистки bundles всех веток; по умолчанию сохраняет два полных checkpoint и дельты после них |
+| `gdi gc NAME --apply --quiescent` | Проверяет сохраняемую историю с нуля, повторно сверяет remote и удаляет устаревшие bundles; требует остановки обмена на всех машинах |
+| `gdi -v`, `gdi --version` | Одинаковый вывод: версия и золотая ASCII-эмблема из C&C без надписей |
+| `gdi -h`, `gdi --help` | Одинаковая справка с примерами использования |
+
+Первое подключение выбирается по умолчанию; смена — `gdi remote default NAME`.
+`gdi push`, `gdi fetch`, `gdi pull`, `gdi log` показывают подключение и выбранную ветку.
+Каталоги на Drive читаемы: `branches/dev/`, `branches/feature%2Flogin/`.
+По умолчанию push/fetch работают с текущей веткой; pull всегда работает с текущей.
+Справка и версия работают вне repo. Цвет эмблемы включается в терминале,
+`FORCE_COLOR=1` включает его в pipe, `NO_COLOR` отключает. В выводе версии нет справки;
+эмблема повторяет силуэт из `gdi.png` и не содержит текстовых подписей.
+Справка содержит действующие команды и примеры с выровненными комментариями.
+Примеры CI и точный протокол: [docs/ci-protocol.md](ci-protocol.md).
+Fetch разрешён при незакоммиченных изменениях; pull требует чистое дерево, включая
+untracked files. Push передаёт только commits и не создаёт commit автоматически.
+Успех — exit 0, ошибка — 1, неверные аргументы — 2, прерывание Ctrl+C — 130.
+Для `ci wait`: PASS → 0, другой terminal outcome → 1, timeout ожидания → 124.
+Timeout/Ctrl+C клиента не отменяют job. JSON stdout отделён от progress stderr.
+
+Подключения gdi хранятся в `.gdi/config.json`; `.git/config` не изменяется.
+Общий inbox root по умолчанию — родитель URL проекта; для вложенной структуры
+задайте `remote add --inbox-root gdrive:gdi`. `gdi init` локально исключает `.gdi/`
+через `.git/info/exclude`; для проектов без инициализации добавьте её в `.gitignore`.
+
+### Пользовательские алиасы
+
+Алиасы общие для всех проектов и хранятся в `~/.config/gdi/aliases.ini`.
+Если задан `XDG_CONFIG_HOME`, используется `$XDG_CONFIG_HOME/gdi/aliases.ini`.
+При первом запуске обычного CLI GDI создаёт отсутствующий файл вместе с каталогом
+и добавляет алиас `s = status`. Существующий файл при запуске не изменяется.
+Прямые вызовы `gdi agent ...` не создают и не читают конфигурацию алиасов.
+Управление алиасами работает вне Git-репозитория, без rclone.
+
+```bash
+gdi alias set s status
+gdi alias set pc "push --ci"
+gdi alias set wl "worker logs --follow"
+gdi alias list
+gdi s --json                 # gdi status --json
+gdi pc --worker user-host    # gdi push --ci --worker user-host
+gdi alias remove pc
+```
+
+Файл можно редактировать вручную; комментарии начинаются с `#` или `;`:
+
+```ini
+[alias]
+s = status
+pc = push --ci
+wl = worker logs --follow
+```
+
+Значение начинается со встроенной команды без префикса `gdi`. Кавычки позволяют
+передавать аргументы с пробелами; параметры вызова добавляются после параметров
+алиаса. Имена чувствительны к регистру. Встроенные команды нельзя переопределять,
+цепочки алиасов не поддерживаются. Shell, подстановка переменных и конвейеры не
+используются. При изменении через `alias set/remove` INI перезаписывается:
+значения остальных алиасов сохраняются, комментарии — нет.
+
+## Автономный CI
+
+Владелец host один раз задаёт общий Drive root, polling/ретраи/таймауты в worker.json,
+устанавливает act/Docker, проверяет foreground запуск и включает службу. Списка
+репозиториев и команд CI в config version 2 нет. Пример: [examples/worker.json](../examples/worker.json).
+
+```bash
+gdi worker check --config ~/.config/gdi/worker.json
+gdi worker install --config ~/.config/gdi/worker.json
+gdi worker start
+```
+
+Агент после одного или нескольких commits:
+
+```bash
+gdi push drive --ci --worker user-host --profile full --json
+gdi ci wait drive JOB_ID --follow --timeout 3600 --json
+gdi ci logs drive JOB_ID --output /tmp/ci-JOB_ID.log
+```
+
+`user-host` — пример: фактический ID на CI host показывает `gdi worker check --json`
+из `~/.config/gdi/worker.json`; служба проверяется отдельно через `gdi worker status`.
+Несколько host могут использовать общий root с разными worker_id. Без `--worker`
+CI выбирает свежий совместимый host; доступны выбор по загрузке, round robin,
+предпочтительный host с fallback и жёсткая привязка. `gdi ci workers drive --json`
+показывает доступность. Перенос по таймауту включается отдельным `ci supervise`
+с явной политикой повторяемости: [docs/scheduling.md](scheduling.md).
+
+При FAIL агент исправляет код, делает новый commit и повторяет. Worker хранит Git
+cache, выполняет exact SHA в отдельном checkout, публикует stdout+stderr chunks,
+полный build.log и result. После PASS/FAIL продолжает работать. Ошибка upload не
+вызывает повторный CI; recovery неопределённого исполнения даёт INTERRUPTED.
+
+Отмена — `gdi ci cancel drive JOB_ID --json`. CANCEL_REQUESTED подтверждает доставку
+marker, проверенный CANCELLED — остановку собственного исполнения worker.
+Для разрешённой замены используйте `gdi ci retry drive JOB_ID --worker NEW_ID --json`;
+отмена сама замену не создаёт. Поздний PASS отменённой попытки блокируется,
+подтверждение поздней отмены хранится отдельно в `ci/jobs/JOB_ID/cancelled/`.
+Агент с коннектором использует `gdi agent ci cancel/cancel-check` и
+`prepare --retry-of`, по [docs/agent.md](agent.md).
+
+Пользователь получает выбранный PASS в свой чистый clone:
+
+```bash
+gdi pull drive --passed --job JOB_ID --profile full
+```
+
+Диагностика worker: `gdi worker logs` показывает последние 100 сообщений журнала службы,
+`gdi worker logs --follow` следит за новыми. `-n 200` меняет число сообщений,
+`--boot` ограничивает текущей загрузкой системы. Ctrl+C завершает просмотр;
+worker продолжает работать. Команда работает вне Git-репозитория и использует
+`journalctl --user -u gdi-worker.service` без pager.
+CI консоль: `gdi ci logs`/`wait --follow`. Команды CI берутся из `.github/workflows` проверяемого commit.
+`--workflow`, `--event`, `--job`, `--input KEY=VALUE` выбирают проверку при submit.
+Worker исполняет доверенные workflows; act имеет доступ к Docker Engine.
+
+## Инкрементальный обмен
+
+```text
+full(A) → delta(A..B) → delta(B..C) → … → full(U) → delta(U..V)
+```
+
+База дельты — предыдущая публикация той же ветки. Metadata содержит точные base HEAD,
+publication ID и фактические prerequisites из bundle. Пропущенные обновления получатель
+догружает последовательно; новый клиент начинает с последнего полного bundle.
+Обычно повторный push/fetch не скачивает уже проверенные bundles.
+
+После 10 обновлений от полного bundle автоматически создаётся новый полный: при
+значении 10 между полными бывает не более 9 дельт. Значение по умолчанию задаётся
+константой `CHECKPOINT_EVERY` в `gdi/config.py`. `--checkpoint-every 1` всегда
+публикует полный bundle; `--full` позволяет сделать контрольную публикацию вручную.
+Большие новые файлы могут давать большие дельты.
+
+Проверенные объекты сохраняются в `.gdi/cache/<repository-id>/repository.git` основного worktree.
+Кеш общий для linked worktrees, не коммитится и удерживает принятые commits отдельными refs.
+Неполное восстановление можно продолжить после перезапуска. Потерянный или обнаруженный
+повреждённый кеш восстанавливается из remote; ручная очистка — `gdi cache clear NAME`.
+
+**Протокол v3 несовместим с v1/v2.** Для старого remote заведите новую пустую папку и
+один раз выполните `remote create`, затем подключите остальные клиенты к новому ID.
+Local config v1 тоже требует пересоздания; новый config v2 содержит `default_remote`.
+Старый remote автоматически не переписывается. Порядок перехода есть в INSTALL.md.
+
+## Очистка bundles на Drive
+
+```bash
+gdi gc drive                       # только план и размеры
+# Дождитесь доставки CI, остановите worker и обмен на ВСЕХ машинах, затем:
+gdi gc drive --apply --quiescent
+```
+
+GC сохраняет по умолчанию два последних полных checkpoint каждой ветки, последующие
+bundles и все дополнительные базы дельт. Вся metadata и bundles без manifest остаются.
+Применение отказывает при legacy CI queue markers или незавершённых jobs v1/v2. CI logs/results
+остаются; старым gdi 0.2.1 нельзя применять GC на CI remote.
+Перед удалением все сохраняемые публикации проверяются в отдельных временных Git
+репозиториях без локального кеша. Формат protocol v3 не меняется.
+
+`--quiescent` — подтверждение остановки остальных клиентов, а не удалённая блокировка.
+GC не запускается автоматически. Он удаляет лишние упаковки, сохраняя commits;
+полные bundles по-прежнему растут вместе с историей. Для Google Drive rclone по
+умолчанию отправляет удалённые файлы в Корзину. Подробности, частичные ошибки и политика
+хранения: [docs/gc.md](gc.md).
+
+## Ограничения
+
+- Только последовательные push в один ref. Конкурирующие продолжения выявляются как
+  конфликт; распределённой блокировки и атомарного Git push нет.
+- Обычные полные SHA-1 worktrees. Bare, shallow, partial clones, replace refs и grafts
+  отвергаются. В linked worktrees gdi использует общую конфигурацию и общий локальный lock.
+- При наличии submodules или LFS pointers в публикуемом commit операция отвергается.
+  История передаётся как Git objects; внешние данные старых commits не переносятся.
+- Push/fetch/pull работают с одной веткой на команду; GC проверяет все опубликованные
+  ветки; clone получает все опубликованные ветки. Tags, удаление веток, force push
+  и refspecs не реализованы.
+  Metadata, orphan bundles и локальный кеш накапливаются; фонового GC нет.
+- Drive Changes API/push notifications и CI/local spool retention пока не реализованы.
+  Общие immutable уведомления через rclone inbox уже поддерживаются.
+  Отмена, выбор workers и перенос по таймауту поддерживаются явной политикой supervisor.
+  GDI, worker и CI автоматически используют доступный host proxy или прямое соединение,
+  начиная с последнего успешного способа; детали — [docs/worker.md](worker.md).
+  Для одного job нужен один coordinator; распределённой резервации слотов нет.
+- SHA256 проверяет целостность, а не авторство. Доступ к папке Drive предоставляйте
+  доверенным участникам. Подписи публикаций и защита от удаления всей remote-истории
+  не реализованы. Не выполняйте обычные Git-команды, меняющие worktree, одновременно с pull.
+
+При ошибке fetch рабочая ветка и файлы не меняются. Обычный pull при расхождении
+пробует auto merge: при конфликте восстанавливает рабочую ветку, оставляет fetched
+ref и показывает команду разрешения конфликта. `pull --passed` применяет точный
+проверенный CI-коммит только через fast-forward.
+При сбое загрузки bundle без manifest остаётся непринятым; повторите push после
+восстановления сети. Подробности конфликтов и неполных manifest — в описании протокола.
+
+## Разработка и проверки
+
+Задайте `INSTALL_DIR` — абсолютный путь к папке с исходниками gdi.
+
+```bash
+INSTALL_DIR="/путь/к/gdi"
+cd "$INSTALL_DIR"
+python3 -m gdi --help
+bash test.sh
+```
+
+`test.sh` запускает весь набор тестов из корня проекта независимо от текущего
+каталога. Если `GDI_TEST_ACT` не задан и `act` доступен в PATH, скрипт подхватывает
+его для integration tests. Аргументы передаются `unittest discover`, например
+`bash test.sh -k deploy`. Docker и проверки установленной службы требуют явных
+настроек окружения, описанных в [acceptance.md](acceptance.md).
+
+После проверок и commit запустите из корня репозитория:
+
+```bash
+./deploy.sh
+```
+
+Скрипт проверяет чистоту рабочего дерева, выполняет `git push`,
+`python3 -m gdi push drive --full` и запускает `scripts/deploy.py`.
+При ошибке останавливается; автоматически commit не создаёт.
+Вызов `deploy.py` повторно проверяет полную публикацию того же HEAD,
+переиспользуя уже опубликованный полный checkpoint.
+
+Для отдельной публикации исходников и runtime без GitHub push:
+
+```bash
+python3 scripts/deploy.py
+```
+
+Это внешний скрипт, а не команда CLI GDI. Он сначала собирает из текущего commit
+воспроизводимый `dist/runtime/gdi.pyz` и проверяет запуск вне исходников, затем
+выполняет `python3 -m gdi push drive --full`. Только после полной публикации того
+же HEAD/ветки загружает `gdi.pyz`, `runtime.json` (версия, HEAD, ветка, SHA256,
+размер), `gdi.pyz.sha256` и `agent.md` из `docs/agent.md` того же commit
+в `gdrive:gdi/gdi/runtime/`. Скачивание обратно проверяет
+точные bytes всех четырёх файлов. Нужны Python 3.10+, Git и настроенный rclone;
+рабочее дерево должно быть чистым. Тесты, commit и GitHub push скрипт не делает.
+При ошибке последующие этапы не выполняются. Уже завершённая Git-публикация
+сохраняется, даже если загрузка runtime не удалась; исправьте причину и повторите
+скрипт для того же commit. Обновление runtime-файлов не является атомарным:
+агент должен проверять checksum перед запуском и повторить скачивание при несовпадении.
+
+Только сборка и локальная проверка, без rclone и изменений на Drive:
+
+```bash
+python3 scripts/deploy.py --build-only
+```
+
+`--output DIR` задаёт каталог сборки (по умолчанию ignored `dist/runtime`);
+`--runtime-dir RCLONE_PATH` меняет место загрузки runtime, например для проверки
+на local backend. Не направляйте output в tracked каталог. Zipapp содержит код
+GDI и стандартную точку входа, без Python-интерпретатора и Git. Агент запускает
+его как `python3 /путь/gdi.pyz agent ...`: [быстрое восстановление](agent.md#готовый-runtime-gdipyz).
+
+Новые tests используют реальные временные Git repositories и fake transport; при наличии
+rclone также проверяется настоящий CLI с local backend, без Google credentials.
+Проверяются пропущенные дельты, checkpoints, повторные операции без загрузок, потеря
+кеша, resume после ошибки, merge с несколькими prerequisites и повреждённые данные.
+GC tests проверяют все ветки, старые базы дельт, восстановление без кеша, отказ при
+повреждении/изменении remote и повтор после частичного удаления.
+CI tests проверяют отдельный постоянный worker, FAIL → log → исправление → PASS,
+точный pull, upload/restart recovery, timeout descendants, binary console, artifact
+checksums и защиту GC. Для тестов достаточно стандартной библиотеки.
+Версия act закрепляется полем `act_version` (по умолчанию `0.2.89`). Перед запуском
+worker образы из `platforms` должны быть загружены через `docker pull`. Worker
+включает фактический SHA256 act, Docker daemon/version и immutable image IDs
+в execution revision; выбранные base images запускаются с `--pull=false`.
+После обновления act/images перезапустите worker. Отчёт сохраняется в проверяемом
+`artifacts/environment.json`. Workflow actions и собственные container images
+закрепляются внутри самого YAML. Команда `worker check --runtime` проверяет эту среду.
+
+Сквозные CLI fixtures, Docker/artifact и signal/restart проверки:
+[docs/acceptance.md](acceptance.md).
+Реальный Google Drive и установка службы на host требуют отдельной проверки в
+разрешённом окружении; тесты rclone local не подменяют её.
+
+Лицензия: [GPLv3](../LICENSE).

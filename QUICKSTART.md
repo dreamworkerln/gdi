@@ -28,7 +28,7 @@ gdi alias list
 ```
 
 Алиасы хранятся в `~/.config/gdi/aliases.ini` (либо
-`$XDG_CONFIG_HOME/gdi/aliases.ini`). Подробности: [README.md](README.md#пользовательские-алиасы).
+`$XDG_CONFIG_HOME/gdi/aliases.ini`). Подробности: [справочник CLI](docs/cli.md#пользовательские-алиасы).
 
 ## Один раз для проекта
 
