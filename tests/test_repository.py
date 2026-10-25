@@ -64,9 +64,12 @@ class InitTests(unittest.TestCase):
         (git.path / 'untracked').write_text('keep\n')
         paths = [git.path / '.git/config', git.path / '.git/index', git.path / '.git/info/exclude',
                  git.path / '.gdi/config.json']
-        before = git.snapshot(), {path: path.read_bytes() for path in paths}
+        before_snapshot = git.snapshot()
+        before_files = {path: path.read_bytes() for path in paths}
         initialize(git.path, branch='other')
-        self.assertEqual(before, (git.snapshot(), {path: path.read_bytes() for path in paths}))
+        # Check init's exact bytes before another git status refreshes the index.
+        self.assertEqual(before_files, {path: path.read_bytes() for path in paths})
+        self.assertEqual(before_snapshot, git.snapshot())
 
     def test_init_preserves_existing_exclude_without_trailing_newline(self):
         target = self.root / 'project'

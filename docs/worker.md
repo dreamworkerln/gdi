@@ -77,7 +77,7 @@ CI создаёт лишние обращения. Ответы `403 User rate l
 и `connection refused` относятся к сети/прокси и сами по себе не означают квоту.
 
 Локальный heartbeat выполнения обновляется раз в 5 секунд и не вызывает запросов
-к Drive. Периодическая публикация статуса и новых log chunks использует базовую
+к Drive. Периодическая публикация status/heartbeat использует базовую
 паузу `poll_active_seconds`; доставка итогового результата начинается сразу
 после завершения CI. Паузы считаются после сетевой операции, поэтому фактический
 интервал больше на длительность этой операции. Для уменьшения постоянных listings
@@ -139,7 +139,7 @@ Docker CLI и act используют один явный daemon endpoint. Jobs
 для такой сети не подходит. Внешние actions и собственные `container`/`services`
 images задаёт YAML; их версии/digests закрепляйте в проекте отдельно.
 
-Консоль act сохраняется как JSON lines в общем build.log и передаётся streaming chunks.
+Консоль act сохраняется как JSON lines в общем build.log и передаётся внутри итогового пакета.
 В результате gdi это одна blocking-стадия `github-actions`; детализация jobs/steps
 сохраняется в консоли. Ненулевой exit act даёт FAIL; exit 0 без успешного завершённого
 job даёт ERROR, а не PASS. Upload artifacts собираются сервером act и публикуются
@@ -299,8 +299,9 @@ gdi worker logs -f -n 0
 `journalctl --user -u gdi-worker.service --no-pager`.
 
 В journal: запуск службы, job ID, этапы, диагностика сети и публикации.
-Полная stdout+stderr консоль CI сохраняется отдельно в job `build.log`, а также
-публикуется chunks во время выполнения. Агент получает её командами `gdi ci logs`
+Полная stdout+stderr консоль CI сохраняется локально в job build.log и входит
+в итоговый result-<sha256>.zip. Во время CI на Drive передаётся status/heartbeat.
+После завершения агент получает полный проверенный лог командами gdi ci logs
 и `gdi ci wait --follow`. Сохранность journal между reboot определяется настройками
 journald, а не gdi. Локальный spool не зависит от journal.
 
@@ -328,7 +329,7 @@ gdi worker job logs --config /path/to/worker.json
 ```text
 ${XDG_STATE_HOME:-$HOME/.local/state}/gdi/<worker-id>/
     ledger.sqlite3
-    jobs/<job-id>/build.log, events/, log-chunks/, result.json, artifacts/, checkout/
+    jobs/<job-id>/build.log, status.json, result.json, result-<sha256>.zip, artifacts/, checkout/
 ${XDG_CACHE_HOME:-$HOME/.cache}/gdi/<worker-id>/<repository-id>/receiver/
     .gdi/cache/<repository-id>/repository.git
 ```
@@ -348,8 +349,8 @@ Ledger и spool постоянные; не удаляйте их при акти
 | Claim принадлежит другому run или ledger потерян | Явная ошибка в journal, автоматического takeover нет |
 
 Live publisher работает отдельно от чтения stdout. Недоступный Drive не блокирует
-захват консоли; закрытые chunks, log и result остаются на диске. Результат публикуется
-последним после artifacts. Сбой upload переводит доставку в UPLOAD_PENDING;
+захват консоли; log, artifacts и result остаются на диске. Они упаковываются
+в один immutable result-<sha256>.zip, который публикуется и проверяется read-back. Сбой upload переводит доставку в UPLOAD_PENDING;
 последующие обходы повторяют её с теми же bytes, не выполняя команды снова.
 Heartbeat/status загружается из отдельного неизменяемого снимка, чтобы обновление
 локального status.json во время передачи не вызывало checksum mismatch.

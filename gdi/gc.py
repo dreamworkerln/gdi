@@ -11,7 +11,7 @@ import tempfile
 
 from .branches import branch_directory, directory_ref
 from .cache import VerifiedCache
-from .exchange import decode, digest
+from .exchange import decode, digest, encode
 from .git import GdiError, Git
 
 
@@ -224,6 +224,17 @@ def ci_guard(exchange, transport, repository_id):
             raise GdiError("GC found an invalid CI request/ready")
         cancelled = (validate_cancellation(transport.read(prefix + '/cancel.json'), req, raw)
                      if 'cancel.json' in names else None)
+        from .ci_package import PACKAGE_PATTERN
+        if any(PACKAGE_PATTERN.fullmatch(name.removeprefix('cancelled/')) for name in names):
+            from .ci import CiResultReader
+            with tempfile.TemporaryDirectory(prefix='gdi-gc-ci-') as directory:
+                reader = CiResultReader(exchange.git, transport, repository_id, directory)
+                result = reader.result(jid)
+            if result is None:
+                reason = 'unconfirmed CI cancellation' if cancelled is not None else 'incomplete/nonterminal CI job'
+                raise GdiError('GC blocked by ' + reason + ': ' + jid)
+            immutable.append((jid, digest(raw), digest(encode(result))))
+            continue
         result_directory = 'cancelled/' if cancelled is not None and 'cancelled/result.json' in names else ''
         if result_directory + 'result.json' not in names:
             raise GdiError("GC blocked by incomplete/nonterminal CI job: " + jid)

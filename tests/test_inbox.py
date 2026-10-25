@@ -209,7 +209,7 @@ class InboxTests(InboxTestCase):
     def test_restart_after_result_upload_failure_preserves_route_and_does_not_rerun(self):
         worker = self.worker()
         client, req = self.submit(worker)
-        self.store.fail = 'repos/a/ci/jobs/' + req['job_id'] + '/result.json'
+        self.store.fail = 'repos/a/ci/jobs/' + req['job_id'] + '/result-'
         worker.tick()
         self.assertEqual(self.counter.read_text(), 'x')
         self.assertEqual(worker.ledger.get(req['job_id'])['state'], 'UPLOAD_PENDING')
@@ -407,7 +407,7 @@ class InboxTests(InboxTestCase):
     def test_pending_route_survives_root_change_without_rerun(self):
         worker = self.worker()
         client, req = self.submit(worker)
-        self.store.fail = 'repos/a/ci/jobs/' + req['job_id'] + '/result.json'
+        self.store.fail = 'repos/a/ci/jobs/' + req['job_id'] + '/result-'
         worker.tick()
         self.store.fail = None
         config = worker.config
@@ -486,7 +486,7 @@ class InboxTests(InboxTestCase):
     def test_ready_result_is_delivered_when_runner_is_unavailable(self):
         worker = self.worker()
         client, req = self.submit(worker)
-        self.store.fail = 'repos/a/ci/jobs/' + req['job_id'] + '/result.json'
+        self.store.fail = 'repos/a/ci/jobs/' + req['job_id'] + '/result-'
         worker.tick()
         self.store.fail = None
         with patch('gdi.runner.resolve_profile', side_effect=GdiError('act unavailable')):

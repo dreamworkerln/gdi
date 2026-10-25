@@ -284,11 +284,13 @@ def result(git, output, snapshot_path, expected_id, *, heartbeat_timeout=600):
         source = reader.result_source(req, raw)
         if source is not None:
             prefix, remote_result = source
-            for item in remote_result['artifacts']:
-                snapshot.require_file(prefix + '/' + item['path'], item['sha256'], item['bytes'])
-            for name, checksum in reader.chunks(req['job_id'], cancelled_delivery=prefix.endswith('/cancelled')):
-                path = prefix + '/log-chunks/' + name
-                snapshot.require_file(path, checksum, snapshot.entries[path]['bytes'])
+            if prefix not in reader.package_sources:
+                # Historical results still require their original downloads.
+                for item in remote_result['artifacts']:
+                    snapshot.require_file(prefix + '/' + item['path'], item['sha256'], item['bytes'])
+                for name, checksum in reader.chunks(req['job_id'], cancelled_delivery=prefix.endswith('/cancelled')):
+                    path = prefix + '/log-chunks/' + name
+                    snapshot.require_file(path, checksum, snapshot.entries[path]['bytes'])
         completed = reader.result(req['job_id'])
         if completed is None:
             cancelled = reader.cancellation_requested(req['job_id'])

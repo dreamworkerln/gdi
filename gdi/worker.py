@@ -1,10 +1,9 @@
-"""Single-host persistent worker with durable spool and independent log publication."""
+"""Single-host worker with durable spool, heartbeat and one-file result delivery."""
 
 import fcntl
 from contextlib import nullcontext
 from functools import wraps
 import logging
-import hashlib
 import re
 import os
 from pathlib import Path
@@ -14,7 +13,8 @@ import threading
 import time
 import uuid
 
-from .ci import files, publication, optional_read
+from .ci import CiResultReader, files, publication, optional_read
+from .ci_package import build_package, read_package
 from .ci_protocol import (atomic_write, descriptor, marker, now, request, upload_json,
                           validate_result, verify_file, validate_cancellation)
 from .exchange import Exchange, decode, digest, encode, validate_repository
@@ -26,7 +26,6 @@ from .workflow import prepare as prepare_workflow, require_completed_job, collec
 from . import runner
 
 LOG = logging.getLogger("gdi.worker")
-CHUNK_BYTES = 256 * 1024
 
 
 class JobCancelled(Exception):
@@ -95,13 +94,15 @@ class Worker:
             transport = self.transport_factory(self.config['remote_url'])
             for path in ('inbox', f'ci/workers/{self.worker_id}'):
                 transport.mkdir(path)
-            capabilities = {'ci_version': 1, 'inbox_version': 1, 'cancel_version': 1, 'worker_id': self.worker_id,
+            capabilities = {'ci_version': 1, 'inbox_version': 1, 'cancel_version': 1, 'result_delivery_version': 1,
+                            'worker_id': self.worker_id,
                             'profiles': {'full': self.config['execution_profile']['revision']},
                             'labels': self.config.get('labels', []), 'platforms': sorted(self.config['platforms'])}
             upload_json(transport, f'ci/workers/{self.worker_id}/capabilities.json', capabilities, mutable=True)
             self.heartbeat()
             return
-        capabilities = {'ci_version': 1, 'cancel_version': 1, 'worker_id': self.worker_id,
+        capabilities = {'ci_version': 1, 'cancel_version': 1, 'result_delivery_version': 1,
+                        'worker_id': self.worker_id,
                         'labels': self.config.get('labels', []),
                         'repositories': {repo['repository_id']: {name: profile['revision'] for name, profile in repo['profiles'].items()}
                                          for repo in self.config['repositories']}}
@@ -247,45 +248,12 @@ class Worker:
                  'stage': stage, 'sequence': old.get('sequence', 0) + 1, 'updated_at': now()}
         atomic_write(status_path, encode(value))
         if (old.get('state'), old.get('stage')) != (state, stage):
-            event = spool / 'events' / f"{value['sequence']:08d}.json"
-            atomic_write(event, encode(value))
             LOG.info('job=%s state=%s stage=%s', row['job_id'], state, stage)
 
-    def make_chunks(self, spool):
-        directory = spool / 'log-chunks'
-        directory.mkdir(exist_ok=True)
-        chunks = sorted(directory.glob('*.bin'))
-        for number, path in enumerate(chunks, 1):
-            match = re.fullmatch(r'([0-9]{8})-([0-9a-f]{64})\.bin', path.name)
-            if not match or int(match[1]) != number or digest(path.read_bytes()) != match[2]:
-                raise GdiError('durable log chunk is corrupt; execution will not be repeated')
-        offset = sum(path.stat().st_size for path in chunks)
-        log = spool / 'build.log'
-        if not log.exists():
-            return chunks
-        with log.open('rb') as handle:
-            handle.seek(offset)
-            while True:
-                data = handle.read(CHUNK_BYTES)
-                if not data:
-                    break
-                path = directory / f'{len(chunks) + 1:08d}-{digest(data)}.bin'
-                atomic_write(path, data)
-                chunks.append(path)
-        return chunks
-
-    def publish_live(self, transport, row, sent, *, spool=None, prefix=None):
+    def publish_live(self, transport, row, *, spool=None, prefix=None):
+        """Only mutable status/heartbeat is sent while execution is active."""
         spool = self.spool(row['job_id']) if spool is None else spool
         prefix = f"ci/jobs/{row['job_id']}" if prefix is None else prefix
-        for directory in ('log-chunks', 'events'):
-            transport.mkdir(prefix + '/' + directory)
-        paths = self.make_chunks(spool)
-        paths += sorted((spool / 'events').glob('*.json')) if (spool / 'events').exists() else []
-        for path in paths:
-            name = path.relative_to(spool).as_posix()
-            if name not in sent:
-                transport.upload(path, prefix + '/' + name)
-                sent.add(name)
         if (spool / 'status.json').exists():
             # Heartbeats replace this pathname while rclone is still reading/hash-
             # checking it. Upload one captured value from a private stable file;
@@ -309,7 +277,6 @@ class Worker:
         return True
 
     def publisher(self, transport, row, done, cancelled):
-        sent = set()
         req = decode(row['raw'])
         while not done.is_set():
             try:
@@ -318,7 +285,7 @@ class Worker:
             except (GdiError, OSError) as exc:
                 LOG.warning('job=%s cancellation check pending: %s', row['job_id'], exc)
             try:
-                self.publish_live(transport, row, sent)
+                self.publish_live(transport, row)
             except (GdiError, OSError) as exc:
                 LOG.warning('job=%s live upload pending: %s', row['job_id'], exc)
             done.wait(self.config['poll_active_seconds'])
@@ -408,15 +375,26 @@ class Worker:
     def verify_remote(self, transport, req, row, *, spool=None, prefix=None):
         spool = self.spool(req['job_id']) if spool is None else spool
         prefix = f"ci/jobs/{req['job_id']}" if prefix is None else prefix
-        result = validate_result(decode(transport.read(prefix + '/result.json')), req, digest(row['raw']))
+        names = files(transport, prefix)
+        packages = sorted(name for name in names if name.startswith('result-'))
+        if not packages and 'result.json' in names:
+            # Historical PUBLISHED ledger entries still have their original files.
+            reader = CiResultReader(Git(self.root, isolated=True), transport,
+                                    req['repository_id'], spool / 'legacy-readback')
+            result = reader.result(req['job_id'])
+            if result is None:
+                raise GdiError('historical CI result is no longer effective')
+        else:
+            package = build_package(spool, req, digest(row['raw']))
+            if packages != [package.name]:
+                raise GdiError('remote CI result package is missing or ambiguous')
+            import tempfile
+            with tempfile.TemporaryDirectory(prefix='gdi-verify-result-') as directory:
+                target = Path(directory) / package.name
+                transport.download(prefix + '/' + package.name, target)
+                result = read_package(target, req, digest(row['raw']))
         if result['run_id'] != row['run_id'] or (spool / 'result.json').read_bytes() != encode(result):
             raise GdiError('remote result differs from durable local result')
-        import tempfile
-        with tempfile.TemporaryDirectory(prefix='gdi-verify-result-') as directory:
-            for spec in result['artifacts']:
-                target = Path(directory) / 'artifact'
-                transport.download(prefix + '/' + spec['path'], target)
-                verify_file(target, spec)
         return result
 
     def stop_cancelled(self, transport, row, req):
@@ -467,6 +445,7 @@ class Worker:
                 raise GdiError('cancelled delivery requires its durable cancellation marker')
             spool = spool / 'cancelled'
             prefix += '/cancelled'
+            transport.mkdir(prefix)
         result = validate_result(decode((spool / 'result.json').read_bytes()), req, digest(row['raw']))
         if cancelled_result and result['state'] != 'CANCELLED':
             raise GdiError('invalid state in cancelled delivery')
@@ -484,21 +463,11 @@ class Worker:
             if cancelled_result:
                 upload_json(transport, f"ci/jobs/{req['job_id']}/status.json",
                             decode((spool / 'status.json').read_bytes()), mutable=True)
-            self.publish_live(transport, row, set(), spool=spool, prefix=prefix)
+            self.publish_live(transport, row, spool=spool, prefix=prefix)
             require_active()
-            for spec in result['artifacts']:
-                require_active()
-                verify_file(spool / spec['path'], spec)
-                transport.upload(spool / spec['path'], prefix + '/' + spec['path'])
-            checksum, size = hashlib.sha256(), 0
-            for path in self.make_chunks(spool):
-                data = path.read_bytes()
-                checksum.update(data); size += len(data)
-            log = next(spec for spec in result['artifacts'] if spec['path'] == 'build.log')
-            if checksum.hexdigest() != log['sha256'] or size != log['bytes']:
-                raise GdiError('durable log chunks do not match the finalized log')
+            package = build_package(spool, req, digest(row['raw']))
             require_active()
-            transport.upload(spool / 'result.json', prefix + '/result.json')
+            transport.upload(package, prefix + '/' + package.name)
             require_active()
             self.verify_remote(transport, req, row, spool=spool, prefix=prefix)
             require_active()

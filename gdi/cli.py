@@ -133,7 +133,7 @@ def parser():
   gdi log                                             # latest publications of the current branch
   gdi cache clear drive                               # clear local verified cache
   gdi push drive --ci --worker user-host --profile full
-  gdi ci wait drive JOB_ID --follow                    # watch CI and console
+  gdi ci wait drive JOB_ID --follow                    # watch status, then the final log
   gdi worker restart                                  # reload worker config and code
   gdi worker logs --follow                            # watch worker service journal
   gdi gc drive                                        # preview remote cleanup

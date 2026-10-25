@@ -232,11 +232,13 @@ gdi push drive --ci --worker user-host --workflow .github/workflows/checks.yml -
 
 `--job JOB_NAME` выбирает отдельный job workflow. Список CI команд в worker.json
 не нужен. Лог в примере сохраняется вне репозитория, чтобы не мешать чистому pull.
-`ci wait --follow` и `ci logs --follow` сохраняют позицию в `.gdi/ci/.../follow/`:
-повтор команды продолжает после уже выведенных chunks. `--restart` вместе с
-`--follow` воспроизводит лог с начала. Обычный `ci logs` и `logs --output` выдают
-полный лог. При аварии между выводом chunk и сохранением позиции возможен повтор
-последнего chunk; невидимый пользователю вывод не пропускается.
+ci wait --follow и ci logs --follow показывают status/heartbeat во время CI,
+а полный лог — после получения проверенного итогового пакета. Позиция в итоговом
+логе сохраняется в .gdi/ci/.../follow/; повтор не печатает уже выведенные bytes.
+--restart с --follow воспроизводит лог с начала и сбрасывает старый cursor.
+Обычные ci logs и logs --output выдают полный проверенный лог. Авария между
+выводом и сохранением позиции может повторить последний фрагмент; невидимый
+пользователю вывод не пропускается. Новые jobs не публикуют log chunks.
 
 `ci wait` возвращает код 0 при проверенном PASS, 1 при другом terminal result,
 124 при timeout ожидания.
@@ -258,7 +260,7 @@ gdi pull drive --passed --job JOB_ID --profile full
 | Хочу | Команда |
 | --- | --- |
 | Посмотреть состояние задания | `gdi ci status drive JOB_ID` |
-| Смотреть консоль по мере выполнения | `gdi ci logs drive JOB_ID --follow` |
+| Ждать по status/heartbeat, затем читать лог | `gdi ci logs drive JOB_ID --follow` |
 | Воспроизвести консоль с начала | `gdi ci logs drive JOB_ID --follow --restart` |
 | Снова ждать тот же job после Ctrl+C | `gdi ci wait drive JOB_ID --follow` |
 | Отменить CI | `gdi ci cancel drive JOB_ID --json` |

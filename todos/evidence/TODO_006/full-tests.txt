@@ -1,0 +1,538 @@
+test_already_published_requires_no_new_upload_and_changed_head_requires_new_plan (test_agent.AgentTests) ... ok
+test_changed_identity_concurrent_publication_and_mismatched_ref (test_agent.AgentTests) ... ok
+test_checkpoint_cadence_forced_full_and_existing_full_plan_retry (test_agent.AgentTests) ... ok
+test_cli_is_json_and_can_run_from_source_against_another_repo (test_agent.AgentTests) ... ok
+test_download_corruption_and_missing_manifest_do_not_advance_plan (test_agent.AgentTests) ... ok
+test_extra_objects_in_local_base_cannot_hide_an_incomplete_delta (test_agent.AgentTests) ... ok
+test_incomplete_preparation_is_not_replaced_and_failed_fsync_grants_no_permission (test_agent.AgentTests) ... ok
+test_incremental_base_damage_and_wrong_base_do_not_grant_permission (test_agent.AgentTests) ... ok
+test_initial_empty_chain_and_clone_full_and_incremental (test_agent.AgentTests) ... ok
+test_lost_local_plan_rename_ack_reuses_same_nonce_and_bytes (test_agent.AgentTests) ... ok
+test_metadata_hash_tamper_symlink_download_and_saved_artifact_tamper (test_agent.AgentTests) ... ok
+test_pages_duplicates_missing_download_and_path_escape (test_agent.AgentTests) ... ok
+test_prepare_retry_check_accept_and_native_pull_without_rclone (test_agent.AgentTests) ... ok
+test_small_delta_is_self_contained_and_accepted_by_native_pull (test_agent.AgentTests) ... ok
+test_snapshot_reports_the_shared_restore_order_and_source_launch_needs_no_packages (test_agent.AgentTests) ... ok
+test_unicode_percent_branch_and_other_branch_listing_are_supported (test_agent.AgentTests) ... ok
+test_cancel_plan_rejects_unsupported_worker_and_remote_marker_tamper (test_agent_ci.AgentCiTests) ... ok
+test_ci_result_and_retry_survive_retired_work_folder_with_cold_restore (test_agent_ci.AgentCiTests) ... ok
+test_explicit_retry_requires_complete_terminal_result_and_creates_new_fixed_id (test_agent_ci.AgentCiTests) ... ok
+test_historical_result_missing_artifact_corrupt_chunk_and_identity_are_rejected (test_agent_ci.AgentCiTests) ... ok
+test_inbox_duplicate_names_and_download_tamper_rejected (test_agent_ci.AgentCiTests) ... ok
+test_intermediate_work_checkpoint_runs_ci_at_its_exact_published_sha (test_agent_ci.AgentCiTests) ... ok
+test_late_pass_is_fenced_and_cancelled_result_verified_offline (test_agent_ci.AgentCiTests) ... job=8801f30d72b64ea3821d80d034023daf pending state=UPLOAD_PENDING: network unavailable during upload
+ok
+test_no_completed_result_is_pending_and_ci_is_explicit (test_agent_ci.AgentCiTests) ... ok
+test_offline_cancel_plan_and_replacement_worker_use_existing_tools (test_agent_ci.AgentCiTests) ... ok
+test_request_order_retry_worker_and_offline_verified_result (test_agent_ci.AgentCiTests) ... ok
+test_single_package_snapshot_and_cached_result_still_require_download (test_agent_ci.AgentCiTests) ... ok
+test_stale_capabilities_and_exact_request_ready_bytes (test_agent_ci.AgentCiTests) ... ok
+test_direct_agent_command_works_with_missing_broken_or_unavailable_alias_config (test_aliases.AliasTests) ... ok
+test_direct_agent_help_does_not_access_alias_config (test_aliases.AliasTests) ... ok
+test_first_command_creates_config_before_execution (test_aliases.AliasTests) ... ok
+test_first_launch_creates_config_in_home_when_xdg_is_unset_or_empty (test_aliases.AliasTests) ... ok
+test_first_launch_creates_default_alias_for_help_version_and_alias (test_aliases.AliasTests) ... ok
+test_home_fallback_and_unknown_command_remains_an_argument_error (test_aliases.AliasTests) ... ok
+test_invalid_definitions_do_not_change_config (test_aliases.AliasTests) ... ok
+test_management_outside_git_without_transport_and_preserves_other_aliases (test_aliases.AliasTests) ... ok
+test_manual_config_help_and_builtin_commands_do_not_read_broken_config (test_aliases.AliasTests) ... ok
+test_quotes_literal_shell_text_case_and_global_options (test_aliases.AliasTests) ... ok
+test_real_status_alias_has_identical_json_in_another_repository (test_aliases.AliasTests) ... ok
+test_startup_does_not_restore_removed_default_alias (test_aliases.AliasTests) ... ok
+test_startup_preserves_existing_config_bytes_and_timestamp (test_aliases.AliasTests) ... ok
+test_artifact_copied_and_symlink_outside_rejected (test_ci.CiTests) ... ok
+test_changed_head_is_never_pass (test_ci.CiTests) ... job=7f9cddb1cd57479a81f74420dd5c9a0a execution error
+Traceback (most recent call last):
+  File "/home/dream/coding/python/gdi/gdi/worker.py", line 571, in process
+    raise GdiError('CI changed requested HEAD')
+gdi.git.GdiError: CI changed requested HEAD
+ok
+test_corrupt_artifact_or_result_cannot_be_pass (test_ci.CiTests) ... ok
+test_foreign_claim_and_invalid_ready_are_never_executed (test_ci.CiTests) ... queue=4ebe613c635e48a0bf0934d990bec1b8.json: CI queue/ready/request identity mismatch
+job=4ebe613c635e48a0bf0934d990bec1b8 pending state=DISCOVERED: foreign/stale claim: keep original ledger; automatic takeover is disabled
+ok
+test_full_cycle_fail_fix_pass_and_exact_pass_pull (test_ci.CiTests) ... ok
+test_historical_missing_chunk_and_result_without_blocking_stage_are_rejected (test_ci.CiTests) ... ok
+test_isolated_checkout_keeps_requested_ref_and_git_metadata (test_ci.CiTests) ... ok
+test_live_progress_before_ci_completes (test_ci.CiTests) ... ok
+test_lost_ack_after_result_and_queue_cleanup_retries_without_execution (test_ci.CiTests) ... job=2be253e269654542bbe20f5c36b4724f pending state=UPLOAD_PENDING: lost acknowledgement
+ok
+test_old_commit_after_bundle_gc_and_cache_loss (test_ci.CiTests) ... ok
+test_optional_failure_warnings_and_required_stages (test_ci.CiTests) ... ok
+test_partial_request_blocks_gc_but_does_not_execute (test_ci.CiTests) ... job=fa2edb416c8844d4bdbc9272f67bf55f incomplete submission; waiting for request.ready
+ok
+test_pull_passed_refuses_dirty_or_divergent_worktree (test_ci.CiTests) ... ok
+test_required_artifact_and_symlink_escape (test_ci.CiTests) ... ok
+test_result_upload_failure_restart_does_not_execute_again (test_ci.CiTests) ... job=a3bd52bf46cb4a249c62c1631e5a58de pending state=UPLOAD_PENDING: network unavailable during upload
+ok
+test_revision_change_rejects_without_execution (test_ci.CiTests) ... ok
+test_submit_reuses_job_and_retry_requires_terminal (test_ci.CiTests) ... ok
+test_timeout_and_binary_console (test_ci.CiTests) ... ok
+test_timeout_kills_descendants_that_hold_stdout (test_ci.CiTests) ... ok
+test_uncertain_execution_is_interrupted_without_rerun (test_ci.CiTests) ... ok
+test_wait_timeout_does_not_cancel_job (test_ci.CiTests) ... ok
+test_service_absolute_paths_and_profile_rejection (test_ci.ConfigTests) ... ok
+test_separate_persistent_worker_fail_fix_pass (test_ci.LocalAutonomousTests) ... ok
+test_cancel_before_start_is_verified_without_checkout_or_execution (test_ci_cancel.LegacyCancellationTests) ... ok
+test_running_cancel_stops_process_and_does_not_run_next_stage (test_ci_cancel.LegacyCancellationTests) ... ok
+test_withdraw_unsupported_worker_keeps_history_and_blocks_unconfirmed_retry (test_ci_cancel.LegacyCancellationTests) ... ok
+test_cancel_after_package_build_never_publishes_original_pass (test_ci_cancel.SharedCancellationTests) ... ok
+test_cancel_during_result_upload_suppresses_pass_already_in_flight (test_ci_cancel.SharedCancellationTests) ... ok
+test_cancellation_arriving_during_client_verification_fences_pass (test_ci_cancel.SharedCancellationTests) ... ok
+test_cancellation_delivery_restart_never_runs_original_job (test_ci_cancel.SharedCancellationTests) ... job=482f3083750644188d90ffc649d2c83a pending state=UPLOAD_PENDING: network unavailable during upload
+ok
+test_cancelled_delivery_lost_ack_is_immutable_and_restores_marker (test_ci_cancel.SharedCancellationTests) ... job=c9b12003a3b94d2787b5900f0c7e463f pending state=UPLOAD_PENDING: network unavailable during upload
+job=c9b12003a3b94d2787b5900f0c7e463f pending state=UPLOAD_PENDING: lost cancellation result acknowledgement
+ok
+test_cancelled_delivery_recovers_lost_inbox_deletion_after_published (test_ci_cancel.SharedCancellationTests) ... job=b2639c7fa08d41fa8ec2328e2b5aa44d pending state=UPLOAD_PENDING: network unavailable during upload
+job=b2639c7fa08d41fa8ec2328e2b5aa44d pending state=PUBLISHED: lost notification acknowledgement
+ok
+test_cancelled_delivery_requires_complete_log_and_matching_claim (test_ci_cancel.SharedCancellationTests) ... ok
+test_completed_result_wins_over_late_cancel (test_ci_cancel.SharedCancellationTests) ... ok
+test_foreign_claim_does_not_produce_false_stopped_confirmation (test_ci_cancel.SharedCancellationTests) ... job=a5ac72e7161c4d83830aa45e4b1304dd pending state=DISCOVERED: foreign/stale claim: cancellation must be confirmed by the original worker ledger
+ok
+test_invalid_cancellation_never_starts_queued_job (test_ci_cancel.SharedCancellationTests) ... job=8857a35d71fa487093160b3cb11850d0 pending state=DISCOVERED: CI cancellation/request identity or canonical bytes mismatch
+ok
+test_lost_cancellation_upload_ack_is_reused_with_same_bytes (test_ci_cancel.SharedCancellationTests) ... ok
+test_lost_result_upload_ack_with_cancel_resumes_only_cancelled_delivery (test_ci_cancel.SharedCancellationTests) ... job=d7a8824720744285b78808d3d031f509 pending state=UPLOAD_PENDING: lost upload response after cancellation
+ok
+test_observed_cancellation_cannot_be_revoked_by_missing_remote_marker (test_ci_cancel.SharedCancellationTests) ... job=427d4401d6ec4d94ae2a00c9d15fda61 pending state=UPLOAD_PENDING: lost upload response after cancellation
+ok
+test_offline_discovered_job_cancelled_and_replaced_on_other_host (test_ci_cancel.SharedCancellationTests) ... ok
+test_saved_pass_cancelled_before_restart_preserves_partial_uploads (test_ci_cancel.SharedCancellationTests) ... job=94082ef12c8b4038b77783a680be82fc pending state=UPLOAD_PENDING: network unavailable during upload
+ok
+test_undelivered_local_cancellation_is_not_proof_for_retry (test_ci_cancel.SharedCancellationTests) ... ok
+test_withdraw_removes_only_matching_inbox_event (test_ci_cancel.SharedCancellationTests) ... ok
+test_atomic_write_fsync_replace_and_directory_fsync_boundaries (test_ci_faults.CiFaultTests) ... ok
+test_claim_metadata_lost_ack_and_queue_ack_failure_are_safe (test_ci_faults.CiFaultTests) ... job=732c748021a1470e8746839989a2a57b pending state=CLAIMED: claim acknowledgement lost
+job=732c748021a1470e8746839989a2a57b pending state=PUBLISHED: queue ack lost
+ok
+test_crashes_before_and_after_ledger_transitions (test_ci_faults.CiFaultTests) ... ok
+test_discovery_commit_failure_keeps_queue_and_does_not_execute (test_ci_faults.CiFaultTests) ... queue=a153655e7e174dae83af492969196556.json: ledger commit unavailable
+queue=a153655e7e174dae83af492969196556.json: ledger commit unavailable
+ok
+test_execution_process_record_crash_kills_child_and_recovery_never_reruns (test_ci_faults.CiFaultTests) ... ok
+test_final_result_atomic_write_failures_before_and_after_replace (test_ci_faults.CiFaultTests) ... job=be09b0a112df45f4bd3a860d97630ffa pending state=FINALIZING: result fsync unavailable
+job=bfa0705edba34003a21b8837588ebf56 pending state=FINALIZING: result fsync unavailable
+ok
+test_package_build_failure_before_or_after_creation_does_not_rerun (test_ci_faults.CiFaultTests) ... job=378642d104b9490b98c6694d5a410721 pending state=UPLOAD_PENDING: package fsync unavailable
+job=5460a470421c4f5a8b353758183358a7 pending state=UPLOAD_PENDING: package fsync unavailable
+ok
+test_package_upload_failure_before_or_after_remote_write (test_ci_faults.CiFaultTests) ... job=7f68d2c88ba749c1afd9416ff39a7b3a pending state=UPLOAD_PENDING: upload unavailable
+job=90c9a266465d4e8bb9c97aee6b441018 pending state=UPLOAD_PENDING: upload response lost
+ok
+test_artifact_hash_is_checked_even_when_zip_crc_is_valid (test_ci_package.CiPackageTests) ... ok
+test_changed_archive_bytes_and_foreign_identity_are_rejected (test_ci_package.CiPackageTests) ... ok
+test_client_downloads_one_package_and_repairs_local_files_without_redownload (test_ci_package.CiPackageTests) ... ok
+test_concurrent_clients_can_populate_the_same_empty_package_cache (test_ci_package.CiPackageTests) ... ok
+test_empty_and_binary_log_are_preserved_exactly (test_ci_package.CiPackageTests) ... ok
+test_finalized_spool_corruption_cannot_be_repackaged (test_ci_package.CiPackageTests) ... ok
+test_missing_extra_duplicate_and_symlink_entries_are_rejected (test_ci_package.CiPackageTests) ... /usr/lib/python3.10/zipfile.py:1541: UserWarning: Duplicate name: 'package.json'
+  return self._open_to_write(zinfo, force_zip64=force_zip64)
+ok
+test_package_name_must_be_exact_content_address (test_ci_package.CiPackageTests) ... ok
+test_pass_without_blocking_stages_is_rejected_inside_package (test_ci_package.CiPackageTests) ... ok
+test_single_file_has_complete_result_and_reproducible_bytes (test_ci_package.CiPackageTests) ... ok
+test_connect_tunnels_bytes_and_rejects_unauthenticated_requests (test_ci_proxy.CiProxyTests) ... ok
+test_each_new_connection_can_switch_without_changing_ci_environment (test_ci_proxy.CiProxyTests) ... Network route failed; retrying connection directly
+ok
+test_http_post_forwards_body_without_forwarding_proxy_credentials (test_ci_proxy.CiProxyTests) ... ok
+test_plain_http_uses_upstream_forwarding_without_connect (test_ci_proxy.CiProxyTests) ... ok
+test_cold_install_and_warm_reuse_never_download_again (test_ci_tools.CiToolsTests) ... ok
+test_failed_download_or_wrong_version_is_not_published (test_ci_tools.CiToolsTests) ... ok
+test_main_exports_cached_tools_to_github_steps (test_ci_tools.CiToolsTests) ... ok
+test_new_version_uses_its_own_cache_entry (test_ci_tools.CiToolsTests) ... ok
+test_broken_runtime_is_rejected_before_publication (test_deploy.DeployTests) ... ok
+test_build_only_without_rclone_uses_default_output_from_another_directory (test_deploy.DeployTests) ... ok
+test_build_refuses_output_in_source_tree (test_deploy.DeployTests) ... ok
+test_dirty_sources_and_untracked_files_are_not_deployed (test_deploy.DeployTests) ... ok
+test_failed_publication_does_not_upload_runtime (test_deploy.DeployTests) ... ok
+test_full_deploy_retry_update_gc_and_clone_using_only_zipapp (test_deploy.DeployTests) ... ok
+test_reproducible_runtime_runs_after_sources_are_removed (test_deploy.DeployTests) ... ok
+test_upload_failure_and_corrupt_download_are_reported_and_retry_keeps_publication (test_deploy.DeployTests) ... ok
+test_actual_prerequisite_outside_declared_base_is_rejected (test_exchange.ExchangeTests) ... ok
+test_auto_merge_combines_independent_hunks_in_one_file (test_exchange.ExchangeTests) ... ok
+test_auto_merge_reports_failed_rollback_without_claiming_restoration (test_exchange.ExchangeTests) ... ok
+test_auto_merge_restores_add_add_modify_delete_and_binary_conflicts (test_exchange.ExchangeTests) ... ok
+test_auto_merge_restores_state_on_interrupt_and_commit_failure (test_exchange.ExchangeTests) ... ok
+test_auto_merge_without_identity_preserves_the_working_branch (test_exchange.ExchangeTests) ... ok
+test_automatic_checkpoint_bounds_bootstrap_downloads (test_exchange.ExchangeTests) ... ok
+test_branch_change_while_creating_bundle_refuses_publication (test_exchange.ExchangeTests) ... ok
+test_branch_switch_with_same_head_during_pull_is_detected (test_exchange.ExchangeTests) ... ok
+test_branches_with_slashes_do_not_collide (test_exchange.ExchangeTests) ... ok
+test_bundle_advertising_another_ref_is_rejected (test_exchange.ExchangeTests) ... ok
+test_cache_alternate_handles_unicode_spaces_and_quotes_in_repo_path (test_exchange.ExchangeTests) ... ok
+test_cache_with_missing_objects_is_automatically_rebuilt (test_exchange.ExchangeTests) ... ok
+test_checkpoint_interval_one_always_creates_full_bundles (test_exchange.ExchangeTests) ... ok
+test_competing_publications_are_not_selected_by_time (test_exchange.ExchangeTests) ... ok
+test_conflict_exposed_during_upload_is_reported (test_exchange.ExchangeTests) ... ok
+test_corrupted_delta_does_not_import_into_user_repository (test_exchange.ExchangeTests) ... ok
+test_detached_and_unborn_push_errors (test_exchange.ExchangeTests) ... ok
+test_dirty_tree_allows_push_and_fetch_but_refuses_pull (test_exchange.ExchangeTests) ... ok
+test_dirty_tree_created_during_pull_is_detected (test_exchange.ExchangeTests) ... ok
+test_divergent_pull_auto_merges_clean_changes_and_can_be_published (test_exchange.ExchangeTests) ... ok
+test_divergent_pull_conflict_aborts_and_prints_copyable_mergetool_command (test_exchange.ExchangeTests) ... ok
+test_empty_repository_can_pull_first_commit (test_exchange.ExchangeTests) ... ok
+test_forced_full_checkpoint_at_same_head (test_exchange.ExchangeTests) ... ok
+test_full_checkpoint_cannot_hide_non_fast_forward_history (test_exchange.ExchangeTests) ... ok
+test_full_checkpoint_recovers_without_private_cache_from_local_history (test_exchange.ExchangeTests) ... ok
+test_git_environment_overrides_do_not_redirect_repository (test_exchange.ExchangeTests) ... ok
+test_git_remote_name_collision_refused (test_exchange.ExchangeTests) ... ok
+test_head_change_during_pull_is_detected (test_exchange.ExchangeTests) ... ok
+test_incremental_bundle_disguised_as_full_is_rejected_before_import (test_exchange.ExchangeTests) ... ok
+test_incremental_normal_mode_transfers_only_new_objects (test_exchange.ExchangeTests) ... ok
+test_incremental_with_incorrect_base_or_prerequisites_is_rejected (test_exchange.ExchangeTests) ... ok
+test_interrupt_after_merge_commit_preserves_the_new_commit (test_exchange.ExchangeTests) ... ok
+test_interrupted_replay_resumes_without_redownloading_verified_bases (test_exchange.ExchangeTests) ... ok
+test_join_existing_remote_does_not_activate_lifecycle (test_exchange.ExchangeTests) ... ok
+test_lfs_and_submodules_rejected (test_exchange.ExchangeTests) ... ok
+test_lock_rejects_second_gdi_operation (test_exchange.ExchangeTests) ... ok
+test_merge_bundle_supports_multiple_real_prerequisites (test_exchange.ExchangeTests) ... ok
+test_metadata_corruption_is_rejected (test_exchange.ExchangeTests) ... ok
+test_missing_bundle_and_network_failure_preserve_tracking (test_exchange.ExchangeTests) ... ok
+test_missing_delta_preserves_refs_and_full_checkpoint_recovers (test_exchange.ExchangeTests) ... ok
+test_missing_local_cache_is_rebuilt_from_remote (test_exchange.ExchangeTests) ... ok
+test_missing_predecessor_is_not_ignored (test_exchange.ExchangeTests) ... ok
+test_multiple_projects_are_independent (test_exchange.ExchangeTests) ... ok
+test_new_client_replays_missed_deltas_in_order (test_exchange.ExchangeTests) ... ok
+test_new_remote_has_usable_work_retention_without_activation (test_exchange.ExchangeTests) ... ok
+test_next_fetch_downloads_only_the_new_delta (test_exchange.ExchangeTests) ... ok
+test_non_fast_forward_push_refused (test_exchange.ExchangeTests) ... ok
+test_pull_is_up_to_date_when_local_history_already_contains_remote_tip (test_exchange.ExchangeTests) ... ok
+test_reader_supports_base_earlier_than_previous_publication (test_exchange.ExchangeTests) ... ok
+test_remote_change_before_upload_refuses_publication (test_exchange.ExchangeTests) ... ok
+test_remote_configuration_and_remove (test_exchange.ExchangeTests) ... ok
+test_repeated_push_is_noop_and_chain_advances (test_exchange.ExchangeTests) ... ok
+test_repository_identity_is_pinned (test_exchange.ExchangeTests) ... ok
+test_roundtrip_and_publication_order (test_exchange.ExchangeTests) ... ok
+test_shallow_partial_bare_sha256_and_replace_rejected (test_exchange.ExchangeTests) ... ok
+test_unfinished_merge_refuses_pull (test_exchange.ExchangeTests) ... ok
+test_unfinished_publication_and_retry (test_exchange.ExchangeTests) ... ok
+test_v1_remote_is_explicitly_rejected (test_exchange.ExchangeTests) ... ok
+test_verified_cache_survives_new_exchange_instance_without_downloads (test_exchange.ExchangeTests) ... ok
+test_wrong_bundle_checksum_does_not_import_or_change_tracking (test_exchange.ExchangeTests) ... ok
+test_wrong_head_ref_and_repository_id_rejected (test_exchange.ExchangeTests) ... ok
+test_real_cli_roundtrip_without_google_credentials (test_exchange.LocalTransportTests) ... ok
+test_cli_help_version_and_unsupported_flags (test_exchange.ProtocolAndCliTests) ... ok
+test_duplicate_keys_and_invalid_json (test_exchange.ProtocolAndCliTests) ... ok
+test_help_and_version_aliases_work_without_repository_or_transport (test_exchange.ProtocolAndCliTests) ... ok
+test_missing_tools_and_invalid_listings (test_exchange.ProtocolAndCliTests) ... ok
+test_url_validation (test_exchange.ProtocolAndCliTests) ... ok
+test_version_banner_colour_and_plain_text_override (test_exchange.ProtocolAndCliTests) ... ok
+test_bad_package_and_failed_flush_never_advance_position (test_follow_cursor.FollowCursorTests) ... ok
+test_binary_final_log_and_cursor_write_failure_replay_without_skipping (test_follow_cursor.FollowCursorTests) ... ok
+test_changed_log_identity_cannot_be_mixed_with_printed_log (test_follow_cursor.FollowCursorTests) ... ok
+test_corrupt_cursor_identity_and_concurrent_follower (test_follow_cursor.FollowCursorTests) ... ok
+test_first_follow_poll_reuses_request_but_next_poll_rechecks_ready (test_follow_cursor.FollowCursorTests) ... ok
+test_pending_follow_reads_status_without_chunks_or_partial_log (test_follow_cursor.FollowCursorTests) ... ok
+test_timeout_then_complete_log_resume_and_explicit_restart (test_follow_cursor.FollowCursorTests) ... ok
+test_all_branches_are_kept_and_verified_including_unicode_ref (test_gc.GcTests) ... ok
+test_apply_checks_from_scratch_and_new_client_restores_all_history (test_gc.GcTests) ... ok
+test_apply_requires_quiescent_confirmation_and_valid_policy (test_gc.GcTests) ... ok
+test_backend_not_reflecting_deletion_is_reported (test_gc.GcTests) ... ok
+test_bad_other_branch_prevents_every_deletion (test_gc.GcTests) ... ok
+test_conflicting_chain_is_rejected (test_gc.GcTests) ... ok
+test_corrupt_retained_bundle_is_not_hidden_by_populated_cache (test_gc.GcTests) ... ok
+test_dry_run_lists_exact_sizes_and_preserves_everything (test_gc.GcTests) ... ok
+test_empty_remote_is_a_noop (test_gc.GcTests) ... ok
+test_lost_delete_acknowledgement_can_be_retried (test_gc.GcTests) ... ok
+test_metadata_under_wrong_branch_directory_is_rejected (test_gc.GcTests) ... ok
+test_missing_retained_bundle_is_rejected_but_missing_obsolete_bundle_is_ok (test_gc.GcTests) ... ok
+test_non_immediate_base_keeps_older_dependency_chain (test_gc.GcTests) ... ok
+test_observed_remote_change_during_deletion_is_reported (test_gc.GcTests) ... ok
+test_orphan_bundles_are_untouched (test_gc.GcTests) ... ok
+test_partial_delete_failure_can_be_retried (test_gc.GcTests) ... ok
+test_rclone_deletion_is_restricted_to_one_bundle (test_gc.GcTests) ... ok
+test_remote_advance_during_verification_aborts_before_deletion (test_gc.GcTests) ... ok
+test_repository_replacement_during_verification_aborts (test_gc.GcTests) ... ok
+test_retention_setting_and_fewer_checkpoints (test_gc.GcTests) ... ok
+test_unknown_paths_abort_without_deleting (test_gc.GcTests) ... ok
+test_real_cli_gc_then_bootstrap_from_clean_cache (test_gc.LocalGcTests) ... ok
+test_pending_connector_result_reports_stale_heartbeat (test_heartbeat.AgentHeartbeatTests) ... ok
+test_boundary_missing_bad_timestamp_and_clock_skew (test_heartbeat.HeartbeatTests) ... ok
+test_cli_status_passes_threshold_and_rejects_invalid_limit (test_heartbeat.JobHeartbeatTests) ... ok
+test_follow_reports_transition_to_stale_when_timestamp_does_not_change (test_heartbeat.JobHeartbeatTests) ... ok
+test_follow_shows_stale_and_missing_heartbeat_without_terminal_claim (test_heartbeat.JobHeartbeatTests) ... ok
+test_invalid_clock_and_cancelled_pending_keep_explicit_diagnostics (test_heartbeat.JobHeartbeatTests) ... ok
+test_stale_status_is_advisory_and_custom_threshold_rechecks_freshness (test_heartbeat.JobHeartbeatTests) ... ok
+test_verified_result_is_not_mislabeled_by_old_advisory_heartbeat (test_heartbeat.JobHeartbeatTests) ... ok
+test_missing_legacy_status_and_future_clock_are_not_available (test_heartbeat.WorkerHeartbeatTests) ... ok
+test_revision_labels_platforms_report_the_concrete_difference (test_heartbeat.WorkerHeartbeatTests) ... ok
+test_staleness_is_visible_even_when_capabilities_are_incompatible (test_heartbeat.WorkerHeartbeatTests) ... ok
+test_capabilities_corruption_and_network_failures_do_not_fall_back (test_inbox.InboxTests) ... ok
+test_ci_migration_conflicts_preserve_both_states (test_inbox.InboxTests) ... ok
+test_ci_migration_resumes_partial_tree_and_preserves_outbox_ids (test_inbox.InboxTests) ... ok
+test_durable_result_before_ledger_update_is_delivered_without_execution (test_inbox.InboxTests) ... job=769dd334adc847cbbbb2633f9d6268d8 pending state=FINALIZING: crash after result fsync
+ok
+test_empty_poll_lists_only_the_shared_inbox (test_inbox.InboxTests) ... ok
+test_fail_fix_pass_logs_artifacts_and_workflow_selection (test_inbox.InboxTests) ... ok
+test_failed_notification_upload_reuses_durable_job (test_inbox.InboxTests) ... ok
+test_foreign_worker_and_mismatched_identity_do_not_execute (test_inbox.InboxTests) ... inbox=17514ceb0e5244e5a77fb2621827930a-063e8f0f69f25db2e65cf7b440f18ea0ab5d0910ddd960a65aa2fef7ea2f5903.json: inbox/request/ready identity mismatch; notification retained
+ok
+test_git_configuration_is_unchanged_and_legacy_settings_are_ignored (test_inbox.InboxTests) ... ok
+test_github_namespace_is_pinned_and_retry_preserves_it (test_inbox.InboxTests) ... ok
+test_invalid_selector_is_rejected_before_cli_push (test_inbox.InboxTests) ... ok
+test_linked_worktrees_share_settings_and_the_lock (test_inbox.InboxTests) ... ok
+test_lost_acknowledgement_retries_deletion_without_execution (test_inbox.InboxTests) ... inbox=91835dc613e46911e6de28ac6ba44358-7bd05e9a6b768baf6e5b0c061e645ecd8875fc0fdce8482e9b5bb044be2defb3.json: lost notification acknowledgement; notification retained
+job=2a61f2b070d844d59a37a85c81c0e9eb pending state=PUBLISHED: lost notification acknowledgement
+ok
+test_no_completed_jobs_cannot_be_pass (test_inbox.InboxTests) ... job=a44dfc85002e4c4895440766af2149c6 execution error
+Traceback (most recent call last):
+  File "/home/dream/coding/python/gdi/gdi/worker.py", line 569, in process
+    require_completed_job(spool / 'build.log')
+  File "/home/dream/coding/python/gdi/gdi/workflow.py", line 147, in require_completed_job
+    raise GdiError("workflow runner completed without any successful jobs")
+gdi.git.GdiError: workflow runner completed without any successful jobs
+ok
+test_partial_notification_and_missing_ready_are_retained_without_execution (test_inbox.InboxTests) ... inbox=f853edef31414369b76a7cf01cfc7b43-6e1b7e422275c6a24dffebb3b71516087e5bf59758540f1134c9aaac67e518f6.json: inbox checksum mismatch; keeping notification for retry; notification retained
+inbox=f853edef31414369b76a7cf01cfc7b43-6e1b7e422275c6a24dffebb3b71516087e5bf59758540f1134c9aaac67e518f6.json: remote file not found: repos/a/ci/jobs/f853edef31414369b76a7cf01cfc7b43/request.ready; notification retained
+ok
+test_pending_route_survives_root_change_without_rerun (test_inbox.InboxTests) ... job=27a89d166b9841b98c442457f2a51df5 pending state=UPLOAD_PENDING: network unavailable during upload
+ok
+test_publication_receipt_before_ack_survives_restart (test_inbox.InboxTests) ... inbox=86576b82b1b5b0232ff62451fd1205d9-245edeb64b0303a8dcf2b9f7914113c11cba9356027551796d46684f92860fa9.json: lost notification acknowledgement; notification retained
+ok
+test_ready_result_is_delivered_when_runner_is_unavailable (test_inbox.InboxTests) ... job=2964b63ad205428e93255d2c79a49ef2 pending state=UPLOAD_PENDING: network unavailable during upload
+worker transport/config error: act unavailable
+ok
+test_restart_after_result_upload_failure_preserves_route_and_does_not_rerun (test_inbox.InboxTests) ... job=4ad52fc91a8e4d0fb3c6420647d49aee pending state=UPLOAD_PENDING: network unavailable during upload
+ok
+test_two_projects_publish_independent_notifications_and_complete (test_inbox.InboxTests) ... ok
+test_unsafe_routes_and_global_repository_settings_are_rejected (test_inbox.InboxTests) ... ok
+test_v2_revision_change_rejects_pending_job (test_inbox.InboxTests) ... ok
+test_v2_uncertain_execution_is_interrupted_without_rerun (test_inbox.InboxTests) ... ok
+test_workflow_path_and_missing_secrets_fail_without_execution (test_inbox.InboxTests) ... job=7427ed9a894d4abc85f15f86cb9b3051 execution error
+Traceback (most recent call last):
+  File "/home/dream/coding/python/gdi/gdi/worker.py", line 548, in process
+    profile = prepare_workflow(checkout, profile, spool, req,
+  File "/home/dream/coding/python/gdi/gdi/workflow.py", line 39, in prepare
+    validate_selection(checkout, req["head"], workflow)
+  File "/home/dream/coding/python/gdi/gdi/workflow.py", line 30, in validate_selection
+    raise GdiError("no workflow YAML files found in the selected commit: " + selector["path"])
+gdi.git.GdiError: no workflow YAML files found in the selected commit: .github/workflows/missing.yml
+job=3d6258fb48a54af0938fea0331fbae99 execution error
+Traceback (most recent call last):
+  File "/home/dream/coding/python/gdi/gdi/worker.py", line 548, in process
+    profile = prepare_workflow(checkout, profile, spool, req,
+  File "/home/dream/coding/python/gdi/gdi/workflow.py", line 39, in prepare
+    validate_selection(checkout, req["head"], workflow)
+  File "/home/dream/coding/python/gdi/gdi/workflow.py", line 27, in validate_selection
+    raise GdiError("workflow YAML must be a regular tracked file")
+gdi.git.GdiError: workflow YAML must be a regular tracked file
+job=4536e9e0f7044d06b901acdcbf45fe78 execution error
+Traceback (most recent call last):
+  File "/home/dream/coding/python/gdi/gdi/worker.py", line 548, in process
+    profile = prepare_workflow(checkout, profile, spool, req,
+  File "/home/dream/coding/python/gdi/gdi/workflow.py", line 57, in prepare
+    raise GdiError("missing workflow secret in worker environment: " + name)
+gdi.git.GdiError: missing workflow secret in worker environment: GDI_TEST_UNSET_SECRET
+ok
+test_real_rclone_and_act_fail_fix_pass (test_inbox.RealInboxTests) ... ok
+test_heartbeat_update_during_upload_uses_one_stable_snapshot (test_live_status.GlobalLiveStatusTests) ... ok
+test_heartbeat_update_during_upload_uses_one_stable_snapshot (test_live_status.LegacyLiveStatusTests) ... ok
+test_default_history_newest_first_limit_and_no_git_mutation (test_log.LogTests) ... ok
+test_empty_branch_and_remote_only_commit (test_log.LogTests) ... ok
+test_explicit_remote_branch_and_detached_head (test_log.LogTests) ... ok
+test_invalid_limits_are_argument_errors (test_log.LogTests) ... ok
+test_limit_does_not_hide_invalid_older_metadata_or_conflicts (test_log.LogTests) ... ok
+test_terminal_control_in_commit_subject_is_escaped (test_log.LogTests) ... ok
+test_all_routes_are_tried_once_and_failure_is_reported (test_network_routes.NetworkRoutesTests) ... Network route failed; retrying connection directly
+ok
+test_async_transfer_failure_switches_whole_transfer_not_job_poll (test_network_routes.NetworkRoutesTests) ... Network route failed; retrying connection directly
+ok
+test_authentication_and_protocol_errors_do_not_switch (test_network_routes.NetworkRoutesTests) ... ok
+test_cli_retries_with_clean_environment_then_remembers_direct (test_network_routes.NetworkRoutesTests) ... Network route failed; retrying connection directly
+ok
+test_direct_failure_switches_back_to_proxy_and_remembers_it (test_network_routes.NetworkRoutesTests) ... Network route failed; retrying connection directly
+Network route failed; retrying connection through a host proxy
+ok
+test_discovered_proxy_is_tried_before_direct_without_worker_env (test_network_routes.NetworkRoutesTests) ... ok
+test_discovery_preserves_host_bypass_and_does_not_modify_host_env (test_network_routes.NetworkRoutesTests) ... ok
+test_rc_restarts_before_remote_retry_but_not_for_local_cache_call (test_network_routes.NetworkRoutesTests) ... Network route failed; retrying connection directly
+ok
+test_shell_discovery_reads_literals_without_executing_commands (test_network_routes.NetworkRoutesTests) ... ok
+test_successful_direct_route_is_first_in_next_process (test_network_routes.NetworkRoutesTests) ... Network route failed; retrying connection directly
+ok
+test_unavailable_local_proxy_is_skipped_without_remote_attempt (test_network_routes.NetworkRoutesTests) ... ok
+test_unstarted_rc_request_never_spawns_an_unowned_daemon (test_network_routes.NetworkRoutesTests) ... ok
+test_failed_call_is_logged_before_execution_without_private_output (test_performance.ProfilingTests) ... ok
+test_interrupt_leaves_complete_profile_and_restores_session (test_performance.ProfilingTests) ... ok
+test_consumed_notification_is_not_recreated_on_unchanged_push (test_performance.PublicationDeliveryTests) ... ok
+test_corruption_during_preupload_recheck_is_still_detected (test_performance.PublicationDeliveryTests) ... ok
+test_crash_after_upload_before_receipt_retries_identical_event (test_performance.PublicationDeliveryTests) ... ok
+test_failed_delivery_is_retried_without_another_publication (test_performance.PublicationDeliveryTests) ... ok
+test_fresh_snapshot_downloads_multiple_files_in_one_process (test_performance.RcloneBatchTests) ... ok
+test_missing_or_oversized_metadata_cannot_produce_a_partial_snapshot (test_performance.RcloneBatchTests) ... ok
+test_upload_creates_parents_and_preserves_immutability (test_performance.RcloneBatchTests) ... ok
+test_incremental_bundle_uses_verified_base_without_accepting_new_cache_ref (test_publication_core.PublicationCoreTests) ... ok
+test_modified_bundle_fails_quarantine_before_acceptance (test_publication_core.PublicationCoreTests) ... ok
+test_offline_full_bundle_is_accepted_by_ordinary_pull (test_publication_core.PublicationCoreTests) ... ok
+test_stale_source_head_and_existing_artifacts_are_not_overwritten (test_publication_core.PublicationCoreTests) ... ok
+test_wrong_base_identity_or_divergent_history_is_rejected (test_publication_core.PublicationCoreTests) ... ok
+test_advisory_overwrite_does_not_disable_immutability (test_rc_candidate.RcCandidateTests) ... ok
+test_authentication_private_socket_and_complete_redacted_trace (test_rc_candidate.RcCandidateTests) ... ok
+test_batch_missing_oversized_symlink_and_invalid_paths (test_rc_candidate.RcCandidateTests) ... ok
+test_branch_percent_slash_unicode_spaces_and_other_branches (test_rc_candidate.RcCandidateTests) ... ok
+test_cli_transport_work_retirement_removes_directory_without_purging_project (test_rc_candidate.RcCandidateTests) ... ok
+test_context_closes_process_on_error_and_interrupt (test_rc_candidate.RcCandidateTests) ... ok
+test_corrupted_bundle_does_not_update_receiver_refs (test_rc_candidate.RcCandidateTests) ... ok
+test_duplicate_and_outside_listing_paths_are_rejected (test_rc_candidate.RcCandidateTests) ... ok
+test_duplicate_branch_folder_is_rejected_before_selecting_a_tip (test_rc_candidate.RcCandidateTests) ... ok
+test_failure_after_manifest_upload_recovers_without_duplicate_publication (test_rc_candidate.RcCandidateTests) ... ok
+test_folder_replacement_before_bundle_upload_is_rejected (test_rc_candidate.RcCandidateTests) ... ok
+test_folder_replacement_during_bundle_upload_blocks_manifest (test_rc_candidate.RcCandidateTests) ... ok
+test_full_incremental_unchanged_fetch_pull_and_log (test_rc_candidate.RcCandidateTests) ... ok
+test_identity_replacement_is_detected_in_same_session (test_rc_candidate.RcCandidateTests) ... ok
+test_immutable_upload_same_size_mtime_and_retry (test_rc_candidate.RcCandidateTests) ... ok
+test_long_chain_and_fresh_corruption_with_unchanged_size_and_mtime (test_rc_candidate.RcCandidateTests) ... ok
+test_missing_and_conflicting_predecessors (test_rc_candidate.RcCandidateTests) ... ok
+test_missing_file_is_distinct_from_transport_failure (test_rc_candidate.RcCandidateTests) ... ok
+test_native_work_retirement_removes_directory_without_purging_project (test_rc_candidate.RcCandidateTests) ... ok
+test_new_listing_and_metadata_are_not_cached (test_rc_candidate.RcCandidateTests) ... ok
+test_preupload_corruption_blocks_publication (test_rc_candidate.RcCandidateTests) ... ok
+test_profile_records_process_and_every_rc_call_including_cache_reset (test_rc_candidate.RcCandidateTests) ... gdi: total 0.154s; rclone 1 processes, 0.129s; RC 3 calls, 0.006s; profile /tmp/gdi-rc-test-wkk5bxml/profile.jsonl
+ok
+test_selected_branch_listing_does_not_read_other_branches (test_rc_candidate.RcCandidateTests) ... ok
+test_sigkill_parent_stops_rc_process (test_rc_candidate.RcCandidateTests) ... ok
+test_startup_failure_cleans_up (test_rc_candidate.RcCandidateTests) ... ok
+test_timeout_during_transfer_stops_rc_and_leaves_no_process (test_rc_candidate.RcCandidateTests) ... ok
+test_worker_opens_and_closes_rc_for_each_operation (test_rc_candidate.RcCandidateTests) ... ok
+test_cli_clone_runs_outside_a_git_repository (test_repository.CloneTests) ... ok
+test_clone_accepts_an_existing_empty_directory (test_repository.CloneTests) ... ok
+test_clone_refuses_replacing_the_calling_shell_current_directory (test_repository.CloneTests) ... ok
+test_clone_rejects_a_project_ignore_override_exposing_local_gdi (test_repository.CloneTests) ... ok
+test_clone_restores_incremental_history_and_all_remote_branches (test_repository.CloneTests) ... ok
+test_clone_single_branch_infers_destination_and_branch (test_repository.CloneTests) ... ok
+test_concurrent_destination_file_is_not_overwritten (test_repository.CloneTests) ... ok
+test_corrupt_bundle_preserves_empty_target_and_remote_files (test_repository.CloneTests) ... ok
+test_create_does_not_mutate_remote_when_local_gdi_is_tracked (test_repository.CloneTests) ... ok
+test_empty_remote_can_be_cloned_without_creating_remote_files (test_repository.CloneTests) ... ok
+test_identity_change_during_download_is_rejected_before_checkout_is_published (test_repository.CloneTests) ... ok
+test_interrupted_download_leaves_destination_absent (test_repository.CloneTests) ... ok
+test_multiple_branches_require_explicit_selection_without_leaving_checkout (test_repository.CloneTests) ... ok
+test_occupied_or_symlink_destination_is_preserved_before_network_access (test_repository.CloneTests) ... ok
+test_push_missing_remote_does_not_create_files_and_suggests_remote_create (test_repository.CloneTests) ... ok
+test_remote_add_only_reads_and_create_refuses_existing_remote (test_repository.CloneTests) ... ok
+test_wrong_identity_unknown_branch_and_invalid_branch_leave_no_checkout (test_repository.CloneTests) ... ok
+test_init_does_not_attach_a_new_directory_to_its_parent_repository (test_repository.InitTests) ... ok
+test_init_handles_local_ignore_negation_and_reports_project_override (test_repository.InitTests) ... ok
+test_init_in_linked_worktree_uses_shared_gdi_without_changing_detached_head (test_repository.InitTests) ... ok
+test_init_preserves_existing_exclude_without_trailing_newline (test_repository.InitTests) ... ok
+test_init_refuses_bare_and_symlink_destinations (test_repository.InitTests) ... ok
+test_init_refuses_tracked_gdi_and_preserves_invalid_local_config (test_repository.InitTests) ... ok
+test_init_without_git_or_transport_and_git_add_does_not_track_gdi (test_repository.InitTests) ... ok
+test_parser_and_aliases_expose_new_commands_and_reject_old_init_flag (test_repository.InitTests) ... ok
+test_repeated_init_preserves_git_state_connections_and_exclude (test_repository.InitTests) ... ok
+test_init_create_push_clone_roundtrip_with_native_rc (test_repository.RepositoryCliIntegrationTests) ... ok
+test_init_create_push_clone_roundtrip_with_real_cli_and_local_backend (test_repository.RepositoryCliIntegrationTests) ... ok
+test_actual_binary_and_images_change_revision_and_repeated_resolution_is_stable (test_runner.RunnerTests) ... ok
+test_changed_daemon_blocks_cleanup_and_retains_ownership (test_runner.RunnerTests) ... ok
+test_cleanup_removes_only_act_containers_with_the_owned_working_directory (test_runner.RunnerTests) ... ok
+test_optional_rclone_read_distinguishes_absence_empty_file_and_directory (test_runner.RunnerTests) ... ok
+test_wrong_act_version_is_rejected (test_runner.RunnerTests) ... ok
+test_agent_automatic_initial_selection_freezes_plan_worker (test_scheduling.AgentSchedulingTests) ... ok
+test_offline_supervisor_cancel_successor_retry_and_verified_result (test_scheduling.AgentSchedulingTests) ... ok
+test_registry_snapshot_rejects_duplicates_missing_pages_and_downloads (test_scheduling.AgentSchedulingTests) ... ok
+test_invalid_policies_and_no_implicit_repeatability (test_scheduling.SchedulingPolicyTests) ... ok
+test_load_round_robin_preference_and_pinning (test_scheduling.SchedulingPolicyTests) ... ok
+test_a_disappears_after_claim_and_b_takes_over (test_scheduling.SchedulingTests) ... ok
+test_a_finishes_without_network_and_late_pass_is_fenced (test_scheduling.SchedulingTests) ... job=9309f061461447708cee7a866cc583fc pending state=UPLOAD_PENDING: network unavailable during upload
+ok
+test_attempt_limit_and_backoff_survive_command_restart (test_scheduling.SchedulingTests) ... ok
+test_automatic_initial_assignment_round_robin_and_cli (test_scheduling.SchedulingTests) ... ok
+test_backoff_doubles_for_the_second_replacement (test_scheduling.SchedulingTests) ... ok
+test_claim_without_status_gets_grace_then_heartbeat_timeout (test_scheduling.SchedulingTests) ... ok
+test_competing_successor_stops_delivery_and_worker_execution (test_scheduling.SchedulingTests) ... job=3a4f68dcb395bfbffe278b0a52c569e9 pending state=DISCOVERED: automatic successor/request identity mismatch; stop competing coordinators
+ok
+test_confirmed_stop_and_pinned_resources_never_overlap (test_scheduling.SchedulingTests) ... ok
+test_failed_retry_delivery_reuses_exact_successor_bytes (test_scheduling.SchedulingTests) ... ok
+test_idle_heartbeat_tracks_queue_and_labels_change_revision (test_scheduling.SchedulingTests) ... ok
+test_initial_dispatch_delivery_failure_preserves_selected_host (test_scheduling.SchedulingTests) ... ok
+test_invalid_or_regressing_heartbeat_does_not_trigger_cancel (test_scheduling.SchedulingTests) ... ok
+test_network_failure_and_missing_job_do_not_prove_cancellation (test_scheduling.SchedulingTests) ... ok
+test_never_policy_cancels_without_creating_a_replacement (test_scheduling.SchedulingTests) ... ok
+test_off_before_start_migrates_to_b_and_a_returns_without_execution (test_scheduling.SchedulingTests) ... ok
+test_quiet_logs_with_fresh_heartbeat_are_not_a_timeout (test_scheduling.SchedulingTests) ... ok
+test_status_reads_request_ready_once_and_rechecks_between_steps (test_scheduling.SchedulingTests) ... ok
+test_terminal_result_is_never_cancelled_retroactively (test_scheduling.SchedulingTests) ... ok
+test_two_live_workers_run_only_the_addressed_job (test_scheduling.SchedulingTests) ... ok
+test_watch_uses_persisted_session_and_returns_verified_result (test_scheduling.SchedulingTests) ... ok
+test_worker_registry_freshness_capability_binding_labels_and_load (test_scheduling.SchedulingTests) ... ok
+test_auto_merge_start_precedes_git_even_on_failure_and_respects_no_color (test_short_cli.ShortCommandTests) ... ok
+test_changed_file_names_keep_unicode_and_escape_controls (test_short_cli.ShortCommandTests) ... ok
+test_conflict_hint_is_last_after_profile_and_progress_teardown (test_short_cli.ShortCommandTests) ... ok
+test_multiple_connections_require_default_or_explicit_selection (test_short_cli.ShortCommandTests) ... ok
+test_old_local_and_remote_formats_are_rejected (test_short_cli.ShortCommandTests) ... ok
+test_pull_prints_file_statuses_for_fast_forward (test_short_cli.ShortCommandTests) ... ok
+test_pull_reports_yellow_auto_merge_and_conflict_command (test_short_cli.ShortCommandTests) ... ok
+test_readable_branch_names_are_reversible_and_distinct (test_short_cli.ShortCommandTests) ... ok
+test_removing_default_and_empty_status (test_short_cli.ShortCommandTests) ... ok
+test_short_push_fetch_pull_select_current_branch_and_default (test_short_cli.ShortCommandTests) ... ok
+test_status_dirty_detached_unborn_and_remote_errors (test_short_cli.ShortCommandTests) ... ok
+test_status_reports_publication_and_ahead_without_fetching (test_short_cli.ShortCommandTests) ... ok
+test_all_bytes_wait_once_until_job_succeeds (test_transfer_progress.ProgressTests) ... ok
+test_async_progress_failure_stops_job_and_all_calls_are_profiled (test_transfer_progress.ProgressTests) ... ok
+test_disabled_progress_makes_no_async_calls (test_transfer_progress.ProgressTests) ... ok
+test_failure_after_all_bytes_does_not_report_complete (test_transfer_progress.ProgressTests) ... ok
+test_native_rc_upload_download_progress_and_immutable_failure (test_transfer_progress.ProgressTests) ... ok
+test_real_cli_stats_stream_has_bytes_and_does_not_change_payload (test_transfer_progress.ProgressTests) ... ok
+test_render_without_profile_and_keep_stdout_clean (test_transfer_progress.ProgressTests) ... ok
+test_matrix_secrets_external_actions_and_artifacts (test_v2_cli.DockerV2CliTests) ... skipped 'set GDI_TEST_DOCKER to a pulled image'
+test_sigkill_cleans_owned_containers_before_result (test_v2_cli.DockerV2CliTests) ... skipped 'set GDI_TEST_DOCKER to a pulled image'
+test_fail_fix_pass_and_pull_via_cli (test_v2_cli.LocalV2CliTests) ... ok
+test_sigint_finishes_current_job_then_exits_without_rerun (test_v2_cli.LocalV2CliTests) ... ok
+test_sigkill_restart_does_not_execute_job_again (test_v2_cli.LocalV2CliTests) ... ok
+test_timeout_stops_act_and_worker_keeps_running (test_v2_cli.LocalV2CliTests) ... ok
+test_matrix_secrets_external_actions_and_artifacts (test_v2_cli.ServiceV2CliTests) ... skipped 'requires an explicitly configured acceptance user service'
+test_sigkill_cleans_owned_containers_before_result (test_v2_cli.ServiceV2CliTests) ... skipped 'requires an explicitly configured acceptance user service'
+test_stop_during_job_finishes_then_restart_without_rerun (test_v2_cli.ServiceV2CliTests) ... skipped 'requires an explicitly configured acceptance user service'
+test_agent_commands_have_a_dedicated_offline_interface (test_work.WorkTests) ... ok
+test_checkpoint_on_normal_branch_is_refused (test_work.WorkTests) ... ok
+test_conflict_is_isolated_from_operator_checkout (test_work.WorkTests) ... ok
+test_connector_publication_and_materialization_recovery_use_existing_protocol (test_work.WorkTests) ... ok
+test_crash_after_ref_update_does_not_create_second_commit (test_work.WorkTests) ... ok
+test_crash_before_ref_update_rolls_back_and_retries_same_squash (test_work.WorkTests) ... ok
+test_final_followed_by_foreign_commit_is_not_publishable (test_work.WorkTests) ... ok
+test_marker_upload_failure_can_resume_after_operator_checkout_loss (test_work.WorkTests) ... ok
+test_missing_number_and_metadata_change_are_refused_before_upload (test_work.WorkTests) ... ok
+test_multiple_ready_works_are_separate_choices (test_work.WorkTests) ... ok
+test_source_change_after_plan_is_refused (test_work.WorkTests) ... ok
+test_squash_preserves_operator_commit_and_exact_final_message (test_work.WorkTests) ... ok
+test_start_and_checkpoint_do_not_change_assigned_target (test_work.WorkTests) ... ok
+test_start_requires_fresh_exact_target_and_unused_work_id (test_work.WorkTests) ... ok
+test_target_branch_or_head_change_after_plan_is_refused (test_work.WorkTests) ... ok
+test_unapplied_plan_can_be_replaced_after_an_operator_commit (test_work.WorkTests) ... ok
+test_unstaged_untracked_and_wrong_identity_are_refused (test_work.WorkTests) ... ok
+test_work_binding_uses_actual_target_name (test_work.WorkTests) ... ok
+test_activation_preserves_identity_history_and_requires_explicit_pause_upgrade (test_work_gc.WorkGcTests) ... ok
+test_active_ci_blocks_retirement_even_during_declared_pause (test_work_gc.WorkGcTests) ... ok
+test_apply_requires_quiescence_before_any_remote_access (test_work_gc.WorkGcTests) ... ok
+test_empty_folder_deletion_failure_resumes_without_recursive_purge (test_work_gc.WorkGcTests) ... ok
+test_import_metadata_change_during_verification_aborts_before_retirement (test_work_gc.WorkGcTests) ... ok
+test_native_transports_refuse_ordinary_or_recursive_deletion (test_work_gc.WorkGcTests) ... ok
+test_oldest_import_is_removed_with_its_drive_folder_and_only_unneeded_bundles (test_work_gc.WorkGcTests) ... ok
+test_partial_manifest_deletion_is_resumable (test_work_gc.WorkGcTests) ... ok
+test_pending_unpublished_and_ready_works_are_never_retired (test_work_gc.WorkGcTests) ... ok
+test_stale_online_and_connector_clients_cannot_resurrect_or_reuse_id (test_work_gc.WorkGcTests) ... ok
+test_target_that_lost_squash_is_protected (test_work_gc.WorkGcTests) ... ok
+test_zero_and_large_retention_boundaries (test_work_gc.WorkGcTests) ... ok
+test_follow_streams_history_and_appends_without_switching_jobs (test_worker_job_logs.WorkerJobLogTests) ... ok
+test_follow_zero_lines_and_interrupt_only_stop_the_reader (test_worker_job_logs.WorkerJobLogTests) ... ok
+test_latest_started_job_skips_newer_unstarted_and_defaults_to_ten_lines (test_worker_job_logs.WorkerJobLogTests) ... ok
+test_missing_jobs_and_invalid_count_do_not_create_or_change_worker_state (test_worker_job_logs.WorkerJobLogTests) ... ok
+test_default_and_boot_line_selection_with_optional_profile (test_worker_logs.WorkerLogTests) ... ok
+test_follow_streams_before_exit_and_parent_interrupt_reaps_journalctl (test_worker_logs.WorkerLogTests) ... ok
+test_invalid_line_count_does_not_start_journalctl (test_worker_logs.WorkerLogTests) ... ok
+test_journal_failure_and_missing_executable_are_reported (test_worker_logs.WorkerLogTests) ... ok
+test_existing_service_controls_still_work_without_transport (test_worker_service.WorkerServiceTests) ... ok
+test_missing_systemctl_is_reported (test_worker_service.WorkerServiceTests) ... ok
+test_reload_failure_does_not_restart_and_restart_failure_is_reported (test_worker_service.WorkerServiceTests) ... ok
+test_restart_reloads_unit_before_restarting_without_git_or_rclone (test_worker_service.WorkerServiceTests) ... ok
+test_absent_proxy_does_not_create_proxy_or_bypass_variables (test_workflow_proxy.WorkflowProxyTests) ... ok
+test_automatic_network_reaches_act_without_stale_host_proxy (test_workflow_proxy.WorkflowProxyTests) ... ok
+test_explicit_legacy_profile_env_takes_precedence (test_workflow_proxy.WorkflowProxyTests) ... ok
+test_proxies_reach_actions_without_credentials_in_argv_or_profile (test_workflow_proxy.WorkflowProxyTests) ... ok
+
+----------------------------------------------------------------------
+Ran 446 tests in 438.962s
+
+OK (skipped=5)

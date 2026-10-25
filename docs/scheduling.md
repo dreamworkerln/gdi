@@ -137,7 +137,7 @@ Ctrl+C останавливает supervisor; уже доставленная о
 Ответы: MONITORING, BACKOFF, WAITING_FOR_STOP, NO_COMPATIBLE_WORKER, REASSIGNED,
 ATTEMPTS_EXHAUSTED либо terminal state с `result.verified: true`. REASSIGNED не
 означает, что B уже начал выполнение. Финальный PASS принимается только после
-проверки всех artifacts/chunks. Watch timeout возвращает код 124, terminal PASS — 0,
+проверки итогового пакета и всех его artifacts. Watch timeout возвращает код 124, terminal PASS — 0,
 другой terminal result/исчерпание попыток — 1.
 
 Сессия хранится в `.gdi/ci/<repository-id>/supervision/JOB_ID/`; её policy и история
@@ -157,7 +157,7 @@ ATTEMPTS_EXHAUSTED либо terminal state с `result.verified: true`. REASSIGNE
 
 Получите свежий полный snapshot проекта, включая request/ready/status/claim/cancel/
 successor активного job. Включите предшественников при начальном восстановлении
-цепочки retry и полные artifacts/chunks любого принимаемого результата.
+цепочки retry и полный пакет любого принимаемого результата.
 
 Отдельный `workers.json` описывает полный listing общей `ci/workers`, все страницы
 каждой worker-папки и реальные downloads capabilities/status:

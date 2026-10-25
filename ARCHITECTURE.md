@@ -102,7 +102,7 @@ profile, workflow selector и GitHub namespace исходной попытки �
 `status` может показывать advisory state, но добавляет `verified: false` до принятия
 результата. Клиент принимает terminal result после проверки request/ready, всех
 identity fields, полного log и всех объявленных artifacts по bytes/SHA256,
-final status и совпадения полной консоли с непрерывной последовательностью chunks.
+final status, SHA256 пакета и полного binary log.
 `PASS` также требует успешные blocking stage results.
 
 Отмена хранится в immutable cancel.json, привязанном к bytes исходного request,
@@ -138,8 +138,9 @@ worktree и повторно проверяет branch/HEAD/status перед п
         branches/<encoded-branch>/<publication>.json
         ci/jobs/<job-id>/
             request.json, request.ready, worker.running.json
-            status.json, events/, log-chunks/, artifacts/
-            build.log, final-status.json, result.json
+            status.json
+            result-<sha256>.zip
+            cancelled/result-<sha256>.zip  # при поздней отмене
 ```
 
 Вход: durable local outbox → request → ready → shared inbox **последней**.
@@ -150,7 +151,7 @@ Notification и ready связывают job ID и hash точных request byt
 Обычный push публикует notification без автоматического CI и изменения рабочих веток.
 
 Ledger сохраняет request, маршрут проекта и имя уведомления. Выход: durable result →
-chunks/events/artifacts/log/final-status → result **последним** → read-back verification →
+durable artifacts/log/final-status/result → один пакет → read-back verification →
 ledger PUBLISHED → удаление конкретной записи inbox. Сетевой retry повторяет доставку,
 не исполнение. При lost acknowledgement ledger предотвращает повтор CI.
 Legacy config/request v1 с per-repository queues сохраняется для обновления установок.
@@ -181,16 +182,21 @@ blocking/non-blocking правилами. Workflows доверенные; Docker
 
 ## Прогресс и консоль
 
-Executor читает объединённые stdout+stderr как bytes в файл, не накапливает весь лог
-в памяти и не вызывает rclone. Отдельный publisher каждые примерно 1 секунду
-пытается передать status/events и новые chunks размером до 256 KiB. Вывод может
-появляться с задержкой rclone/Drive и буферизации самой программы; Python получает
-`PYTHONUNBUFFERED=1`. При молчащем процессе локальный heartbeat обновляется раз в 5 секунд.
+Executor читает объединённые stdout+stderr как bytes в локальный build.log,
+не накапливает весь лог в памяти и не вызывает rclone. Независимый publisher
+передаёт status/heartbeat с poll_active_seconds; локальный heartbeat обновляется
+раз в 5 секунд без сетевых запросов. Новые log-chunks/events не создаются.
 
-Chunks immutable, последовательны, адресуются checksum; локальные spool chunks
-сохраняются до upload. Клиент кеширует проверенные chunks и полный result в `.gdi/ci` репозитория. Новый вызов follow показывает историю с начала, в рамках одного вызова
-cursor исключает повторы. Resume cursor между вызовами CLI пока не сохраняется.
-Бинарные console bytes не преобразуются; текстовый fallback UI использует UTF-8 replace.
+После завершения worker собирает один immutable result-<sha256>.zip: package.json,
+result.json, final-status.json, полный build.log и artifacts. Агент скачивает
+один пакет. Общий reader проверяет hash из имени, identity/PASS gates и каждый
+внутренний файл; затем повторно проверяет отмену. Старые результаты читаются
+по прежнему контракту, без переписывания данных на Drive.
+
+Удалённый follow показывает stage/heartbeat, затем полный проверенный лог.
+Cursor хранит hash итогового лога и смещение в bytes; --restart сбрасывает его.
+Локальный worker job logs сохраняет live-консоль без Drive. Binary bytes не
+преобразуются; текстовый fallback UI использует UTF-8 replace.
 
 ## Ledger и recovery
 

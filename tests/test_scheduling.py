@@ -14,6 +14,7 @@ from gdi.scheduling import (Supervisor, choose, discover, inspect_workers, polic
 from tests.snapshots import export_snapshot, export_workers
 from tests import test_agent_ci
 from tests.test_inbox import InboxTestCase
+from tests.ci_packages import publish_package
 
 
 def iso(at):
@@ -142,14 +143,14 @@ class SchedulingTests(InboxTestCase):
     def test_a_finishes_without_network_and_late_pass_is_fenced(self):
         old, other, client, req = self.pair()
         prefix = 'repos/a/ci/jobs/' + req['job_id']
-        self.store.fail = prefix + '/result.json';old.tick();self.store.fail = None
+        self.store.fail = prefix + '/result-';old.tick();self.store.fail = None
         self.assertEqual(self.counter.read_text(), 'x')
         self.step(client, req, self.at + 1)
         self.fresh(other, self.at + 25)
         self.assertEqual(self.step(client, req, self.at + 25)['state'], 'BACKOFF')
         self.assertEqual(self.step(client, req, self.at + 31)['state'], 'REASSIGNED')
         other.tick()
-        self.store.upload(old.spool(req['job_id']) / 'result.json', prefix + '/result.json')
+        publish_package(self.store, old.spool(req['job_id']), prefix, req)
         self.assertIsNone(client.result(req['job_id']))
         old.tick()
         self.assertEqual(client.result(req['job_id'])['state'], 'CANCELLED')

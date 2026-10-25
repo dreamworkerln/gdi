@@ -12,6 +12,7 @@ from gdi.git import GdiError
 from gdi.worker import Worker
 from tests.test_ci import CiTestCase
 from tests.test_inbox import InboxTestCase
+from tests.ci_packages import package_path, stored_result
 
 
 class LegacyCancellationTests(CiTestCase):
@@ -87,7 +88,7 @@ class SharedCancellationTests(InboxTestCase):
         worker = self.worker()
         client, req = self.submit(worker)
         prefix = 'repos/a/ci/jobs/' + req['job_id']
-        self.store.fail = prefix + '/result.json'
+        self.store.fail = prefix + '/result-'
         worker.tick()
         spool = worker.spool(req['job_id'])
         original_result = (spool / 'result.json').read_bytes()
@@ -105,8 +106,8 @@ class SharedCancellationTests(InboxTestCase):
         for path, data in original_files.items():
             if not path.endswith('/status.json'):
                 self.assertEqual(self.store.data[path], data)
-        self.assertNotIn(prefix + '/result.json', self.store.data)
-        self.assertIn(prefix + '/cancelled/result.json', self.store.data)
+        self.assertFalse(any(path.rpartition('/')[0] == prefix and '/result-' in path for path in self.store.data))
+        package_path(self.store, prefix + '/cancelled')
         value = client.status(req['job_id'])
         self.assertEqual(value['state'], 'CANCELLED')
         self.assertTrue(value['verified'])
@@ -120,7 +121,7 @@ class SharedCancellationTests(InboxTestCase):
         upload = self.store.upload
         triggered = []
         def race(source, path):
-            if path == prefix + suffix and not triggered:
+            if path.startswith(prefix + suffix) and path.endswith('.zip') and not triggered:
                 triggered.append(True)
                 self.assertEqual(client.cancel(req['job_id'])['state'], 'CANCEL_REQUESTED')
                 upload(source, path)
@@ -133,15 +134,28 @@ class SharedCancellationTests(InboxTestCase):
         self.assertEqual(triggered, [True])
         return worker, client, req, prefix
 
-    def test_cancel_during_artifact_delivery_never_commits_original_pass(self):
-        worker, client, req, prefix = self.cancel_during_upload('/build.log')
-        self.assertNotIn(prefix + '/result.json', self.store.data)
+    def test_cancel_after_package_build_never_publishes_original_pass(self):
+        worker = self.worker()
+        client, req = self.submit(worker)
+        prefix = 'repos/a/ci/jobs/' + req['job_id']
+        from gdi.worker import build_package
+        hit = []
+        def cancel_after_build(*args, **kwargs):
+            path = build_package(*args, **kwargs)
+            if not hit:
+                hit.append(True)
+                client.cancel(req['job_id'])
+            return path
+        with patch('gdi.worker.build_package', side_effect=cancel_after_build):
+            worker.tick()
+        self.assertEqual(hit, [True])
+        self.assertFalse(any(path.rpartition('/')[0] == prefix and '/result-' in path for path in self.store.data))
         self.assertEqual(client.status(req['job_id'])['state'], 'CANCELLED')
         self.assertEqual(self.counter.read_text(), 'x')
 
     def test_cancel_during_result_upload_suppresses_pass_already_in_flight(self):
-        worker, client, req, prefix = self.cancel_during_upload('/result.json')
-        self.assertEqual(decode(self.store.data[prefix + '/result.json'])['state'], 'PASS')
+        worker, client, req, prefix = self.cancel_during_upload('/result-')
+        self.assertEqual(stored_result(self.store, prefix)['state'], 'PASS')
         value = client.status(req['job_id'])
         self.assertEqual(value['state'], 'CANCELLED')
         self.assertTrue(value['verified'])
@@ -149,7 +163,7 @@ class SharedCancellationTests(InboxTestCase):
 
     def test_lost_result_upload_ack_with_cancel_resumes_only_cancelled_delivery(self):
         from gdi.gc import ci_guard
-        worker, client, req, prefix = self.cancel_during_upload('/result.json', lost_ack=True)
+        worker, client, req, prefix = self.cancel_during_upload('/result-', lost_ack=True)
         self.assertEqual(client.status(req['job_id'])['state'], 'CANCEL_REQUESTED')
         with self.assertRaisesRegex(GdiError, 'unconfirmed CI cancellation'):
             ci_guard(self.ea, client.transport, self.identity)
@@ -159,32 +173,33 @@ class SharedCancellationTests(InboxTestCase):
         resumed.tick()
         self.assertEqual(client.status(req['job_id'])['state'], 'CANCELLED')
         self.assertEqual(self.counter.read_text(), 'x')
-        self.assertEqual(decode(self.store.data[prefix + '/result.json'])['state'], 'PASS')
+        self.assertEqual(stored_result(self.store, prefix)['state'], 'PASS')
         self.assertTrue(ci_guard(self.ea, client.transport, self.identity))
 
     def test_cancelled_delivery_lost_ack_is_immutable_and_restores_marker(self):
         worker = self.worker()
         client, req = self.submit(worker)
         prefix = 'repos/a/ci/jobs/' + req['job_id']
-        self.store.fail = prefix + '/result.json'
+        self.store.fail = prefix + '/result-'
         worker.tick()
         self.store.fail = None
         client.cancel(req['job_id'])
         upload = self.store.upload
         def lose_ack(source, path):
             upload(source, path)
-            if path == prefix + '/cancelled/result.json':
+            if path.startswith(prefix + '/cancelled/result-') and path.endswith('.zip'):
                 raise GdiError('lost cancellation result acknowledgement')
         with patch.object(self.store, 'upload', side_effect=lose_ack):
             worker.tick()
-        saved = self.store.data[prefix + '/cancelled/result.json']
+        saved_path = package_path(self.store, prefix + '/cancelled')
+        saved = self.store.data[saved_path]
         self.assertEqual(worker.ledger.get(req['job_id'])['state'], 'UPLOAD_PENDING')
         self.store.data.pop(prefix + '/cancel.json')
         config = worker.config
         worker.close(); self._cleanups.pop()
         resumed = self.worker(config)
         resumed.tick()
-        self.assertEqual(self.store.data[prefix + '/cancelled/result.json'], saved)
+        self.assertEqual(self.store.data[saved_path], saved)
         self.assertEqual(client.status(req['job_id'])['state'], 'CANCELLED')
         self.assertEqual(resumed.ledger.pending(), [])
         self.assertEqual(self.counter.read_text(), 'x')
@@ -198,7 +213,7 @@ class SharedCancellationTests(InboxTestCase):
         download = self.store.download
         def cancel_after_download(path, target):
             download(path, target)
-            if path == prefix + '/build.log':
+            if path.startswith(prefix + '/result-') and path.endswith('.zip'):
                 self.store.data[prefix + '/cancel.json'] = encode(cancellation(req, raw))
         with patch.object(self.store, 'download', side_effect=cancel_after_download):
             value = client.status(req['job_id'])
@@ -208,7 +223,7 @@ class SharedCancellationTests(InboxTestCase):
             client.pull_passed(req['job_id'], 'full')
 
     def test_observed_cancellation_cannot_be_revoked_by_missing_remote_marker(self):
-        worker, client, req, prefix = self.cancel_during_upload('/result.json', lost_ack=True)
+        worker, client, req, prefix = self.cancel_during_upload('/result-', lost_ack=True)
         self.assertEqual(client.status(req['job_id'])['state'], 'CANCEL_REQUESTED')
         self.store.data.pop(prefix + '/cancel.json')
         self.assertEqual(client.status(req['job_id'])['state'], 'CANCEL_REQUESTED')
@@ -229,8 +244,8 @@ class SharedCancellationTests(InboxTestCase):
         self.assertEqual(client.status(req['job_id'])['state'], 'PASS')
 
     def test_cancelled_delivery_requires_complete_log_and_matching_claim(self):
-        worker, client, req, prefix = self.cancel_during_upload('/result.json')
-        path = prefix + '/cancelled/build.log'
+        worker, client, req, prefix = self.cancel_during_upload('/result-')
+        path = package_path(self.store, prefix + '/cancelled')
         saved = self.store.data[path]
         self.store.data[path] = saved + b'corrupt'
         with self.assertRaisesRegex(GdiError, 'checksum'):
@@ -247,7 +262,7 @@ class SharedCancellationTests(InboxTestCase):
         worker = self.worker()
         client, req = self.submit(worker)
         prefix = 'repos/a/ci/jobs/' + req['job_id']
-        self.store.fail = prefix + '/result.json'
+        self.store.fail = prefix + '/result-'
         worker.tick()
         self.store.fail = None
         client.cancel(req['job_id'])
@@ -354,7 +369,7 @@ class SharedCancellationTests(InboxTestCase):
         worker = self.worker()
         client, req = self.submit(worker)
         client.cancel(req['job_id'])
-        self.store.fail='repos/a/ci/jobs/'+req['job_id']+'/result.json'
+        self.store.fail='repos/a/ci/jobs/'+req['job_id']+'/result-'
         worker.tick()
         self.assertEqual(worker.ledger.get(req['job_id'])['state'], 'UPLOAD_PENDING')
         config = worker.config

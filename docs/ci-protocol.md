@@ -79,13 +79,14 @@ Claim `worker.running.json` immutable: `ci_version`, `job_id`, `run_id`, `worker
 `request_sha256`. Ledger сохраняется до claim upload. Claim чужого run не перехватывается.
 Это не CAS: worker закреплён в request, claims разных run не перехватываются.
 
-## Status, events и streaming
+## Status и heartbeat
 
 Job `status.json` и worker `status.json` mutable advisory. Поля job status:
 `ci_version`, `job_id`, `run_id`, `worker_id`, `request_sha256`, `state`, `stage`
 (имя либо null), `sequence` (возрастающий integer), `updated_at` (UTC ISO timestamp).
-Events сохраняют такой snapshot при смене state/stage в `events/<sequence:08d>.json`;
-heartbeat увеличивает sequence, но не создаёт event, поэтому gaps в **events** допустимы.
+Во время исполнения worker публикует только job/worker status с heartbeat.
+Отдельные events и log-chunks для новых результатов не создаются. Sequence
+увеличивается и при неизменном этапе; status остаётся advisory.
 
 Расширенный worker status имеет `registry_version: 1`, `state: READY|BUSY`, `busy`,
 `queue_length`, `profile_revisions`, `labels`, `platforms` (shared inbox).
@@ -107,21 +108,42 @@ status/request/result. Устаревший heartbeat не является term
 Этот файл фиксирует proposal до новой inbox, сохраняя прежнюю схему request v1/v2;
 он не является CAS. Сохраняйте исходные requests/cancellations и историю попыток.
 
-Консоль — объединённые stdout+stderr, bytes без преобразований. Для act это JSON lines;
-в результате одна blocking-стадия `github-actions`, детализация jobs/steps — в log. Publisher пишет
-`log-chunks/<sequence:08d>-<sha256>.bin`, начиная с 1 без gaps. Один chunk не больше
-256 KiB; при очередном upload cycle может быть меньше. Клиент проверяет каждый hash,
-сортировку, непрерывность и отсутствие дубликатов. При терминальном результате
-конкатенация всех chunks должна точно совпасть по bytes/SHA256 с `build.log`.
+Консоль — объединённые stdout+stderr, bytes без преобразований. Для act это JSON
+lines; в результате одна blocking-стадия github-actions, детализация jobs/steps
+содержится в полном build.log. Во время исполнения лог хранится только на worker;
+локальная команда worker job logs сохраняет live-доступ без обращений к Drive.
+Удалённый wait --follow показывает stage/heartbeat, затем полный проверенный лог.
 
 Worker закрывает console file и fsync до фиксации результата. Mutable status с PASS
 сам по себе никогда не является доказательством успешной проверки.
 
-## Result и artifacts
+## Result и однофайловая доставка
 
-Порядок публикации: chunks/events → объявленные artifacts → `build.log` →
-`final-status.json` → `result.json` последним. Локальный result сохраняется **до**
-финального upload, сетевой retry не выполняет CI повторно.
+Новый terminal result публикуется одним immutable файлом
+`result-<sha256>.zip` в ci/jobs/<job-id>/ либо в cancelled/ для поздней отмены.
+SHA256 вычисляется по полным bytes архива и входит в его имя. Отдельный checksum
+или descriptor на Drive не нужен. Полный listing папки должен содержать ровно один
+пакет; несколько пакетов или некорректное имя result-* приводят к отказу.
+
+Внутри ZIP находятся package.json с package_version:1, canonical result.json
+и точные файлы из artifacts descriptors, включая build.log и final-status.json.
+Других записей, директорий, повторяющихся имён, symlinks или encrypted entries
+быть не должно. ZIP допускает stored/deflated entries; упаковка детерминирована.
+GDI проверяет SHA256 всего пакета, identity/PASS gates и inventory/размеры/hashes
+каждого внутреннего файла; extraction потоковая, без extractall и загрузки всего
+лога/больших artifacts в память. Новые пакеты не содержат chunks.
+
+Порядок: durable log/artifacts/final status → локальный result.json → сборка пакета
+→ upload пакета → read-back/проверка → ledger PUBLISHED → удаление inbox/queue.
+Отдельные result.json, artifacts, final-status.json и build.log на Drive для новых
+jobs не публикуются. Ошибка упаковки/upload/read-back не вызывает повторный CI.
+Capabilities нового worker содержат result_delivery_version:1.
+
+2026-10-25 оператор разрешил несовместимость нового обмена со старыми клиентами:
+обновить CLI, worker и runtime/agent.md до использования. Git/config protocol и
+repository IDs не меняются; удаление истории/миграция remote не требуются.
+Новый reader сохраняет чтение исторических result.json с отдельными файлами
+и прежней проверкой полной последовательности chunks. История не переписывается.
 
 Result содержит точные identity fields из request: `ci_version`, `job_id`,
 `repository_id`, `ref`, `head`, `publication_id`, `worker_id`, `profile_id`,
@@ -155,7 +177,7 @@ Exit 0 без завершённого успешного job не приним�
 | CANCELLED | Worker учёл durable отмену и остановил собственное исполнение |
 
 Агент принимает terminal result только после проверок identity/hash/size всех
-artifacts, final status и полного streaming log. Клиентский `verified` не является
+artifacts, final status, полного binary log и пакета доставки. Клиентский `verified` не является
 полем remote result. Upload pending — локальное состояние доставки, не CI FAIL.
 
 ## Отмена и поздние результаты
@@ -170,18 +192,17 @@ read-back. Доставка marker означает CANCEL_REQUESTED, не по�
 появившаяся поддерживаемая отмена блокирует обычный результат этой попытки.
 
 Worker сохраняет marker локально до остановки. Проверки выполняются до старта,
-во время CI, при возобновлении доставки, между загрузками artifacts и до/после
-загрузки result. Сбой проверки не считается отсутствием отмены. Клиент тоже
-повторяет проверку после скачивания artifacts; уже проверенный immutable marker
+во время CI, при возобновлении доставки, до/после упаковки, загрузки и read-back пакета. Сбой проверки не считается отсутствием отмены. Клиент тоже
+повторяет проверку после скачивания и проверки пакета; уже проверенный immutable marker
 сохраняется локально и не отменяется последующим исчезновением файла на Drive.
 
 Если result ещё не подготовлен, CANCELLED публикуется обычным порядком. Если он
 уже записан, исходные result/log/artifacts не перезаписываются: собственные
 процессы/контейнеры останавливаются, а подтверждение отмены публикуется в
-`ci/jobs/<job-id>/cancelled/`. Эта папка содержит обычную схему result со state
-CANCELLED, собственные build.log/final-status.json и log-chunks. Descriptor paths
-считаются относительно этой папки, identity/request_sha256/run_id сохраняются.
-Result здесь также загружается последним и проверяется полным общим валидатором;
+`ci/jobs/<job-id>/cancelled/`. Эта папка содержит собственный result-<sha256>.zip
+со state CANCELLED, полным build.log/final-status.json и artifacts внутри.
+Descriptor paths считаются относительно корня пакета; identity/request_sha256/run_id
+сохраняются. Пакет проверяется полным общим валидатором;
 существующий claim должен соответствовать run_id. Клиент выбирает этот результат
 только вместе с проверенной отменой. Без подтверждения возвращается
 CANCEL_REQUESTED, verified:false; обычный поздний PASS не применяется через
@@ -199,20 +220,20 @@ Request/ready/claim/история не удаляются. Для поддер�
 
 ## Recovery и GC
 
-Ledger PUBLISHED фиксируется после read-back проверки result/artifacts, затем
+Ledger PUBLISHED фиксируется после read-back проверки итогового пакета, затем
 удаляется конкретный marker: v2 — notification общей inbox, legacy v1 —
 `ci/queue/<job-id>.json`. Crash между этими действиями исправляется
-при discovery, без исполнения. Request/ready/claim/chunks/result остаются в архиве.
+при discovery, без исполнения. Request/ready/claim и пакет результата остаются на Drive.
 
 При RUNNING/FINALIZING без durable result нет автоматического rerun:
 INTERRUPTED либо CANCELLED при проверенной отмене.
 Сохранившийся result допубликовывается независимо от прежнего ledger state,
 после проверки отмены; при отмене доставляется отдельный CANCELLED. Повреждение
-локального закрытого artifact/chunk блокирует доставку и не вызывает повтор CI.
+локального закрытого artifact/лога/пакета блокирует доставку и не вызывает повтор CI.
 
 Apply-GC bundles отказывает при legacy queue pointer, неполном/nonterminal job v1/v2
 или неподтверждённой поддерживаемой отмене. Поздний обычный PASS не снимает защиту;
-подтверждение cancelled/result.json учитывается с его marker и artifacts. Completed
+подтверждение в cancelled/ учитывается с его marker и проверенным пакетом. Completed
 CI artifacts не удаляются. Все clients и worker должны быть остановлены; snapshot
 checks не заменяют распределённый lock. Retention CI namespace пока не реализован.
 

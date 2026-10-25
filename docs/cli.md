@@ -88,9 +88,9 @@ checkout выбранной ветки. Если опубликована одн
 | `gdi remote remove NAME` | Удаляет локальные настройки, оставляет удалённые данные и fetched refs |
 | `gdi push [NAME] [BRANCH]` | Первый bundle полный, следующие инкрементальные; повтор того же HEAD ничего не публикует |
 | `gdi push [NAME] [BRANCH] -f / --full` | Создаёт полный контрольный bundle, в том числе для уже опубликованного HEAD дельты |
-| `gdi push [NAME] [BRANCH] --checkpoint-every N` | Полный bundle после каждых N обновлений от предыдущего полного (по умолчанию 10) |
+| `gdi push [NAME] [BRANCH] --checkpoint-every N` | Полный bundle после каждых N обновлений от предыдущего полного (по умолчанию 5) |
 | `gdi push [NAME] --ci --worker ID [--profile full] [--json]` | Публикует commit и запрос CI в общую inbox |
-| `gdi ci status/wait/logs NAME JOB_ID` | Прогресс, streaming console и проверенный terminal result |
+| `gdi ci status/wait/logs NAME JOB_ID` | Status/heartbeat, полный итоговый лог и проверенный terminal result |
 | `gdi ci cancel NAME JOB_ID [--withdraw] [--json]` | Сохраняет отмену; --withdraw также снимает точное уведомление очереди |
 | `gdi ci retry NAME JOB_ID [--worker ID] [--json]` | Новая попытка по проверенному результату либо поддерживаемой отмене; можно сменить worker |
 | `gdi pull [NAME] --passed --job ID --profile full` | Fast-forward именно на SHA выбранного проверенного PASS |
@@ -190,8 +190,8 @@ CI выбирает свежий совместимый host; доступны �
 с явной политикой повторяемости: [docs/scheduling.md](scheduling.md).
 
 При FAIL агент исправляет код, делает новый commit и повторяет. Worker хранит Git
-cache, выполняет exact SHA в отдельном checkout, публикует stdout+stderr chunks,
-полный build.log и result. После PASS/FAIL продолжает работать. Ошибка upload не
+cache, выполняет exact SHA в отдельном checkout, публикует status/heartbeat,
+затем один result-<sha256>.zip с полным build.log, result и artifacts. После PASS/FAIL продолжает работать. Ошибка upload не
 вызывает повторный CI; recovery неопределённого исполнения даёт INTERRUPTED.
 
 Отмена — `gdi ci cancel drive JOB_ID --json`. CANCEL_REQUESTED подтверждает доставку
@@ -213,7 +213,7 @@ gdi pull drive --passed --job JOB_ID --profile full
 `--boot` ограничивает текущей загрузкой системы. Ctrl+C завершает просмотр;
 worker продолжает работать. Команда работает вне Git-репозитория и использует
 `journalctl --user -u gdi-worker.service` без pager.
-CI консоль: `gdi ci logs`/`wait --follow`. Команды CI берутся из `.github/workflows` проверяемого commit.
+Итоговая CI консоль: `gdi ci logs`/`wait --follow`; во время CI доступны status/heartbeat. Команды CI берутся из `.github/workflows` проверяемого commit.
 `--workflow`, `--event`, `--job`, `--input KEY=VALUE` выбирают проверку при submit.
 Worker исполняет доверенные workflows; act имеет доступ к Docker Engine.
 
@@ -228,8 +228,8 @@ publication ID и фактические prerequisites из bundle. Пропущ
 догружает последовательно; новый клиент начинает с последнего полного bundle.
 Обычно повторный push/fetch не скачивает уже проверенные bundles.
 
-После 10 обновлений от полного bundle автоматически создаётся новый полный: при
-значении 10 между полными бывает не более 9 дельт. Значение по умолчанию задаётся
+После 5 обновлений от полного bundle автоматически создаётся новый полный: при
+значении 5 между полными бывает не более 4 дельт. Значение по умолчанию задаётся
 константой `CHECKPOINT_EVERY` в `gdi/config.py`. `--checkpoint-every 1` всегда
 публикует полный bundle; `--full` позволяет сделать контрольную публикацию вручную.
 Большие новые файлы могут давать большие дельты.
@@ -361,7 +361,7 @@ rclone также проверяется настоящий CLI с local backend
 GC tests проверяют все ветки, старые базы дельт, восстановление без кеша, отказ при
 повреждении/изменении remote и повтор после частичного удаления.
 CI tests проверяют отдельный постоянный worker, FAIL → log → исправление → PASS,
-точный pull, upload/restart recovery, timeout descendants, binary console, artifact
+точный pull, upload/restart recovery, timeout descendants, binary log, пакет результата, artifact
 checksums и защиту GC. Для тестов достаточно стандартной библиотеки.
 Версия act закрепляется полем `act_version` (по умолчанию `0.2.89`). Перед запуском
 worker образы из `platforms` должны быть загружены через `docker pull`. Worker

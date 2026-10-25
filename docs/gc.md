@@ -123,7 +123,7 @@ Withdrawal старого worker с `worker_cancellation_supported:false` не �
 
 Старые gdi 0.2.1 этой защиты не имеют: обновите все клиенты, прежде чем применять
 GC на remote с CI. Все manifests сохраняются; worker может восстановить старый
-job SHA из нового полного checkpoint с проверкой ancestry. CI logs, chunks, results,
+job SHA из нового полного checkpoint с проверкой ancestry. CI packages, исторические logs/chunks/results,
 artifacts и локальный spool этим GC не очищаются. Их retention — отдельный этап.
 
 ## Work lifecycle

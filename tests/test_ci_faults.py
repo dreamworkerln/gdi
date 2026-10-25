@@ -85,30 +85,31 @@ class CiFaultTests(CiTestCase):
         self.assertEqual(self.counter.read_text(), 'x')
         self.assertEqual(client.status(req['job_id'])['state'], 'PASS')
 
-    def test_artifact_and_result_upload_failures_before_or_after_remote_write(self):
+    def test_package_upload_failure_before_or_after_remote_write(self):
         worker = self.counted_worker()
         for after in (False, True):
-            for suffix in ('artifacts/one.bin', 'artifacts/two.bin', 'build.log', 'final-status.json', 'result.json'):
-                with self.subTest(after_write=after, path=suffix):
-                    self.commit(self.a, str(after) + suffix)
-                    client, req = self.submit(worker)
-                    path = 'ci/jobs/' + req['job_id'] + '/' + suffix
-                    original = self.store.upload; hit = []
-                    def fail(source, target):
-                        if target == path and not hit:
-                            hit.append(target)
-                            if after: original(source, target)
-                            raise GdiError('upload response lost' if after else 'upload unavailable')
+            self.commit(self.a, 'package-' + str(after))
+            client, req = self.submit(worker)
+            prefix = 'ci/jobs/' + req['job_id'] + '/result-'
+            original = self.store.upload
+            hit = []
+            def fail(source, target):
+                if target.startswith(prefix) and not hit:
+                    hit.append(target)
+                    if after:
                         original(source, target)
-                    with patch.object(self.store, 'upload', side_effect=fail): worker.tick()
-                    self.assertTrue(hit)
-                    executed = self.counter.read_text()
-                    worker = self.restart(worker)
-                    with patch('gdi.worker.execute', side_effect=AssertionError('delivery must not rerun')):
-                        worker.tick()
-                    self.assertEqual(self.counter.read_text(), executed)
-                    self.assertEqual(client.status(req['job_id'])['state'], 'PASS')
-                    self.assertEqual(worker.ledger.get(req['job_id'])['state'], 'PUBLISHED')
+                    raise GdiError('upload response lost' if after else 'upload unavailable')
+                original(source, target)
+            with patch.object(self.store, 'upload', side_effect=fail):
+                worker.tick()
+            self.assertTrue(hit)
+            executed = self.counter.read_text()
+            worker = self.restart(worker)
+            with patch('gdi.worker.execute', side_effect=AssertionError('delivery must not rerun')):
+                worker.tick()
+            self.assertEqual(self.counter.read_text(), executed)
+            self.assertEqual(client.status(req['job_id'])['state'], 'PASS')
+            self.assertEqual(worker.ledger.get(req['job_id'])['state'], 'PUBLISHED')
 
     def test_claim_metadata_lost_ack_and_queue_ack_failure_are_safe(self):
         worker = self.counted_worker(); client, req = self.submit(worker)
@@ -189,23 +190,26 @@ class CiFaultTests(CiTestCase):
         self.assertFalse(marker.exists())
         self.assertEqual(client.status(req['job_id'])['state'], 'INTERRUPTED')
 
-    def test_durable_chunk_fsync_failure_before_or_after_write_recovers_same_result(self):
+    def test_package_build_failure_before_or_after_creation_does_not_rerun(self):
         worker = self.counted_worker()
         for after in (False, True):
-            self.commit(self.a, 'chunk-' + str(after)); client, req = self.submit(worker)
+            self.commit(self.a, 'package-build-' + str(after))
+            client, req = self.submit(worker)
             from gdi import worker as module
-            original = module.atomic_write; hit = []
-            def fail(path, data):
-                if Path(path).parent.name == 'log-chunks':
-                    hit.append(path)
-                    if after: original(path, data)
-                    raise OSError('chunk fsync unavailable')
-                return original(path, data)
-            with patch('gdi.worker.atomic_write', side_effect=fail): worker.tick()
+            original = module.build_package
+            hit = []
+            def fail(*args, **kwargs):
+                hit.append(True)
+                if after:
+                    original(*args, **kwargs)
+                raise OSError('package fsync unavailable')
+            with patch('gdi.worker.build_package', side_effect=fail):
+                worker.tick()
             self.assertTrue(hit)
             executed = self.counter.read_text()
             self.assertEqual(worker.ledger.get(req['job_id'])['state'], 'UPLOAD_PENDING')
             worker = self.restart(worker)
-            with patch('gdi.worker.execute', side_effect=AssertionError('chunk delivery must not rerun')): worker.tick()
+            with patch('gdi.worker.execute', side_effect=AssertionError('package delivery must not rerun')):
+                worker.tick()
             self.assertEqual(self.counter.read_text(), executed)
             self.assertEqual(client.status(req['job_id'])['state'], 'PASS')

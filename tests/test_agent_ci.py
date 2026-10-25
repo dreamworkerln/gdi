@@ -9,6 +9,7 @@ from gdi.git import GdiError
 from gdi.inbox import filename
 from tests.snapshots import export_snapshot
 from tests.test_inbox import InboxTestCase
+from tests.ci_packages import historical_delivery, publish_package
 
 
 class AgentCiTests(InboxTestCase):
@@ -213,9 +214,35 @@ class AgentCiTests(InboxTestCase):
         with self.assertRaisesRegex(GdiError, 'checksum'):
             agent_ci.accept(self.a, self.plan, snap, self.identity, capabilities_path=self.capabilities(), inbox_proof=proof)
 
-    def test_result_missing_artifact_corrupt_chunk_and_identity_are_rejected(self):
+    def test_single_package_snapshot_and_cached_result_still_require_download(self):
+        worker = self.worker()
+        value = self.prepare(worker)
+        self.transfer(value, 'request', 'ready', 'inbox')
+        worker.tick()
+        snapshot = self.snapshot('packaged-result', value['job_id'], True)
+        document = decode(snapshot.read_bytes())
+        packages = [item for item in document['files'] if item['local_path'].endswith('.zip')]
+        self.assertEqual(len(packages), 1)
+        self.assertFalse(any('/log-chunks/' in item['local_path'] for item in document['files']))
+        with patch('gdi.transport.Rclone.call', side_effect=AssertionError('no rclone')):
+            result = agent_ci.result(self.a, self.plan, snapshot, self.identity)
+        self.assertEqual((result['state'], result['verified']), ('PASS', True))
+        local = snapshot.parent / packages[0]['local_path']
+        raw = local.read_bytes()
+        local.write_bytes(raw[:-1] + bytes([raw[-1] ^ 1]))
+        with self.assertRaisesRegex(GdiError, 'checksum'):
+            agent_ci.result(self.a, self.plan, snapshot, self.identity)
+        local.write_bytes(raw)
+        missing = copy.deepcopy(document)
+        missing['files'].remove(packages[0])
+        snapshot.write_bytes(encode(missing))
+        with self.assertRaisesRegex(GdiError, 'download is missing'):
+            agent_ci.result(self.a, self.plan, snapshot, self.identity)
+
+    def test_historical_result_missing_artifact_corrupt_chunk_and_identity_are_rejected(self):
         worker = self.worker(); value = self.prepare(worker)
         self.transfer(value, 'request', 'ready', 'inbox'); worker.tick()
+        historical_delivery(self.store, 'repos/a/ci/jobs/' + value['job_id'])
         snap = self.snapshot('result', value['job_id'], True)
         doc = decode(snap.read_bytes())
         chunk = next(item for item in doc['files'] if '/log-chunks/' in item['local_path'])
@@ -315,14 +342,14 @@ class AgentCiTests(InboxTestCase):
         value = self.prepare(worker)
         self.transfer(value, 'request', 'ready', 'inbox')
         prefix = 'repos/a/ci/jobs/' + value['job_id']
-        self.store.fail = prefix + '/result.json'
+        self.store.fail = prefix + '/result-'
         worker.tick()
         self.store.fail = None
         cancel = agent_ci.cancel(self.a, self.snapshot('late-cancel', value['job_id']), self.identity,
                                  self.root / 'late-cancel-plan', value['job_id'], self.capabilities())
         self.transfer(cancel, 'cancel')
         # Simulate an original result upload already in flight when cancellation arrived.
-        self.store.upload(worker.spool(value['job_id']) / 'result.json', prefix + '/result.json')
+        publish_package(self.store, worker.spool(value['job_id']), prefix, decode((self.plan / 'request.json').read_bytes()))
         with patch('gdi.transport.Rclone.call', side_effect=AssertionError('no rclone')):
             pending = agent_ci.result(self.a, self.plan, self.snapshot('late-pass', value['job_id']), self.identity)
         self.assertEqual(pending['state'], 'CANCEL_REQUESTED')

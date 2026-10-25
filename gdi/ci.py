@@ -16,6 +16,7 @@ from .ci_protocol import (atomic_write, job_id, marker, request, upload_json,
                           cancellation, validate_cancellation, cancellation_capability)
 from .exchange import decode, digest, encode, file_digest, hex_value
 from .git import GdiError
+from .ci_package import PACKAGE_PATTERN, package_checksum, read_package
 from .diagnostics import phase
 
 
@@ -117,6 +118,7 @@ class CiResultReader:
     def __init__(self, git, transport, repository_id, root):
         self.git, self.transport, self.repository_id = git, transport, repository_id
         self.root = Path(root)
+        self.package_sources = {}
 
     def load_request(self, jid):
         job_id(jid)
@@ -140,6 +142,45 @@ class CiResultReader:
             raise GdiError('CI status/request identity mismatch')
         return value, heartbeat(value.get('updated_at') if value is not None else None, heartbeat_timeout)
 
+    def delivery_result(self, prefix, req, raw, *, listing=None):
+        """Prefer the single package; retain read-only support for old results."""
+        listing = files(self.transport, prefix) if listing is None else listing
+        candidates = sorted(name for name in listing if name.startswith('result-'))
+        sources = self.package_sources
+        sources.pop(prefix, None)
+        if candidates:
+            if len(candidates) != 1 or not PACKAGE_PATTERN.fullmatch(candidates[0]):
+                raise GdiError('CI result package is invalid or ambiguous')
+            name = candidates[0]
+            relative = prefix + '/' + name
+            checksum = package_checksum(name)
+            if hasattr(self.transport, 'require_file'):
+                # An offline observation must include its own verified download,
+                # even if a previous snapshot populated the local package cache.
+                self.transport.require_file(relative, checksum, self.transport.entries[relative]['bytes'])
+            kind = 'cancelled' if prefix.endswith('/cancelled') else 'original'
+            target = self.root / 'packages' / req['job_id'] / kind / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.is_symlink():
+                raise GdiError('CI package cache must not be a symlink')
+            if not target.is_file() or file_digest(target) != checksum:
+                descriptor, temporary = tempfile.mkstemp(dir=target.parent, prefix='.result-', suffix='.pending')
+                os.close(descriptor)
+                pending = Path(temporary)
+                try:
+                    self.transport.download(relative, pending)
+                    if file_digest(pending) != checksum:
+                        raise GdiError('CI result package checksum mismatch')
+                    os.replace(pending, target)
+                finally:
+                    pending.unlink(missing_ok=True)
+            result = read_package(target, req, digest(raw), metadata_only=True)
+            sources[prefix] = target
+            return result
+        if 'result.json' in listing:
+            return validate_result(decode(self.transport.read(prefix + '/result.json')), req, digest(raw))
+        return None
+
     def result_source(self, req, raw, *, listing=None):
         """Cancellation fences ordinary results, including an upload already in flight."""
         prefix = f"ci/jobs/{req['job_id']}"
@@ -147,10 +188,9 @@ class CiResultReader:
         cancelled = self.cancellation_record(req, raw, listing=listing)
         if cancelled is not None:
             directories = {item['Path'] for item in self.transport.list(prefix) if item['IsDir']}
-            content = (optional_read(self.transport, prefix + '/cancelled/result.json')
-                       if 'cancelled' in directories else None)
-            if content is not None:
-                result = validate_result(decode(content), req, digest(raw))
+            result = (self.delivery_result(prefix + '/cancelled', req, raw)
+                      if 'cancelled' in directories else None)
+            if result is not None:
                 if result['state'] != 'CANCELLED':
                     raise GdiError('CI cancelled delivery must have state CANCELLED')
                 claim = optional_read(self.transport, prefix + '/worker.running.json')
@@ -159,9 +199,9 @@ class CiResultReader:
                         'worker_id': req['worker_id'], 'request_sha256': digest(raw)}:
                     raise GdiError('CI cancelled delivery does not match the execution claim')
                 return prefix + '/cancelled', result
-        if "result.json" not in listing:
+        result = self.delivery_result(prefix, req, raw, listing=listing)
+        if result is None:
             return None
-        result = validate_result(decode(self.transport.read(prefix + "/result.json")), req, digest(raw))
         if (cancelled is not None and cancelled.get('worker_cancellation_supported') is not False
                 and result['state'] != 'CANCELLED'):
             return None
@@ -180,30 +220,36 @@ class CiResultReader:
         prefix, result = source
         local = self.root / "results" / jid
         local.mkdir(parents=True, exist_ok=True)
-        for desc in result["artifacts"]:
-            target = local / desc["path"]
-            target.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                verify_file(target, desc)
-            except (OSError, GdiError):
-                pending = target.with_name(target.name + ".pending")
-                self.transport.download(prefix + '/' + desc["path"], pending)
-                verify_file(pending, desc)
-                os.replace(pending, target)
+        package = self.package_sources.get(prefix)
+        if package is not None:
+            if read_package(package, req, digest(raw), destination=local) != result:
+                raise GdiError('CI package result changed during verification')
+        else:
+            for desc in result["artifacts"]:
+                target = local / desc["path"]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    verify_file(target, desc)
+                except (OSError, GdiError):
+                    pending = target.with_name(target.name + ".pending")
+                    self.transport.download(prefix + '/' + desc["path"], pending)
+                    verify_file(pending, desc)
+                    os.replace(pending, target)
         final_status = decode((local / "final-status.json").read_bytes())
         if (final_status.get("job_id") != jid or final_status.get("run_id") != result["run_id"]
                 or final_status.get("state") != result["state"] or final_status.get("request_sha256") != digest(raw)):
             raise GdiError("CI final status does not match result")
-        # Validate the immutable streaming sequence against the final full binary log.
-        chunk_hash = hashlib.sha256()
-        size = 0
-        cancelled_delivery = prefix.endswith('/cancelled')
-        for path, checksum in self.chunks(jid, cancelled_delivery=cancelled_delivery):
-            data = self.chunk(jid, path, checksum, cancelled_delivery=cancelled_delivery)
-            chunk_hash.update(data); size += len(data)
-        log = next(item for item in result["artifacts"] if item["path"] == "build.log")
-        if size != log["bytes"] or chunk_hash.hexdigest() != log["sha256"]:
-            raise GdiError("CI log chunks are incomplete or differ from the final log")
+        if package is None:
+            # Historical results retain their original streaming-log contract.
+            chunk_hash = hashlib.sha256()
+            size = 0
+            cancelled_delivery = prefix.endswith('/cancelled')
+            for path, checksum in self.chunks(jid, cancelled_delivery=cancelled_delivery):
+                data = self.chunk(jid, path, checksum, cancelled_delivery=cancelled_delivery)
+                chunk_hash.update(data); size += len(data)
+            log = next(item for item in result["artifacts"] if item["path"] == "build.log")
+            if size != log["bytes"] or chunk_hash.hexdigest() != log["sha256"]:
+                raise GdiError("CI log chunks are incomplete or differ from the final log")
         # Refresh after downloading: a cancellation can arrive while verifying artifacts.
         current = self.result_source(req, raw)
         if current is None:
@@ -281,10 +327,10 @@ class CiResultReader:
 class CiClient(CiResultReader):
     def __init__(self, exchange, remote):
         self.exchange = exchange
-        self.git = exchange.git
-        self.transport, self.repository_id = exchange.connect(remote)
+        transport, repository_id = exchange.connect(remote)
+        super().__init__(exchange.git, transport, repository_id,
+                         exchange.git.gdi_dir() / 'ci' / repository_id)
         self.settings = exchange.remote(remote)
-        self.root = self.git.gdi_dir() / "ci" / self.repository_id
         old = self.git.common_dir() / "gdi-ci" / self.repository_id
         migrate_state(old, self.root)
 
@@ -346,7 +392,7 @@ class CiClient(CiResultReader):
             self.transport.mkdir(directory)
         # A repeated successful submit must not put a completed job back in the queue.
         existing = files(self.transport, prefix)
-        if "result.json" in existing:
+        if "result.json" in existing or any(PACKAGE_PATTERN.fullmatch(name) for name in existing):
             self.result(jid)
             return req
         if 'cancel.json' in existing:
@@ -498,21 +544,33 @@ class CiClient(CiResultReader):
 
 
 
-    def follow(self, jid, cursor, stream):
-        chunks = self.chunks(jid)
-        if len(chunks) < cursor:
-            raise GdiError("CI log sequence shrank")
-        for name, checksum in chunks[cursor:]:
-            data = self.chunk(jid, name, checksum)
-            if hasattr(stream, "buffer"):
-                stream.buffer.write(data); stream.buffer.flush()
-            else:
-                stream.write(data.decode("utf-8", errors="replace")); stream.flush()
-        return len(chunks)
+    @staticmethod
+    def write_log(stream, data):
+        if hasattr(stream, 'buffer'):
+            stream.buffer.write(data)
+            stream.buffer.flush()
+        else:
+            stream.write(data.decode('utf-8', errors='replace'))
+            stream.flush()
+
+    def follow(self, jid, cursor, stream, *, _result=None):
+        result = self.result(jid) if _result is None else _result
+        if result is None:
+            return cursor
+        path = self.root / 'results' / jid / 'build.log'
+        with path.open('rb') as source:
+            source.seek(cursor)
+            while True:
+                data = source.read(1024 * 1024)
+                if not data:
+                    break
+                self.write_log(stream, data)
+                cursor += len(data)
+        return cursor
 
     @contextmanager
     def cursor_session(self, jid, *, restart=False, _request=None):
-        """One follower per job; only flushed, verified chunks advance the cursor."""
+        """One follower per job; offsets advance after flushing the final log."""
         with phase('verify CI request'):
             req, raw = self.load_request(jid) if _request is None else _request
             if req['job_id'] != job_id(jid):
@@ -528,36 +586,43 @@ class CiClient(CiResultReader):
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
                 raise GdiError('another command is following this CI job') from exc
-            state = {'cursor_version': 1, 'job_id': jid, 'request_sha256': digest(raw), 'chunks': []}
+            state = {'cursor_version': 2, 'job_id': jid, 'request_sha256': digest(raw),
+                     'log_sha256': None, 'offset': 0}
             if path.exists() and not restart:
                 saved = decode(path.read_bytes())
-                if (set(saved) != set(state) or type(saved.get('cursor_version')) is not int or
-                        saved['cursor_version'] != 1 or saved['job_id'] != jid or
-                        saved['request_sha256'] != digest(raw) or not isinstance(saved['chunks'], list) or
-                        any(not isinstance(name, str) or not re.fullmatch(r'[0-9]{8}-[0-9a-f]{64}\.bin', name)
-                            for name in saved['chunks'])):
+                if (not isinstance(saved, dict) or set(saved) != set(state) or
+                        type(saved.get('cursor_version')) is not int or saved['cursor_version'] != 2 or
+                        saved['job_id'] != jid or saved['request_sha256'] != digest(raw) or
+                        (saved['log_sha256'] is not None and not hex_value(saved['log_sha256'], 64)) or
+                        type(saved['offset']) is not int or saved['offset'] < 0 or
+                        (saved['log_sha256'] is None and saved['offset'] != 0)):
                     raise GdiError('invalid CI follow cursor; use --restart to replay the log')
                 state = saved
             atomic_write(path, encode(state))
             yield path, state
 
-    def follow_saved(self, jid, cursor, stream):
+    def follow_saved(self, jid, cursor, stream, *, _result=None):
+        result = self.result(jid) if _result is None else _result
+        if result is None:
+            return
         path, state = cursor
-        chunks = self.chunks(jid)
-        names = [name for name, _ in chunks]
-        consumed = state['chunks']
-        if names[:len(consumed)] != consumed:
-            raise GdiError('CI log sequence shrank or previously printed chunks changed')
-        for name, checksum in chunks[len(consumed):]:
-            data = self.chunk(jid, name, checksum)
-            if hasattr(stream, 'buffer'):
-                stream.buffer.write(data); stream.buffer.flush()
-            else:
-                stream.write(data.decode('utf-8', errors='replace')); stream.flush()
-            # Terminal writes and fsync cannot be atomic. A crash here can replay
-            # the current chunk, but never silently skip unflushed output.
-            consumed.append(name)
-            atomic_write(path, encode(state))
+        log = next(spec for spec in result['artifacts'] if spec['path'] == 'build.log')
+        if state['log_sha256'] not in (None, log['sha256']) or state['offset'] > log['bytes']:
+            # A late cancellation has its own final log. Never mix two logs.
+            raise GdiError('CI final log changed; use --restart to view the current result')
+        state['log_sha256'] = log['sha256']
+        source_path = self.root / 'results' / jid / 'build.log'
+        verify_file(source_path, log)
+        with source_path.open('rb') as source:
+            source.seek(state['offset'])
+            while True:
+                data = source.read(1024 * 1024)
+                if not data:
+                    break
+                self.write_log(stream, data)
+                state['offset'] += len(data)
+                atomic_write(path, encode(state))
+        atomic_write(path, encode(state))
 
     def wait(self, jid, *, timeout=3600, follow=False, stream=None, interval=2, restart=False, heartbeat_timeout=600):
         from .worker_config import seconds
@@ -589,8 +654,9 @@ class CiClient(CiResultReader):
                                       f" threshold={heartbeat_timeout:g}s" if summary[3] else '')
                         print(f"[{jid}] {summary[0]} stage={summary[1]} heartbeat={summary[2]}{diagnostic}", file=stream, flush=True)
                         last = summary
-                    with phase('read CI log chunks') if first_poll else nullcontext():
-                        self.follow_saved(jid, cursor, stream)
+                    if value.get('verified'):
+                        with phase('read final CI log'):
+                            self.follow_saved(jid, cursor, stream, _result=value)
                 first_poll = False
                 if value.get('verified'):
                     return value, 0 if value['state'] == 'PASS' else 1
@@ -614,8 +680,10 @@ class CiClient(CiResultReader):
         if follow:
             self.wait(jid, follow=True, stream=sys.stdout, timeout=None, restart=restart, heartbeat_timeout=heartbeat_timeout)
         else:
-            self.load_request(jid)
-            self.follow(jid, 0, sys.stdout)
+            result = self.result(jid)
+            if result is None:
+                raise GdiError('CI result is not published; use status or logs --follow to wait')
+            self.follow(jid, 0, sys.stdout, _result=result)
 
     def withdraw(self, req, raw):
         """Remove only this request's queue notification after persisting cancellation."""

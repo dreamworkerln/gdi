@@ -39,7 +39,7 @@ def assert_stable_status_upload(case):
 
     def publish():
         try:
-            worker.publish_live(transport, row, set())
+            worker.publish_live(transport, row)
         except BaseException as exc:
             failures.append(exc)
 
@@ -67,7 +67,7 @@ def assert_stable_status_upload(case):
     case.assertTrue(worker_status['busy'])
     case.assertEqual(worker_status['registry_version'], 1)
     # The next pass publishes the new heartbeat rather than freezing old status.
-    worker.publish_live(transport, row, set())
+    worker.publish_live(transport, row)
     case.assertEqual(case.store.data[job_key], source.read_bytes())
     worker_status = decode(case.store.data[worker_key])
     for key, value in decode(source.read_bytes()).items():

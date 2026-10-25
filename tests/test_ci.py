@@ -19,6 +19,7 @@ from gdi.git import GdiError, Git
 from gdi.worker import Worker
 from gdi.worker_config import load_config
 from tests.test_exchange import ExchangeTestCase
+from tests.ci_packages import historical_delivery, package_path
 
 
 class CiTestCase(ExchangeTestCase):
@@ -102,7 +103,7 @@ class CiTests(CiTestCase):
         worker = self.worker(self.config([sys.executable, '-c',
             f"from pathlib import Path; p=Path({str(count)!r}); p.write_text(p.read_text()+'x' if p.exists() else 'x')"]))
         client, req = self.submit(worker)
-        self.store.fail = f"ci/jobs/{req['job_id']}/result.json"
+        self.store.fail = f"ci/jobs/{req['job_id']}/result-"
         worker.tick()
         self.assertEqual(count.read_text(), 'x')
         self.assertEqual(worker.ledger.get(req['job_id'])['state'], 'UPLOAD_PENDING')
@@ -129,6 +130,7 @@ class CiTests(CiTestCase):
         worker = self.worker()
         client, req = self.submit(worker)
         worker.tick()
+        historical_delivery(self.store, f"ci/jobs/{req['job_id']}")
         path = f"ci/jobs/{req['job_id']}/build.log"
         self.store.data[path] += b'corrupted'
         with self.assertRaisesRegex(GdiError, 'checksum'):
@@ -149,7 +151,8 @@ class CiTests(CiTestCase):
         self.assertEqual(value['state'], 'TIMEOUT')
         data = (client.root / 'results' / req['job_id'] / 'build.log').read_bytes()
         self.assertIn(b'\x00\xff' + b'x'*600000, data)
-        self.assertGreaterEqual(len(client.chunks(req['job_id'])), 3)
+        package_path(self.store, f"ci/jobs/{req['job_id']}")
+        self.assertFalse(any('/log-chunks/' in path for path in self.store.data))
 
     def test_revision_change_rejects_without_execution(self):
         worker = self.worker()
@@ -198,10 +201,11 @@ class CiTests(CiTestCase):
                     state = client.status(req['job_id'])
                     output = io.StringIO()
                     client.follow(req['job_id'], 0, output)
-                    if 'EARLY' in output.getvalue() and not state.get('verified'):
+                    self.assertEqual(output.getvalue(), '')
+                    if state.get('state') == 'RUNNING' and not state.get('verified'):
                         return
                     time.sleep(.05)
-                raise AssertionError('no live log/progress before completion')
+                raise AssertionError('no live status/heartbeat before completion')
             except BaseException as exc:
                 errors.append(exc)
         observer = threading.Thread(target=observe)
@@ -268,10 +272,11 @@ class CiTests(CiTestCase):
         worker.tick()
         self.assertEqual(client.status(retry['job_id'])['state'], 'PASS')
 
-    def test_missing_chunk_and_result_without_blocking_stage_are_rejected(self):
+    def test_historical_missing_chunk_and_result_without_blocking_stage_are_rejected(self):
         worker = self.worker()
         client, req = self.submit(worker)
         worker.tick()
+        historical_delivery(self.store, f"ci/jobs/{req['job_id']}")
         chunk = next(path for path in self.store.data if '/log-chunks/' in path)
         original = self.store.data.pop(chunk)
         with self.assertRaisesRegex(GdiError, 'incomplete|gaps'):
@@ -291,7 +296,7 @@ class CiTests(CiTestCase):
         failed = []
         def lost_ack(source, path):
             original(source, path)
-            if path.endswith('/result.json') and not failed:
+            if '/result-' in path and path.endswith('.zip') and not failed:
                 failed.append(path)
                 raise GdiError('lost acknowledgement')
         with patch.object(self.store, 'upload', side_effect=lost_ack):
