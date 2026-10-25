@@ -1,0 +1,28 @@
+{
+  "publication_id": "2d9ad7730c0c2eb45d88bec6ddc6a15c75ecdbb7638096ff2a2089d29bcf0191",
+  "runtime": {
+    "bytes": 150708,
+    "entrypoint": "gdi.cli:main",
+    "head": "3b5e7af913325b55ac96762a89765b14174b1e4d",
+    "python_requires": ">=3.10",
+    "ref": "refs/heads/dev",
+    "runtime_version": 1,
+    "sha256": "ad7e49768fcbc19f84ecb83c1cd65e7613c822b35d7e30da908c7d3dbfe35906",
+    "version": "0.4.0"
+  },
+  "runtime_dir": "gdrive:gdi/gdi/runtime/",
+  "source_commit": "3b5e7af913325b55ac96762a89765b14174b1e4d",
+  "worker_capabilities": {
+    "ci_submission_version": 1,
+    "inbox_version": 1,
+    "result_delivery_version": 1,
+    "worker_id": "user-dream"
+  },
+  "worker_service": {
+    "ActiveEnterTimestamp": "Sun 2026-10-25 21:32:06 MSK",
+    "ActiveState": "active",
+    "ExecMainStatus": "0",
+    "MainPID": "875687",
+    "SubState": "running"
+  }
+}

@@ -1,6 +1,6 @@
 # TODO_007 — Один самодостаточный запрос CI в inbox
 
-Status: IMPLEMENTED; software validation выполнена, публикация остаётся открытым gate.
+Status: CLOSED; software validation и согласованное локальное обновление выполнены.
 Implementation: DONE.
 Validation: PASS — bash test.sh, 460 tests: 455 PASS, 5 opt-in SKIP.
 Дата: 2026-10-25. BASE: `9209e68e685c5944a98d1eadd27a84908960e7e5`.
@@ -45,7 +45,7 @@ ci_submission_version:1; старый worker не выбирается для н
   job IDs и неправильные folder/worker/repository/commit bindings.
 - [x] Обновить agent.md, inbox/CI protocols и повседневные инструкции.
 - [x] Провести проверки до обновления; сохранить BASE+patch/manifest и сырые логи.
-- [ ] Обновить CLI, worker и опубликованный runtime по согласованному запросу.
+- [x] Обновить CLI, worker и опубликованный runtime по согласованному запросу.
 
 ## Границы
 
@@ -99,7 +99,37 @@ user-service opt-in теста; пользовательские CI/hardware run
 Прогон выполнен вне sandbox-ограничения на Unix sockets для локального rclone RC.
 Исходники и tests во время итогового прогона не менялись; hashes сверены после него.
 
-Оставшиеся gates: собрать и проверить runtime, выполнить
-согласованные GitHub/GDI/runtime publication и restart локального user-dream.
-Реальное время пользовательского Drive-коннектора и другие worker hosts не
-проверяются автоматически этими локальными fixtures.
+Обязательные software/deployment gates этой задачи выполнены. Реальное время
+пользовательского Drive-коннектора и другие worker hosts не проверяются
+автоматически этими локальными fixtures.
+
+## Публикация и обновление
+
+Исходный commit `3b5e7af913325b55ac96762a89765b14174b1e4d` отправлен в GitHub
+origin/dev; `./deploy.sh` выполнил full GDI publication
+`2d9ad7730c0c2eb45d88bec6ddc6a15c75ecdbb7638096ff2a2089d29bcf0191`.
+Сборка/smoke zipapp, загрузка gdi.pyz/runtime.json/gdi.pyz.sha256/agent.md в
+`gdrive:gdi/gdi/runtime/` и обратное побайтное сравнение — PASS.
+[Лог deploy](evidence/TODO_007/deploy.txt),
+[машинная запись](evidence/TODO_007/deployment.json).
+
+Runtime HEAD: исходный commit выше; 150708 bytes, SHA256:
+`ad7e49768fcbc19f84ecb83c1cd65e7613c822b35d7e30da908c7d3dbfe35906`.
+Дополнительный isolated runtime smoke вне source tree выполнил новый prepare,
+один upload inbox, accept на исходном snapshot, PENDING до worker и PASS с
+verified:true после него. Скачивание submission.json не требовалось, исполнение
+было ровно одно. [Сырой итог](evidence/TODO_007/runtime-smoke.txt),
+[воспроизводящий скрипт](evidence/TODO_007/runtime-smoke.py).
+
+Локальный CLI использует editable checkout. Перед restart ledger user-dream
+не содержал pending jobs. `gdi worker restart` и последующая проверка:
+active/running, ExecMainStatus=0, MainPID=875687,
+ActiveEnterTimestamp=2026-10-25 21:32:06 MSK.
+Свежие capabilities с Drive: worker_id=user-dream, ci_submission_version=1,
+result_delivery_version=1. [Restart](evidence/TODO_007/worker-restart.txt).
+
+Документационная запись о завершении добавляется отдельным commit после deploy;
+она не меняет проверенный код runtime. Уже работающим контейнерам и другим host
+нужно получить новый опубликованный runtime/код; дистанционное обновление
+неуправляемых hosts не выполнялось. Старые remote/очереди не мигрировались и
+не удалялись; их ручное обновление остаётся решением оператора.

@@ -17,11 +17,10 @@
 | [TODO_004](todos/TODO_004_WORK_CHECKPOINT_IMPORT_RETENTION.md) | Work checkpoints, squash import, GDI-IMPORTED и retention | IMPLEMENTED; опубликованная реализация b5886b0 сохранена; 2026-10-24 оператор снял work_version со всех 6 remote; повторная активация не выполнялась |
 | [TODO_005](todos/TODO_005_REPOSITORY_CLI.md) | Обычные init/clone/remote create | CLOSED; GDI 0.4.0, init/clone/remote create; BASE b5886b0 + source patch/evidence в задаче, 127 targeted PASS и полный discovery 429 PASS / 5 opt-in SKIP |
 | [TODO_006](todos/TODO_006_CI_RESULT_PACKAGE.md) | Один пакет результата CI, без log chunks | CLOSED; 7b47d82, один пакет без новых chunks; test.sh: 441 PASS / 5 opt-in SKIP; GitHub/GDI/runtime опубликованы, user-dream перезапущен и объявляет delivery v1 |
-| [TODO_007](todos/TODO_007_CI_SINGLE_SUBMISSION.md) | Один самодостаточный запрос CI в inbox | IMPLEMENTED; implementation DONE, test.sh: 455 PASS / 5 opt-in SKIP; согласованное обновление CLI/worker/runtime ожидает публикации |
+| [TODO_007](todos/TODO_007_CI_SINGLE_SUBMISSION.md) | Один самодостаточный запрос CI в inbox | CLOSED; 3b5e7af, один inbox-файл; test.sh: 455 PASS / 5 opt-in SKIP; GitHub/GDI/runtime опубликованы, user-dream обновлён и объявляет submission v1 |
 
 ## Следующие действия
 
-0. TODO_007: выполнить согласованную публикацию и обновление CLI/worker/runtime после полного PASS.
 1. TODO_004: runtime/agent.md 435df3c были опубликованы отдельно; default capability
    новых remote включена в опубликованный b5886b0, теперь создание выполняет
    `remote create`. 2026-10-24 оператор снял work_version со всех шести существующих

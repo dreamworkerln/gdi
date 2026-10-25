@@ -1,0 +1,1 @@
+{"accept": "accepted", "before_worker": "PENDING", "executions": 1, "result": "PASS", "runtime_sha256": "ad7e49768fcbc19f84ecb83c1cd65e7613c822b35d7e30da908c7d3dbfe35906", "submission_download_required": false, "upload_files": ["inbox"], "verified": true}
