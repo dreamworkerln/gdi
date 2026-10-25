@@ -319,7 +319,7 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             sub.add_argument('--final', action='store_true', help='mark the completed and validated work with !')
     agent_ci = agent_ops.add_parser('ci', help='offline CI request and result exchange')
     agent_ci_ops = agent_ci.add_subparsers(dest='ci_operation', required=True)
-    for operation in ('prepare', 'check', 'accept', 'result', 'cancel', 'cancel-check', 'workers', 'supervise'):
+    for operation in ('prepare', 'accept', 'result', 'cancel', 'cancel-check', 'workers', 'supervise'):
         sub = agent_ci_ops.add_parser(operation)
         diagnostics_arguments(sub)
         sub.set_defaults(json=True)
@@ -353,7 +353,7 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             sub.add_argument('--inbox-proof', required=True, help='complete inbox listing and downloaded event proof')
         if operation == 'supervise':
             sub.add_argument('--inbox-proof', help='proof of automatic retry notification; activates the replacement')
-        if operation in ('prepare', 'check', 'accept', 'cancel'):
+        if operation in ('prepare', 'accept', 'cancel'):
             sub.add_argument('--capabilities', required=operation != 'prepare', help='fresh downloaded worker capabilities JSON')
     worker = commands.add_parser("worker", help="host worker and systemd user service (works outside git)")
     worker_ops = worker.add_subparsers(dest="operation", required=True)

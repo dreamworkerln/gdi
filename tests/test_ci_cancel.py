@@ -209,7 +209,7 @@ class SharedCancellationTests(InboxTestCase):
         client, req = self.submit(worker)
         worker.tick()
         prefix = 'repos/a/ci/jobs/' + req['job_id']
-        raw = self.store.data[prefix + '/request.json']
+        raw = encode(req)
         download = self.store.download
         def cancel_after_download(path, target):
             download(path, target)
@@ -328,7 +328,7 @@ class SharedCancellationTests(InboxTestCase):
     def test_invalid_cancellation_never_starts_queued_job(self):
         worker = self.worker()
         client, req = self.submit(worker)
-        raw = self.store.data['repos/a/ci/jobs/'+req['job_id']+'/request.json']
+        raw = encode(req)
         marker = cancellation(req, raw)
         marker['request_sha256'] = 'f'*64
         self.store.data['repos/a/ci/jobs/'+req['job_id']+'/cancel.json'] = encode(marker)
@@ -388,7 +388,7 @@ class SharedCancellationTests(InboxTestCase):
         worker = self.worker()
         client, req = self.submit(worker)
         client.cancel(req['job_id'])
-        raw = self.store.data['repos/a/ci/jobs/'+req['job_id']+'/request.json']
+        raw = encode(req)
         self.store.data['repos/a/ci/jobs/'+req['job_id']+'/worker.running.json']=encode({
             'ci_version':1,'job_id':req['job_id'],'run_id':'f'*32,
             'worker_id':req['worker_id'],'request_sha256':digest(raw)})

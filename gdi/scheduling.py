@@ -180,6 +180,12 @@ def inspect_workers(registry, profile_id, settings, *, repository_id=None, at=No
                 reject('repository_missing', 'worker does not advertise this repository', repository_id=repository_id)
             revision = capability_revision(caps, worker, profile_id, repository_id)
             cancellation_capability(caps, worker)
+            if repository_id is None:
+                from .ci_protocol import submission_capability
+                try:
+                    submission_capability(caps, worker)
+                except GdiError as exc:
+                    reject('submission_unsupported', str(exc))
             value['profile_revision'] = revision
             if (not isinstance(status, dict) or status.get('worker_id') != worker or
                     status.get('registry_version') != 1 or type(status.get('registry_version')) is not int):

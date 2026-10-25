@@ -81,7 +81,7 @@ bytes или дубликаты имён требуют остановки. Не
 - Проверка снимка, выбор bundles и восстановление: `gdi agent snapshot`
   и `gdi agent clone`.
 - Публикация: `gdi agent prepare`, `gdi agent check`, `gdi agent accept`.
-- CI: `gdi agent ci prepare`, `check`, `accept`, `result`.
+- CI: `gdi agent ci prepare`, `accept`, `result`.
 
 Коннектор выполняет listings, скачивание и загрузку файлов; агент собирает описанный
 ниже снимок из этих listings и downloads и передаёт его GDI. Скачивайте bundles
@@ -92,7 +92,7 @@ git objects и результатов CI выполняет GDI.
 Не выбирайте checkpoint и дельты вручную, не собирайте из них репозиторий командами
 `git bundle create/unbundle`, `git clone <bundle>` или `git fetch <bundle>`.
 Не создавайте и не исправляйте вручную bundles, manifests, Publication IDs,
-CI request/ready/inbox/result. Не пишите собственную реализацию их проверок вместо
+CI submission/result. Не пишите собственную реализацию их проверок вместо
 команд GDI. Обычные git-команды для работы с исходниками и просмотра локального
 HEAD/ветки разрешены; восстановление из файлов GDI-протокола делает `agent clone`.
 При ошибке GDI исправьте указанные входные данные или получите свежий снимок;
@@ -232,7 +232,7 @@ worker (`remote_url` в его конфигурации), и его реальн
 проекта всегда считается относительно общего корня выбранного worker.
 Примеры для общего корня `gdrive:gdi`:
 
-| Репозиторий | Полный адрес проекта | `repository_path` | Папка request/ready от общего корня |
+| Репозиторий | Полный адрес проекта | `repository_path` | Папка job от общего корня |
 | --- | --- | --- | --- |
 | GDI | `gdrive:gdi/gdi` | `gdi` | `gdi/ci/jobs/JOB_ID` |
 | serialterminal | `gdrive:gdi/serialterminal` | `serialterminal` | `serialterminal/ci/jobs/JOB_ID` |
@@ -254,8 +254,7 @@ COMMON_ROOT_FOLDER_ID/                  # общий корень: gdrive:exchan
         bundles/BUNDLE_NAME
         branches/BRANCH_NAME/MANIFEST_NAME
         ci/jobs/JOB_ID/
-            request.json
-            request.ready
+            submission.json
             status.json
             result-<sha256>.zip
 ```
@@ -556,8 +555,7 @@ commit; локальная ветка может быть уже впереди 
 
 Финальный `!` для CI не требуется. После публикации промежуточной части и успешного
 `agent accept` используйте её точные Publication ID и SHA, snapshot той же work-ветки
-и существующий `gdi agent ci prepare`. Дальше тот же протокол request/ready → check
-→ inbox → accept → result, описанный ниже. Операторские `gdi ci …` агенту не нужны.
+и существующий `gdi agent ci prepare`. Дальше тот же протокол одного inbox-файла → read-back → accept → result, описанный ниже. Операторские `gdi ci …` агенту не нужны.
 
 Worker проверяет закреплённые ref/HEAD/publication, даже если агент уже опубликовал
 следующую часть. После FAIL исправляйте работу новым numbered checkpoint, публикуйте
@@ -598,7 +596,7 @@ python3 "$GDI_RUNTIME" agent ci prepare --repo "$WORK_DIR" \
 
 Выбранный host может отличаться от текущего компьютера владельца. После prepare
 используйте ID из плана для наблюдения за заданием и capabilities именно этого worker
-для check/accept. Скачанный файл capabilities выбранного host сохраните как
+для accept. Скачанный файл capabilities выбранного host сохраните как
 `$EXCHANGE_DIR/capabilities.json` для общего порядка передачи ниже. Автоматический
 выбор при подготовке сам по себе не переносит уже отправленное задание по таймауту.
 
@@ -634,7 +632,7 @@ WORKER_ID="фактический_worker_id_из_config_CI_host"
 Скачайте свежие `ci/workers/$WORKER_ID/capabilities.json` из **общего root**.
 Сохраните скачанный файл как `$EXCHANGE_DIR/capabilities.json`; поле `worker_id`
 в нём должно совпадать с `$WORKER_ID`. Используйте capabilities этого же worker
-при prepare, check и accept. Revision выбранного профиля GDI берёт из этого файла;
+при prepare и accept. Revision выбранного профиля GDI берёт из этого файла;
 скачивание неизменившегося файла прежнего worker не делает его окружение актуальным.
 
 ```bash
@@ -647,80 +645,52 @@ python3 "$GDI_RUNTIME" agent ci prepare --repo "$WORK_DIR" \
 
 ### Передача и проверка — для обоих режимов
 
-Поддерживаются те же `--workflow`, `--event`, `--job`, повторяемый `--input KEY=VALUE`.
-План содержит `files.request`, `files.ready`, `files.inbox` и фиксированные job ID,
-profile revision, ref/HEAD и Publication ID. Порядок: **request → ready → inbox**.
-Повтор prepare с тем же планом сохраняет job ID/bytes. Изменение capabilities
-требует нового явного запроса; при простой задержке worker новый job не создавайте.
-Другой worker пропускает адресованное чужому ID событие inbox. Если выбран неверный
-ID или изменилась revision, сохраните прежний план и запрос, затем выполните новый
-prepare в отдельном каталоге: без `--worker` со свежим `--workers` snapshot либо
-с нужным `--worker ID` и свежими capabilities. Если прежний запрос уже передан,
-сначала выполните отмену и используйте `--retry-of` или автоматический supervisor;
-новый самостоятельный запрос не отменяет прежний. Не меняйте
-worker ID или revision вручную в уже опубликованных immutable файлах. Перезапуск
-worker с другим ID не перенаправляет существующее задание.
+План содержит единственный передаваемый файл files.inbox: полный canonical JSON
+с CI request и repository_path. Job ID, HEAD, Publication ID, worker и profile revision
+зафиксированы. Поддерживаются --workflow, --event, --job, повторяемый --input KEY=VALUE.
+Сразу после prepare ответ содержит safe_to_upload_inbox:true и upload_order:["inbox"].
 
-Для отмены используйте `gdi agent ci cancel/cancel-check`, а для явной замены —
-`gdi agent ci prepare --retry-of`, как описано ниже. Не имитируйте отмену удалением
-или правкой request/ready/inbox/claim файлов на Drive: worker мог сохранить запрос
-локально и выполнить его после включения. Автоматический перенос выполняйте
-`gdi agent ci supervise` с заданной политикой; tools сами выбирают совместимого
-исполнителя, готовят отмену, проверяют доставку и сохраняют новую попытку.
-Порядок snapshots/передачи: [scheduling.md](scheduling.md).
-
-1. Загрузите request.json, затем request.ready в папки из
-   `files.request.target_folder` и `files.ready.target_folder` плана. Разрешайте
-   оба пути от общего корня по правилам раздела «Общий корень, путь проекта и
-   папка назначения»; папка проекта уже включена в эти пути. До загрузки inbox
-   сверьте `repository_path` плана/уведомления с реальной цепочкой папок от
-   общего корня до PROJECT_FOLDER_ID.
-   Это обязательно для каждого репозитория, включая сам GDI: при корне
-   `gdrive:gdi` и проекте `gdrive:gdi/gdi` в уведомлении должен быть путь `gdi`.
-   Корректные `request.json`, `request.ready` и совпадающий SHA-256 запроса
-   не подтверждают правильность маршрута: поля `repository_path` в запросе нет,
-   worker берёт его из отдельного уведомления inbox. При ошибке этого пути
-   worker может оставаться READY, а запрос не попадёт в его локальную очередь.
-2. Скачайте оба обратно, свежие capabilities и metadata проекта. Дополните снимок
-   listings `ci`, `ci/jobs`, `ci/jobs/JOB_ID` и downloads request/ready.
-
-   ```bash
-   python3 "$GDI_RUNTIME" agent ci check --repo "$WORK_DIR" --plan "$EXCHANGE_DIR/ci-plan" \
-     --snapshot "$EXCHANGE_DIR/ready/snapshot.json" --repository-id "$REPOSITORY_ID" \
-     --capabilities "$EXCHANGE_DIR/capabilities.json"
-   ```
-
-   Inbox загружайте только после `safe_to_upload_inbox: true`.
-3. Загрузите `files.inbox` в общий `inbox`, скачайте обратно до удаления worker.
-   Сохраните `inbox-proof.json` — полный listing папки inbox и download:
+1. По files.inbox.target_folder/target_name найдите общую inbox владельца. Сверьте
+   repository_path плана с расположением проекта относительно общего root.
+   Загрузите **один** files.inbox с точными bytes из плана. Папку ci/jobs/JOB_ID
+   создаст worker; агент не загружает отдельные request.json/request.ready.
+2. Получите полный свежий listing inbox и скачайте этот же файл по найденному ID.
+   Сохраните inbox-proof.json: listing всех страниц и download exact bytes:
 
    ```json
    {
      "proof_version": 1,
      "folder_id": "INBOX_FOLDER_ID",
      "pages": [{"page_token": null, "next_page_token": null, "entries": [
-       {"id": "EVENT_FILE_ID", "name": "JOB_ID-EVENT_SHA256.json", "is_dir": false, "bytes": 456}
+       {"id": "EVENT_FILE_ID", "name": "JOB_ID-EVENT_SHA256.json", "is_dir": false, "bytes": 1234}
      ]}],
      "file_id": "EVENT_FILE_ID",
      "local_path": "downloaded-event.json"
    }
    ```
 
-   Имена/bytes замените фактическими; pages сохраняются по тем же правилам.
+   Имена/IDs/bytes берите из фактического listing. При потере ответа upload найдите
+   то же имя и переиспользуйте совпадающие bytes; не создавайте новый job/план.
+3. Подтвердите передачу. Используйте **исходный snapshot и capabilities из prepare**:
+   новый снимок проекта, создание папки job и промежуточный agent ci check не нужны.
 
    ```bash
    python3 "$GDI_RUNTIME" agent ci accept --repo "$WORK_DIR" --plan "$EXCHANGE_DIR/ci-plan" \
-     --snapshot "$EXCHANGE_DIR/ready/snapshot.json" --repository-id "$REPOSITORY_ID" \
+     --snapshot "$EXCHANGE_DIR/published/snapshot.json" --repository-id "$REPOSITORY_ID" \
      --capabilities "$EXCHANGE_DIR/capabilities.json" --inbox-proof "$EXCHANGE_DIR/inbox-proof.json"
    ```
 
-   Если worker уже забрал событие, проверьте результат/прогресс существующего job;
-   исчезновение уведомления не означает сбой запроса. Не создавайте новый job.
+state:accepted подтверждает совпадение read-back proof с единственным файлом плана,
+а не начало исполнения. Далее проверяйте status/heartbeat своего job. Worker сохраняет
+задание в ledger и архивирует один submission.json перед CI; запрос для наблюдения
+своего job GDI берёт из сохранённого плана, повторные downloads запроса не нужны.
 
-`safe_to_upload_inbox: true` подтверждает проверку запроса перед загрузкой inbox,
-а `state: accepted` — проверку его передачи в inbox. Эти ответы не означают, что
-worker уже получил задание или начал CI. Проверяйте дальнейший прогресс именно
-у worker с ID из плана и у соответствующего job.
+Если worker уже завершил задачу и удалил inbox-файл до read-back, проверьте тот же
+job по сохранённому плану. Повтор отправки использует те же bytes/job ID; ledger
+предотвращает повторное исполнение. Не создавайте новый job из-за потери ответа.
+Не редактируйте worker/revision в готовом запросе. Отмена и замена выполняются
+agent ci cancel/cancel-check и prepare --retry-of либо supervisor по явной политике.
+Удаление inbox само по себе не отменяет исполнение.
 
 ## Отменить CI и явно назначить замену
 
@@ -728,7 +698,7 @@ worker уже получил задание или начал CI. Проверя
 для автоматической политики переноса используйте [supervisor](scheduling.md).
 Действуйте по указанию пользователя; просьба только отменить job не означает
 разрешения пересоздать его. Получите свежий полный снимок проекта с исходными
-request/ready и скачайте capabilities исходного worker из общего root.
+submission.json (если исходного запроса нет локально) и capabilities исходного worker из общего root.
 Его `cancel_version: 1` подтверждает поддержку отмены, но не доступность host.
 Если результат уже опубликован, сначала скачайте полный результат и его файлы:
 проверенный terminal result не отменяется задним числом.
@@ -780,7 +750,7 @@ python3 "$GDI_RUNTIME" agent ci prepare --repo "$WORK_DIR" \
 `--job`, повторяемые `--input`. Возьмите значения из сохранённого request.json;
 selector по умолчанию не заменяет исходный. `PUBLICATION_ID` — публикация старого
 job, а не новый tip ветки. Передайте новый запрос обычным порядком
-prepare/check/accept. Retry разрешается по проверенному terminal result либо
+prepare → один upload → accept. Retry разрешается по проверенному terminal result либо
 по проверенной отмене поддерживающего её worker. Доставка отмены сама по себе
 не доказывает, что процесс на недоступном host уже остановлен; учитывайте
 возможность одновременного исполнения при выборе повторяемых заданий.
@@ -798,7 +768,8 @@ prepare/check/accept. Retry разрешается по проверенному
 artifacts. Chunks и отдельные файлы лога/artifacts скачивать не нужно.
 
 1. Получите свежие полные listings `ci/jobs/JOB_ID` и родительских папок,
-   исходные request/ready. Имена и Drive file IDs берите из этих listings.
+   Имена и Drive file IDs берите из этих listings. Собственный request уже находится
+   в сохранённом плане; submission.json для его проверки повторно скачивать не нужно.
 2. Если есть cancel.json, скачайте его. Если есть worker.running.json,
    включите его download: проверка отмены сверяет исходный claim/run_id.
    Если есть cancelled/, получите полный listing этой папки.
@@ -901,9 +872,9 @@ Heartbeat не отдельный файл `heartbeat.json`: он находит
 ci/jobs/JOB_ID/status.json
 ```
 
-Папку задачи определяйте по `files.request.target_folder` сохранённого плана.
-Этот путь относителен общему Drive root; `status.json` лежит рядом с переданными
-`request.json` и `request.ready`. Например, при общем корне `gdrive:exchange`
+Папка задачи от общего root — repository_path из сохранённого плана плюс
+ci/jobs/JOB_ID/. Её создаёт worker, сохраняя submission.json; status.json появится
+в этой же папке. Например, при общем корне `gdrive:exchange`
 и `repository_path: "my-project"` путь задачи от общего корня —
 `my-project/ci/jobs/JOB_ID/status.json`, а полный rclone-адрес —
 `gdrive:exchange/my-project/ci/jobs/JOB_ID/status.json`. Не подставляйте полный
@@ -928,10 +899,12 @@ job ID из плана, а не только статус worker или нали
    заменяйте listing папки результатом поиска одного `status.json`; так нельзя
    подтвердить отсутствие результата и обнаружить дубликаты имён.
 2. Скачайте свежий `repository.json` и manifests выбранной ветки, необходимые
-   снимку. Неизменившиеся immutable manifests/request/ready можно скопировать
+   снимку. Неизменившиеся immutable manifests можно скопировать
    из прежнего проверенного снимка в новый каталог по правилам раздела
    «Снимок коннектора». Git bundles для одного наблюдения за CI не нужны.
-   Снимок должен содержать исходные request/ready именно своего job.
+   Собственный исходный запрос берётся из --plan; downloads request/ready не нужны.
+   Если ci/jobs/JOB_ID ещё не создан, полный listing существующего родителя
+   подтверждает отсутствие. Не создавайте вымышленные listings отсутствующих папок.
 3. Если в listing задачи есть `status.json`, скачайте его коннектором **по
    найденному file ID** в новый локальный файл, даже если имя и ID не изменились.
    Это mutable файл: прежний download нельзя переиспользовать как свежий.
@@ -953,7 +926,7 @@ job ID из плана, а не только статус worker или нали
 
    В listing папки job этот же ID должен соответствовать имени `status.json`,
    `is_dir: false` и фактическому `bytes` из metadata коннектора. Сохраняйте весь
-   listing, включая request/ready и другие файлы. Абсолютные local_path, `..`
+   listing, включая submission.json и другие файлы; их downloads не обязательны. Абсолютные local_path, `..`
    и symlinks не поддерживаются. Если status изменился между listing и download
    и размер не совпал, обновите listing/download; не исправляйте размер вручную
    и не подставляйте старые bytes.
@@ -984,7 +957,7 @@ cat "$EXCHANGE_DIR/heartbeat-001/ci-observation.json"
 ```
 
 Команда проверяет identity проекта, публикации, плана,
-request/ready и соответствие скачанного status своей задаче. Не объявляйте
+исходного запроса из плана и соответствие скачанного status своей задаче. Не объявляйте
 наблюдение успешным при `kind: GDI_ERROR`: исправьте указанный снимок/передачу,
 не подменяя проверки ручным разбором JSON.
 

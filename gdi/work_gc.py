@@ -14,6 +14,10 @@ def ci_refs(exchange, transport, repository_id):
         return set()
     result = set()
     for item in transport.list('ci', recursive=True):
+        if not item['IsDir'] and item['Path'].endswith('/submission.json'):
+            from .inbox import submission
+            value, _ = submission(decode(transport.read('ci/' + item['Path'])), exchange.git, repository_id)
+            result.add(value['ref'])
         if not item['IsDir'] and item['Path'].endswith('/request.json'):
             value = request(decode(transport.read('ci/' + item['Path'])), exchange.git, repository_id)
             result.add(value['ref'])
@@ -150,11 +154,11 @@ def collect(exchange, name, *, apply=False, keep_imported=DEFAULT_KEEP_IMPORTED,
         return plan
     if inbox_state:
         raise GdiError('pending work notifications: let the normal worker process inbox, then pause clients and retry GC')
-    ci_state = gc.ci_guard(exchange, transport, repository_id)
+    ci_state = gc.ci_guard(exchange, transport, repository_id, inbox_root=exchange.remote(name).get('inbox_root'))
     gc.verify_retained(exchange, transport, repository_id, projected, bundle_plan, report)
     latest, latest_id = exchange.connect(name)
     if (latest_id != repository_id or gc.snapshot(exchange, latest, repository_id) != state or
-            gc.ci_guard(exchange, latest, repository_id) != ci_state or
+            gc.ci_guard(exchange, latest, repository_id, inbox_root=exchange.remote(name).get('inbox_root')) != ci_state or
             pending_notifications(exchange, name, repository_id, retiring)):
         raise GdiError('remote/CI changed during work GC verification; nothing deleted')
     # Retirement публикуется раньше удаления и делает повтор после partial failure безопасным.
@@ -179,7 +183,7 @@ def collect(exchange, name, *, apply=False, keep_imported=DEFAULT_KEEP_IMPORTED,
     after = gc.snapshot(exchange, final, repository_id)
     expected_bundles = {path: size for path, size in state.bundles.items() if path not in bundle_names}
     if (final_id != repository_id or after.chains != projected.chains or after.metadata != projected.metadata or
-            after.bundles != expected_bundles or gc.ci_guard(exchange, final, repository_id) != ci_state or
+            after.bundles != expected_bundles or gc.ci_guard(exchange, final, repository_id, inbox_root=exchange.remote(name).get('inbox_root')) != ci_state or
             work_lifecycle.records(final, repository_id, 'retired') != retiring or
             pending_notifications(exchange, name, repository_id, retiring)):
         raise GdiError('work GC final state differs; keep clients paused and retry/inspect')

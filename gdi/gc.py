@@ -190,17 +190,32 @@ def verify_retained(exchange, transport, repository_id, state, plan, report):
             report(f"Verified {branch.ref}: {branch.head} (Publication: {branch.publication})")
 
 
-def ci_guard(exchange, transport, repository_id):
+def ci_guard(exchange, transport, repository_id, *, inbox_root=None):
     """Fail closed on incomplete jobs; all CI writers must also be paused."""
     from .ci_protocol import marker, request, validate_result, validate_cancellation
+    pending = {}
+    inbox_state = []
+    if inbox_root is not None:
+        from .inbox import read
+        shared = exchange.transport_factory(inbox_root)
+        if any(item['Path'] == 'inbox' and item['IsDir'] for item in shared.list('')):
+            for entry in shared.list('inbox'):
+                if entry['IsDir']:
+                    continue
+                event = read(shared, entry['Path'])
+                if event['type'] == 'ci_requested' and event['repository_id'] == repository_id:
+                    pending[event['job_id']] = event
+                    inbox_state.append(('inbox/' + entry['Path'], digest(encode(event))))
     if not any(item["Path"] == "ci" for item in transport.list("")):
+        if pending:
+            raise GdiError('GC blocked by unregistered CI submissions in inbox')
         return ()
     listing = transport.list("ci", recursive=True)
     queue = [item for item in listing if item["Path"].startswith("queue/") and not item["IsDir"]]
     if queue:
         raise GdiError("GC blocked by CI queue entries; finish/publish every job and stop the worker first")
-    immutable = []
-    jobs = set()
+    immutable = list(inbox_state)
+    jobs = set(pending)
     for item in listing:
         path = item["Path"]
         if path.startswith("jobs/"):
@@ -216,12 +231,19 @@ def ci_guard(exchange, transport, repository_id):
         prefix = f"ci/jobs/{jid}"
         names = {item["Path"][len("jobs/" + jid + "/"):] for item in listing
                  if not item["IsDir"] and item["Path"].startswith("jobs/" + jid + "/")}
-        if not {"request.json", "request.ready"}.issubset(names):
-            raise GdiError("GC blocked by incomplete/nonterminal CI job: " + jid)
-        raw = transport.read(prefix + "/request.json")
-        req = request(decode(raw), exchange.git, repository_id)
-        if req["job_id"] != jid or decode(transport.read(prefix + "/request.ready")) != marker(req, raw):
-            raise GdiError("GC found an invalid CI request/ready")
+        if 'submission.json' in names:
+            from .inbox import submission
+            event = decode(transport.read(prefix + '/submission.json'))
+            req, raw = submission(event, exchange.git, repository_id)
+            if req['job_id'] != jid:
+                raise GdiError('GC found an invalid CI submission/job identity')
+        elif {'request.json', 'request.ready'}.issubset(names):
+            raw = transport.read(prefix + '/request.json')
+            req = request(decode(raw), exchange.git, repository_id)
+            if req['job_id'] != jid or decode(transport.read(prefix + '/request.ready')) != marker(req, raw):
+                raise GdiError('GC found an invalid CI request/ready')
+        else:
+            raise GdiError('GC blocked by incomplete/nonterminal CI job: ' + jid)
         cancelled = (validate_cancellation(transport.read(prefix + '/cancel.json'), req, raw)
                      if 'cancel.json' in names else None)
         from .ci_package import PACKAGE_PATTERN
@@ -272,7 +294,7 @@ def collect(exchange, name, *, apply=False, keep_checkpoints=2, quiescent=False,
     if not apply:
         report("Dry run: no changes; restoration verification runs with --apply --quiescent")
         return plan
-    ci_state = ci_guard(exchange, transport, repository_id)
+    ci_state = ci_guard(exchange, transport, repository_id, inbox_root=exchange.remote(name).get('inbox_root'))
     if not plan.candidates:
         report("Nothing to delete")
         return plan
@@ -281,7 +303,7 @@ def collect(exchange, name, *, apply=False, keep_checkpoints=2, quiescent=False,
     latest_transport, latest_id = exchange.connect(name)
     if latest_id != repository_id or snapshot(exchange, latest_transport, latest_id) != state:
         raise GdiError("remote changed during GC verification; no bundles deleted; pause all clients and retry")
-    if ci_guard(exchange, latest_transport, latest_id) != ci_state:
+    if ci_guard(exchange, latest_transport, latest_id, inbox_root=exchange.remote(name).get('inbox_root')) != ci_state:
         raise GdiError("CI changed during GC verification; no bundles deleted")
     deleted_bytes = 0
     for bundle in plan.candidates:
@@ -300,7 +322,7 @@ def collect(exchange, name, *, apply=False, keep_checkpoints=2, quiescent=False,
     final_transport, final_id = exchange.connect(name)
     if final_id != repository_id or snapshot(exchange, final_transport, final_id) != expected:
         raise GdiError("remote changed or deletion was not reflected after GC; inspect state before resuming clients")
-    if ci_guard(exchange, final_transport, final_id) != ci_state:
+    if ci_guard(exchange, final_transport, final_id, inbox_root=exchange.remote(name).get('inbox_root')) != ci_state:
         raise GdiError("CI changed during GC; inspect state before resuming clients")
     report(f"GC complete: deleted {len(plan.candidates)} bundles; {deleted_bytes} bytes")
     return plan

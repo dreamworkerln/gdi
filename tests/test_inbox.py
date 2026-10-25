@@ -161,7 +161,8 @@ class InboxTests(InboxTestCase):
         self.assertEqual(len(self.ci_events()), 2)
         for event in self.ci_events().values():
             prefix = event['repository_path'] + '/ci/jobs/' + event['job_id']
-            self.assertIn(prefix + '/request.ready', self.store.data)
+            self.assertEqual(event['request']['job_id'], event['job_id'])
+            self.assertNotIn(prefix + '/request.ready', self.store.data)
         worker.tick()
         self.assertEqual(a.status(req_a['job_id'])['state'], 'PASS')
         self.assertEqual(b.status(req_b['job_id'])['state'], 'PASS')
@@ -171,7 +172,7 @@ class InboxTests(InboxTestCase):
         self.assertEqual(self.counter.read_text(), 'xx')
         self.assertFalse(any('/ci/queue/' in path for path in self.store.data))
 
-    def test_partial_notification_and_missing_ready_are_retained_without_execution(self):
+    def test_partial_and_incomplete_submissions_are_retained_without_execution(self):
         worker = self.worker()
         client, req = self.submit(worker)
         path, event = next(iter(self.ci_events().items()))
@@ -180,13 +181,16 @@ class InboxTests(InboxTestCase):
         worker.tick()
         self.assertIsNone(worker.ledger.get(req['job_id']))
         self.assertIn(path, self.store.data)
-        self.store.data[path] = raw
-        ready_path = 'repos/a/ci/jobs/' + req['job_id'] + '/request.ready'
-        ready = self.store.data.pop(ready_path)
+        del self.store.data[path]
+        incomplete = dict(event)
+        del incomplete['request']
+        incomplete_path = 'inbox/' + filename(incomplete)
+        self.store.data[incomplete_path] = encode(incomplete)
         worker.tick()
         self.assertIsNone(worker.ledger.get(req['job_id']))
         self.assertFalse(self.counter.exists())
-        self.store.data[ready_path] = ready
+        del self.store.data[incomplete_path]
+        self.store.data[path] = raw
         worker.tick()
         self.assertEqual(client.status(req['job_id'])['state'], 'PASS')
 
@@ -199,7 +203,8 @@ class InboxTests(InboxTestCase):
             client.submit(pub, 'user-host')
         raw = next((client.root / 'outbox').glob('*.json')).read_bytes()
         req = decode(raw)
-        self.assertIn('repos/a/ci/jobs/' + req['job_id'] + '/request.ready', self.store.data)
+        self.assertEqual(client.cached_submission(req['job_id'])[1], req)
+        self.assertFalse(self.ci_events())
         self.store.fail = None
         self.assertEqual(client.submit(pub, 'user-host')['job_id'], req['job_id'])
         worker.tick()
@@ -276,12 +281,15 @@ class InboxTests(InboxTestCase):
         path, event = next(iter(self.ci_events().items()))
         del self.store.data[path]
         event['worker_id'] = 'other-worker'
+        event['request']['worker_id'] = 'other-worker'
+        from gdi.exchange import digest
+        event['request_sha256'] = digest(encode(event['request']))
         publish(self.factory('memory:hub'), event)
         worker.tick()
         self.assertFalse(self.counter.exists())
         event['worker_id'] = 'user-host'
         event['head'] = '1' * 40
-        publish(self.factory('memory:hub'), event)
+        self.store.data['inbox/' + filename(event)] = encode(event)
         worker.tick()
         self.assertFalse(self.counter.exists())
         self.assertIsNone(worker.ledger.get(req['job_id']))
@@ -380,8 +388,8 @@ class InboxTests(InboxTestCase):
         with patch.object(PrefixTransport, 'read', unavailable), self.assertRaisesRegex(OSError, 'connection reset'):
             client.submit(pub, 'user-host')
         del self.store.data[path]
-        request = client.submit(pub, 'user-host')
-        self.assertEqual(request['ci_version'], 1)
+        with self.assertRaisesRegex(GdiError, 'update worker'):
+            client.submit(pub, 'user-host')
 
     def test_invalid_selector_is_rejected_before_cli_push(self):
         from gdi.cli import main

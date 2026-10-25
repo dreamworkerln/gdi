@@ -160,7 +160,7 @@ class AgentHeartbeatTests(InboxTestCase):
 
     def test_pending_connector_result_reports_stale_heartbeat(self):
         value = self.prepare(self.worker())
-        self.transfer(value, 'request', 'ready')
+
         req = decode((self.plan / 'request.json').read_bytes())
         self.store.data[f"repos/a/ci/jobs/{req['job_id']}/status.json"] = encode({
             'job_id': req['job_id'], 'worker_id': req['worker_id'], 'request_sha256': digest(encode(req)),

@@ -8,76 +8,46 @@ digits, `_`, `-`, до 64 символов. JSON UTF-8, canonical encoding ка�
 duplicate keys и metadata больше 1 MiB отвергаются. Неизвестные request/result fields
 отвергаются. Доступ участников к Drive доверенный, подписи/авторство не проверяются.
 
-## Общая inbox и request v2
+## Самодостаточная inbox и request v2
 
-Новый worker config version 2 публикует capabilities **в общем root**:
-`{ci_version:1, inbox_version:1, cancel_version:1, worker_id, profiles:{full:revision}}`.
-Списка репозиториев нет. Revision закрепляет общие параметры и фактическое окружение
-исполнения: SHA256/version act, host actrc hashes, Docker daemon/version и local base image IDs.
-Пути проектов берутся из immutable notifications общей `inbox`; schema, checksum,
-маршрутизация и подтверждение описаны в [inbox.md](inbox.md).
+Глобальный worker объявляет в общем root capabilities с ci_version:1,
+inbox_version:1, ci_submission_version:1, cancel_version:1, result_delivery_version:1,
+worker_id и profiles:{full:revision}. Inbox v1 остаётся форматом уведомления Git;
+для CI используется оболочка inbox_version:2 с полным request внутри.
 
-Request v2 содержит те же identity fields, что v1 ниже, но `ci_version: 2` и
-дополнительное поле `workflow` с точными ключами:
-`{path:".github/workflows", event:"push", job:"", inputs:{}}`.
-Selector не содержит executable/argv, host paths или secrets. Он выбирает YAML
-**внутри checkout закреплённого commit**; исполняет его act.
-Необязательное поле `github_repository` содержит только `owner/repository`, полученное
-из GitHub origin клиента. Старые запросы v2 без этого поля сохраняют совместимость.
-Namespace входит в bytes/hash запроса и сохраняется при retry; произвольный origin URL
-и credentials в request не копируются.
+Request содержит ci_version:2, job_id, repository_id, ref, head, publication_id,
+worker_id, profile_id, profile_revision, created_at, retry_of и workflow.
+Workflow — точные {path:".github/workflows", event:"push", job:"", inputs:{}}.
+Необязательное github_repository содержит только owner/repository. В request нет
+executable/argv, host paths, credentials или secrets; selector выбирает YAML
+из checkout точного commit. Namespace сохраняется при retry и входит в hash.
+Новый повтор — новый job ID с retry_of; повтор доставки сохраняет прежний ID.
 
-Порядок публикации v2: durable outbox → request → request.ready → shared inbox.
-Ready marker содержит ci_version запроса. Worker проверяет hash request из
-уведомления, ready, repository ID, branch/head/publication и worker/job IDs.
-Result сохраняет ci_version исходного request и связывает полный selector через
-request_sha256; остальные поля и проверки результата ниже общие для v1/v2.
-Advisory status/events пока используют status schema version 1.
-После read-back результата удаляется конкретное уведомление inbox; `ci/queue`
-внутри проекта для v2 не создаётся и не опрашивается.
+Оболочка содержит repository_path относительно общего root и дублируемые identity
+поля; они обязаны совпасть с request, request_sha256 — с его canonical bytes.
+Имя inbox-файла: <job-id>-<sha256-всей-оболочки>.json. Неверный hash/schema,
+дубликаты job ID или расхождения identity отклоняются до исполнения.
 
-## Request v1 (legacy)
+Порядок: durable outbox → один upload inbox → read-back proof. Нет отдельных
+request/ready uploads. Worker проверяет свежую repository identity, фиксирует
+request/route/notification в ledger, затем архивирует один submission.json
+в папке job и проверяет его bytes. Исполнение начинается после этого архива.
+При сбое передачи и restart сохраняются job ID, run ID, request и route.
 
-Путь: `ci/jobs/<job-id>/request.json`. Точный набор полей:
+Offline agent: prepare → upload files.inbox → accept по полному inbox proof.
+Для accept используются source snapshot и capabilities из prepare; дополнительный
+snapshot папки job и промежуточный ci check не требуются. Свой запрос reader берёт
+из сохранённого плана/локального индекса, для неизвестного job — из submission.json
+либо (обычный online CLI до регистрации worker) из общей inbox.
 
-```json
-{
-  "ci_version": 1,
-  "job_id": "11111111111111111111111111111111",
-  "repository_id": "0123456789abcdef0123456789abcdef",
-  "ref": "refs/heads/dev",
-  "head": "0123456789abcdef0123456789abcdef01234567",
-  "publication_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "worker_id": "user-host",
-  "profile_id": "full",
-  "profile_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-  "created_at": "2026-10-09T00:00:00+00:00",
-  "retry_of": null
-}
-```
+Claim worker.running.json immutable: ci_version:1, job_id, run_id, worker_id,
+request_sha256. Ledger сохраняется до claim upload; чужой run не перехватывается.
+Отмена/successor по-прежнему привязаны к точному request_sha256.
 
-Новый повтор исполнения — новый ID с `retry_of`. Commands/env/host paths в request
-отсутствуют. Путь определяется проверенным job ID. Publication/ref/head должны
-совпасть с проверенной Git metadata. Worker исполняет только локально зарегистрированный
-профиль с совпавшей revision; иначе terminal REJECTED.
-
-Capabilities: `ci/workers/<worker-id>/capabilities.json`:
-`{ci_version:1, cancel_version:1, worker_id, repositories:{repository_id:{profile_id:revision}}}`.
-Snapshot mutable. Profile revision вычисляется из нормализованного config; сам config
-и его env values на Drive не публикуются.
-
-## Commit входного задания v1 (legacy)
-
-`ci/queue/<job-id>.json` и `ci/jobs/<job-id>/request.ready` содержат одинаковые поля:
-`ci_version:1`, `job_id`, `request_sha256` от точных bytes request.
-
-Порядок: local outbox fsync → request upload → queue pointer upload → ready upload.
-Worker проверяет обе ссылки и request. Отсутствие ready означает незавершённую
-отправку, не FAIL. Queue index просматривается отдельно от архива jobs.
-
-Claim `worker.running.json` immutable: `ci_version`, `job_id`, `run_id`, `worker_id`,
-`request_sha256`. Ledger сохраняется до claim upload. Claim чужого run не перехватывается.
-Это не CAS: worker закреплён в request, claims разных run не перехватываются.
+2026-10-25 оператор разрешил новый альфа-формат без совместимости со старым
+worker/многофайловыми планами и поручил обновить CLI, worker и runtime.
+Старые repo/очереди при необходимости обновляются вручную, автоматической миграции
+или удаления нет. Git protocol/config и repository ID сохраняются.
 
 ## Status и heartbeat
 
@@ -213,7 +183,7 @@ pull --passed. Все clients, проверяющие отменённые за�
 поддержки отмены. В marker добавляется только в этом случае
 `worker_cancellation_supported:false`; такой marker не подтверждает остановку,
 не блокирует проверенный обычный результат и не разрешает retry активного CI.
-Request/ready/claim/история не удаляются. Для поддерживаемого worker retry
+Submission/claim/история не удаляются. Для поддерживаемого worker retry
 разрешается по проверенной отмене либо terminal result и сохраняет связь retry_of.
 Недоступность host не доказывает остановку offline CI; повторяемость задания
 учитывается отдельно. Автоматические таймауты/переназначение и retention — TODO.
@@ -223,7 +193,7 @@ Request/ready/claim/история не удаляются. Для поддер�
 Ledger PUBLISHED фиксируется после read-back проверки итогового пакета, затем
 удаляется конкретный marker: v2 — notification общей inbox, legacy v1 —
 `ci/queue/<job-id>.json`. Crash между этими действиями исправляется
-при discovery, без исполнения. Request/ready/claim и пакет результата остаются на Drive.
+при discovery, без исполнения. Submission/claim и пакет результата остаются на Drive.
 
 При RUNNING/FINALIZING без durable result нет автоматического rerun:
 INTERRUPTED либо CANCELLED при проверенной отмене.

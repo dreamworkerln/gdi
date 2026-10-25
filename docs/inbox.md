@@ -65,13 +65,15 @@ Git config `gdi.remote.*` больше не импортируется.
 с atomic copy/fsync и completion marker последним. Конфликтующие bytes сохраняются
 и дают ошибку. Перед переносом CI state остановите записывающие его старые клиенты.
 
-Клиент читает общие capabilities и переходит на legacy путь только при доказанном
-отсутствии файла (для rclone — stat exit 3/4). Повреждённый JSON, ошибка прав или
-сети передаются вызывающему клиенту и не скрываются fallback.
+Клиент требует у выбранного worker capability ci_submission_version:1.
+При отсутствии поддержки отправка завершается сообщением обновить worker;
+возврата к старому request/ready-сценарию нет. Повреждённые capabilities или
+ошибка сети также не скрываются fallback.
 
 ## Уведомления
 
-Каждая запись immutable, schema `inbox_version: 1`, canonical JSON UTF-8 не больше
+Каждая запись immutable: inbox_version:1 для публикаций Git, inbox_version:2
+для самодостаточного CI. Canonical JSON UTF-8 не больше
 1 MiB. Имя содержит ID и SHA256 **точных bytes**. Поля:
 
 - `event_id`: 32 lowercase hex;
@@ -79,7 +81,10 @@ Git config `gdi.remote.*` больше не импортируется.
 - `repository_id`: 32 lowercase hex;
 - `repository_path`: путь относительно общего корня;
 - `ref`, `head`, `publication_id`: branch ref, точный Git SHA и ID публикации;
-- `worker_id`, `job_id`, `request_sha256`: CI identity; для обычного push — null.
+- worker_id, job_id, request_sha256: CI identity; для обычного push — null;
+- request: только для inbox v2, полный CI request v2, включая workflow selector,
+  profile revision и retry_of. Его canonical bytes должны совпасть с request_sha256,
+  а все identity fields — с соответствующими полями оболочки.
 
 В пути запрещены absolute paths, `..`, пустые компоненты, backslash, colon и выход
 в служебные `inbox`/`ci`. Worker проверяет `repository.json` по указанному ID,
@@ -93,15 +98,24 @@ CI автоматически не запускается. После успеш
 заново при обычном unchanged push. При сбое до receipt доставка повторяется с тем
 же immutable event; worker receipt позволяет безопасно подтвердить его снова.
 
-CI submit: durable local outbox → request upload → request.ready → inbox **последней**.
-CI event ID равен job ID; event содержит hash request. Разные агенты создают разные
-имена файлов и не выполняют read-modify-write общего индекса. Порядок listing не
-задаёт порядок commits; каждый запрос закрепляет собственный SHA.
+CI submit: durable local outbox → **один inbox upload → read-back**.
+Файл сам содержит полный request и маршрут; его публикация означает готовность.
+Отдельных uploads request.json/request.ready и создания job-папки отправителем нет.
+CI event ID равен job ID, имя содержит SHA256 всех bytes оболочки. Повтор сохраняет
+те же bytes/job ID; несколько файлов с одним job ID дают конфликт до исполнения.
+Порядок listing не задаёт порядок commits; запрос закрепляет собственный SHA.
 
-Пустая/частичная JSON, неверный checksum, отсутствующий ready или несоответствие
-identity не приводят к исполнению или удалению уведомления. Ошибка остаётся в journal;
-следующий цикл повторяет чтение. Устойчивую повреждённую запись диагностирует оператор.
-Она не блокирует обработку других корректных записей.
+Агент вызывает prepare → upload files.inbox → accept с read-back proof. Accept
+использует тот же проверенный snapshot, что prepare: промежуточный snapshot задания
+и ci check не нужны. Полный listing inbox и download подтверждают hash/размер/ID.
+Запрос сохраняется локально для статуса и отмены ещё до первого обхода worker.
+Другой обычный CLI без локального запроса может прочитать его из общей inbox.
+
+Пустая/частичная JSON, неверный hash, несогласованные вложенные identity или поля
+запроса не приводят к исполнению/удалению. Worker записывает задание в ledger,
+затем архивирует тот же пакет как ci/jobs/JOB_ID/submission.json с read-back.
+До подтверждения архива CI не запускается. При ошибке архивирования/перезапуске
+используются прежние request/route/job ID; новый запуск не создаётся.
 
 Для CI worker сохраняет request, маршрут проекта и имя уведомления в SQLite ledger.
 После restart готовый result допубликовывается после проверки отмены. RUNNING без
@@ -124,3 +138,8 @@ read-back verification ledger становится PUBLISHED, затем уда�
 по-прежнему могут дать конфликт metadata; exactly-once и распределённая координация
 исполнения/нагрузки не обещаются.
 Drive Changes API, push notifications и PubSub оставлены последующим версиям.
+
+Переход 2026-10-25 согласован оператором без совместимости со старым альфа-worker
+и многофайловыми планами отправки. Обновить CLI, worker и runtime/agent.md вместе.
+Старые очереди/репозитории при необходимости обслуживаются оператором вручную;
+этот переход сам не мигрирует и не удаляет существующие данные.

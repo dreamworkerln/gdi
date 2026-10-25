@@ -1,0 +1,25 @@
+test_separate_persistent_worker_fail_fix_pass (tests.test_ci.LocalAutonomousTests) ... ok
+test_offline_accept_needs_one_inbox_proof_and_no_job_snapshot (tests.test_ci_submission.OfflineSingleSubmissionTests) ... ok
+test_archive_failure_does_not_execute_and_retry_recovers (tests.test_ci_submission.SingleSubmissionTests) ... job=67b38dce492841e3853b5a13df0aeff5 pending state=DISCOVERED: network unavailable during upload
+ok
+test_cancel_before_worker_registration_never_executes (tests.test_ci_submission.SingleSubmissionTests) ... ok
+test_conflicting_archived_submission_is_preserved_without_execution (tests.test_ci_submission.SingleSubmissionTests) ... job=24274b9296a64e74940032ad8f652a81 pending state=DISCOVERED: archived CI submission conflicts with this job
+ok
+test_conflicting_packets_for_one_job_are_rejected_before_discovery (tests.test_ci_submission.SingleSubmissionTests) ... inbox=842b361bc42f4be58c327d6ef0d0e035-0962f72c396c2c4d091a96a963e876807e0ff4d5b988fbd0e0cc00d4658edf78.json: multiple inbox submissions for the same CI job; resolve the conflict; notification retained
+inbox=842b361bc42f4be58c327d6ef0d0e035-d57d8d2f3526388633c1e82b2768fd1b6a0eed73ff538d6ff6aa1e3ce05bd963.json: multiple inbox submissions for the same CI job; resolve the conflict; notification retained
+ok
+test_gc_is_blocked_by_unregistered_submission (tests.test_ci_submission.SingleSubmissionTests) ... ok
+test_lost_submission_upload_ack_reuses_same_job_and_bytes (tests.test_ci_submission.SingleSubmissionTests) ... ok
+test_missing_global_capabilities_do_not_fall_back_to_registered_worker (tests.test_ci_submission.SingleSubmissionTests) ... ok
+test_nested_request_tamper_and_wrong_worker_are_not_executed (tests.test_ci_submission.SingleSubmissionTests) ... inbox=8f1cbe5121c7468fb0e89c141cf5f36b-5da9cc784d79c94d3780b8a358ffe26868131f4942bd97085888b4dc5e1b35fb.json: inbox checksum mismatch; keeping notification for retry; notification retained
+ok
+test_old_multifile_ci_notification_is_rejected (tests.test_ci_submission.SingleSubmissionTests) ... ok
+test_older_worker_is_rejected_before_any_submission_upload (tests.test_ci_submission.SingleSubmissionTests) ... ok
+test_one_upload_is_complete_and_worker_archives_it_before_execution (tests.test_ci_submission.SingleSubmissionTests) ... ok
+test_other_checkout_reads_queued_request_from_one_inbox_file (tests.test_ci_submission.SingleSubmissionTests) ... ok
+test_oversized_request_is_rejected_before_remote_upload (tests.test_ci_submission.SingleSubmissionTests) ... ok
+
+----------------------------------------------------------------------
+Ran 15 tests in 15.587s
+
+OK

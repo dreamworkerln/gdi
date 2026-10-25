@@ -5,13 +5,18 @@ from pathlib import Path
 from .agent import (file_plan, load_plan, persist_directory, plan_lock, same_route,
                     save_plan, verdict)
 from .ci import CiResultReader
-from .ci_protocol import (capability_revision, marker, prepare_request, request,
+from .ci_protocol import (capability_revision, prepare_request, request,
                           workflow_selection, atomic_write, cancellation, cancellation_capability,
-                          validate_cancellation)
+                          validate_cancellation, submission_capability)
 from .git import GdiError
 from .inbox import filename, notification
 from .publication import decode, digest, encode
 from .snapshot import Snapshot, download_proof, local_file, metadata_file
+
+
+def _reader(git, snapshot, expected_id, root):
+    return CiResultReader(git, snapshot, expected_id, root,
+                          submission_root=git.gdi_dir() / 'ci' / expected_id / 'submissions')
 
 
 def revision(path, worker, profile):
@@ -29,27 +34,21 @@ def ci_plan(git, directory, expected_id):
     keys = {'plan_version', 'kind', 'repository_id', 'repository_path', 'ref', 'head',
             'publication_id', 'job_id', 'worker_id', 'profile_id', 'profile_revision',
             'request_sha256', 'files', 'state', 'checked_snapshot'}
-    if (set(value) != keys or value['state'] not in ('prepared', 'request_checked', 'accepted') or
-            set(value['files']) != {'request', 'ready', 'inbox'}):
-        raise GdiError('invalid CI plan')
+    if (set(value) != keys or value['state'] not in ('prepared', 'accepted') or
+            set(value['files']) != {'inbox'}):
+        raise GdiError('invalid CI plan; prepare a single-file submission')
     raw = metadata_file(local_file(directory, 'request.json'))
     req = request(decode(raw), git, expected_id)
     if (encode(req) != raw or digest(raw) != value['request_sha256'] or req['ci_version'] != 2 or
             any(req[key] != value[key] for key in ('repository_id', 'ref', 'head', 'publication_id',
                                                   'job_id', 'worker_id', 'profile_id', 'profile_revision'))):
         raise GdiError('saved CI request differs from plan')
-    ready_raw = encode(marker(req, raw))
-    if metadata_file(local_file(directory, 'request.ready')) != ready_raw:
-        raise GdiError('saved CI ready differs from request')
     event = notification(expected_id, value['repository_path'], req, req['publication_id'], req, raw)
     if metadata_file(local_file(directory, 'inbox.json')) != encode(event):
         raise GdiError('saved CI inbox differs from request')
-    prefix = value['repository_path'] + '/ci/jobs/' + req['job_id']
-    for name, local, target in (('request', 'request.json', prefix + '/request.json'),
-                                ('ready', 'request.ready', prefix + '/request.ready'),
-                                ('inbox', 'inbox.json', 'inbox/' + filename(event))):
-        if value['files'][name] != file_plan(local_file(directory, local), local, target):
-            raise GdiError('saved CI destination differs from plan')
+    if value['files']['inbox'] != file_plan(local_file(directory, 'inbox.json'),
+                                            'inbox.json', 'inbox/' + filename(event)):
+        raise GdiError('saved CI destination differs from plan')
     return value, req, raw
 
 
@@ -67,6 +66,7 @@ def prepare(git, snapshot_path, expected_id, output, publication_id, worker_id, 
     pub = publication(snapshot, publication_id)
     selector = workflow_selection(workflow)
     current_revision = revision(capabilities_path, worker_id, profile_id)
+    submission_capability(decode(metadata_file(capabilities_path)), worker_id)
     namespace = git.github_repository()
     if not git.has_commit(pub['head']):
         raise GdiError('CI publication HEAD is missing locally; restore the published repository first')
@@ -77,7 +77,7 @@ def prepare(git, snapshot_path, expected_id, output, publication_id, worker_id, 
         import tempfile
         job_id(retry_of)
         with tempfile.TemporaryDirectory(prefix='gdi-agent-retry-') as temporary:
-            reader = CiResultReader(git, snapshot, expected_id, temporary)
+            reader = _reader(git, snapshot, expected_id, temporary)
             old = reader.retry_request(retry_of)
             if (old['publication_id'] != publication_id or old['profile_id'] != profile_id
                     or old.get('workflow') != selector):
@@ -93,6 +93,8 @@ def prepare(git, snapshot_path, expected_id, output, publication_id, worker_id, 
                 raise GdiError('CI settings/revision changed; preserve this plan and use a new output directory')
             if prepared_request is not None and req != prepared_request:
                 raise GdiError('automatic successor differs from saved CI plan')
+            _reader(git, snapshot, expected_id, directory / 'verified-ci').remember_submission(
+                notification(expected_id, value['repository_path'], req, req['publication_id'], req, encode(req)))
             return verdict(directory, value)
         def build(temporary):
             req = prepared_request or prepare_request(git, expected_id, publication_id, pub, worker_id, profile_id,
@@ -107,20 +109,19 @@ def prepare(git, snapshot_path, expected_id, output, publication_id, worker_id, 
             raw = encode(req)
             event = notification(expected_id, snapshot.repository_path, pub, publication_id, req, raw)
             from .ci_protocol import atomic_write
-            for name, content in (('request.json', raw), ('request.ready', encode(marker(req, raw))), ('inbox.json', encode(event))):
+            for name, content in (('request.json', raw), ('inbox.json', encode(event))):
                 atomic_write(temporary / name, content)
-            prefix = snapshot.repository_path + '/ci/jobs/' + req['job_id']
             value = {'plan_version': 1, 'kind': 'ci', 'repository_id': expected_id,
                      'repository_path': snapshot.repository_path, 'ref': pub['ref'], 'head': pub['head'],
                      'publication_id': publication_id, 'job_id': req['job_id'], 'worker_id': worker_id,
                      'profile_id': profile_id, 'profile_revision': current_revision, 'request_sha256': digest(raw),
-                     'files': {'request': file_plan(temporary / 'request.json', 'request.json', prefix + '/request.json'),
-                               'ready': file_plan(temporary / 'request.ready', 'request.ready', prefix + '/request.ready'),
-                               'inbox': file_plan(temporary / 'inbox.json', 'inbox.json', 'inbox/' + filename(event))},
+                     'files': {'inbox': file_plan(temporary / 'inbox.json', 'inbox.json', 'inbox/' + filename(event))},
                      'state': 'prepared', 'checked_snapshot': None}
             save_plan(temporary, value)
         persist_directory(directory, build)
-        value, _, _ = ci_plan(git, directory, expected_id)
+        value, req, raw = ci_plan(git, directory, expected_id)
+        _reader(git, snapshot, expected_id, directory / 'verified-ci').remember_submission(
+            notification(expected_id, value['repository_path'], req, req['publication_id'], req, raw))
         return verdict(directory, value)
 
 
@@ -160,7 +161,7 @@ def supervise(git, snapshot_path, expected_id, output, jid, workers_path, policy
     registry = worker_snapshot(workers_path)
     with plan_lock(output) as directory:
         directory.mkdir(parents=True, exist_ok=True)
-        reader = CiResultReader(git, snapshot, expected_id, directory / 'verified-ci')
+        reader = _reader(git, snapshot, expected_id, directory / 'verified-ci')
         supervisor = Supervisor(reader, jid, directory, load_policy(policy_path))
         decision = supervisor.decide(registry)
         active = decision['job_id']
@@ -212,26 +213,22 @@ def supervise(git, snapshot_path, expected_id, output, jid, workers_path, policy
             raise GdiError('automatic retry binding changed after preparation')
         atomic_write(binding_path, encode(binding))
         caps = registry.get(req['worker_id'], {}).get('capabilities_path')
-        if prefix in snapshot.folders and {'request.json', 'request.ready'}.issubset(
-                {entry['Path'] for entry in snapshot.list(prefix)}):
-            value = check(git, retry_dir, snapshot_path, expected_id, capabilities_path=caps)
-            if inbox_proof is not None:
-                value = accept(git, retry_dir, snapshot_path, expected_id, capabilities_path=caps, inbox_proof=inbox_proof)
-                supervisor.activate(req)
-                return supervisor.response('REASSIGNED', worker_id=req['worker_id'], retry_of=active, plan=value)
+        if inbox_proof is not None:
+            value = accept(git, retry_dir, snapshot_path, expected_id, capabilities_path=caps, inbox_proof=inbox_proof)
+            supervisor.activate(req)
+            return supervisor.response('REASSIGNED', worker_id=req['worker_id'], retry_of=active, plan=value)
         return {**decision, 'state': 'RETRY_PREPARED', 'plan': value,
-                'next_tool': 'agent ci accept' if value['safe_to_upload_inbox'] else 'agent ci check'}
+                'next_tool': 'agent ci accept'}
+
 
 
 def check_request(git, directory, snapshot_path, expected_id, capabilities_path):
     value, req, raw = ci_plan(git, directory, expected_id)
     snapshot = Snapshot(snapshot_path, expected_id, ref=req['ref'])
     verify_snapshot(snapshot, value, req)
+    submission_capability(decode(metadata_file(capabilities_path)), req['worker_id'])
     if revision(capabilities_path, req['worker_id'], req['profile_id']) != req['profile_revision']:
         raise GdiError('worker capabilities revision changed; prepare a new CI request explicitly')
-    prefix = 'ci/jobs/' + req['job_id']
-    for remote, local in (('request.json', raw), ('request.ready', encode(marker(req, raw)))):
-        snapshot.require_file(prefix + '/' + remote, digest(local), len(local))
     # Automatic plans have a persisted predecessor proposal. Explicit retries
     # keep their existing snapshot requirements.
     if (directory / 'automatic.json').exists():
@@ -241,23 +238,13 @@ def check_request(git, directory, snapshot_path, expected_id, capabilities_path)
                 type(binding['automatic_version']) is not int or binding['automatic_version'] != 1 or
                 binding['previous_job'] != req['retry_of'] or binding['request_sha256'] != digest(raw)):
             raise GdiError('automatic retry binding/request identity mismatch')
-        reader = CiResultReader(git, snapshot, expected_id, directory.parent / 'verified-ci')
+        reader = _reader(git, snapshot, expected_id, directory.parent / 'verified-ci')
         old, old_raw = reader.load_request(req['retry_of'])
         successor = validate_successor(snapshot.read('ci/jobs/' + req['retry_of'] + '/successor.json'), old, old_raw, req)
         if successor['policy_sha256'] != binding['policy_sha256']:
             raise GdiError('automatic successor policy differs from the saved retry binding')
         reader.retry_request(req['retry_of'])
     return value, req, snapshot
-
-
-def check(git, output, snapshot_path, expected_id, *, capabilities_path):
-    with plan_lock(output) as directory:
-        value, _, snapshot = check_request(git, directory, snapshot_path, expected_id, capabilities_path)
-        if value['state'] == 'accepted':
-            raise GdiError('CI request already accepted; use result to inspect it')
-        value.update(state='request_checked', checked_snapshot=snapshot.fingerprint)
-        save_plan(directory, value)
-        return verdict(directory, value)
 
 
 def accept(git, output, snapshot_path, expected_id, *, capabilities_path, inbox_proof):
@@ -277,10 +264,9 @@ def result(git, output, snapshot_path, expected_id, *, heartbeat_timeout=600):
         value, req, raw = ci_plan(git, directory, expected_id)
         snapshot = Snapshot(snapshot_path, expected_id, ref=req['ref'])
         verify_snapshot(snapshot, value, req)
-        prefix = 'ci/jobs/' + req['job_id']
-        for remote, content in (('request.json', raw), ('request.ready', encode(marker(req, raw)))):
-            snapshot.require_file(prefix + '/' + remote, digest(content), len(content))
-        reader = CiResultReader(git, snapshot, expected_id, directory / 'verified-ci')
+        reader = _reader(git, snapshot, expected_id, directory / 'verified-ci')
+        reader.remember_submission(notification(expected_id, value['repository_path'], req,
+                                                req['publication_id'], req, raw))
         source = reader.result_source(req, raw)
         if source is not None:
             prefix, remote_result = source
@@ -334,7 +320,7 @@ def cancellation_plan(git, directory, expected_id):
 def cancel(git, snapshot_path, expected_id, output, jid, capabilities_path):
     snapshot = Snapshot(snapshot_path, expected_id)
     with plan_lock(output) as directory:
-        reader = CiResultReader(git, snapshot, expected_id, directory / 'verified-ci')
+        reader = _reader(git, snapshot, expected_id, directory / 'verified-ci')
         req, raw = reader.load_request(jid)
         completed = reader.result(jid)
         if completed is not None:
@@ -369,7 +355,7 @@ def cancel_check(git, output, snapshot_path, expected_id):
         value, req, raw = cancellation_plan(git, directory, expected_id)
         snapshot = Snapshot(snapshot_path, expected_id, ref=req['ref'])
         same_route(snapshot, value)
-        reader = CiResultReader(git, snapshot, expected_id, directory / 'verified-ci')
+        reader = _reader(git, snapshot, expected_id, directory / 'verified-ci')
         remote_req, remote_raw = reader.load_request(req['job_id'])
         if remote_req != req or remote_raw != raw:
             raise GdiError('CI cancellation remote request differs from plan')

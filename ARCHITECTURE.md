@@ -100,7 +100,7 @@ profile, workflow selector и GitHub namespace исходной попытки �
 Дедупликация действует при сохранённом локальном outbox.
 
 `status` может показывать advisory state, но добавляет `verified: false` до принятия
-результата. Клиент принимает terminal result после проверки request/ready, всех
+результата. Клиент принимает terminal result после проверки исходного request, всех
 identity fields, полного log и всех объявленных artifacts по bytes/SHA256,
 final status, SHA256 пакета и полного binary log.
 `PASS` также требует успешные blocking stage results.
@@ -137,14 +137,15 @@ worktree и повторно проверяет branch/HEAD/status перед п
         bundles/<sha256>.bundle
         branches/<encoded-branch>/<publication>.json
         ci/jobs/<job-id>/
-            request.json, request.ready, worker.running.json
+            submission.json, worker.running.json
             status.json
             result-<sha256>.zip
             cancelled/result-<sha256>.zip  # при поздней отмене
 ```
 
-Вход: durable local outbox → request → ready → shared inbox **последней**.
-Notification и ready связывают job ID и hash точных request bytes. Worker в простое
+Вход: durable local outbox → один самодостаточный inbox-файл → read-back proof.
+Файл содержит полный request и repository_path; job ID и SHA256 связывают все bytes.
+Worker архивирует submission.json до исполнения. Worker в простое
 опрашивает только общую inbox, без обхода проектов и архива jobs. Пустая, частичная
 или неверная запись остаётся для retry и не мешает другим заданиям. Разные producers
 создают разные immutable файлы, общего изменяемого индекса нет.

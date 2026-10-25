@@ -71,6 +71,7 @@ class SchedulingTests(InboxTestCase):
         worker.discover()
         row = worker.ledger.get(req['job_id'])
         prefix = 'repos/a/ci/jobs/' + req['job_id']
+        self.store.mkdir(prefix)
         claim = {'ci_version': 1, 'job_id': req['job_id'], 'run_id': row['run_id'],
                  'worker_id': req['worker_id'], 'request_sha256': digest(row['raw'])}
         self.store.data[prefix + '/worker.running.json'] = encode(claim)
@@ -120,17 +121,16 @@ class SchedulingTests(InboxTestCase):
         self.assertEqual(self.step(client, req, self.at + 100)['state'], 'MONITORING')
         self.assertNotIn('repos/a/ci/jobs/' + req['job_id'] + '/cancel.json', self.store.data)
 
-    def test_status_reads_request_ready_once_and_rechecks_between_steps(self):
+    def test_status_uses_saved_submission_without_request_downloads(self):
         old, other, client, req = self.pair()
-        prefix = 'repos/a/ci/jobs/' + req['job_id']
         with patch.object(self.store, 'read', wraps=self.store.read) as reads:
             self.assertEqual(client.status(req['job_id'])['state'], 'QUEUED')
-        paths = [call.args[0] for call in reads.call_args_list]
-        self.assertEqual(paths.count(prefix + '/request.json'), 1)
-        self.assertEqual(paths.count(prefix + '/request.ready'), 1)
-        original = self.store.data[prefix + '/request.ready']
-        self.store.data[prefix + '/request.ready'] = original.replace(digest(encode(req)).encode(), b'f' * 64)
-        with self.assertRaises(GdiError):client.status(req['job_id'])
+        self.assertFalse(any(call.args[0].endswith(('/request.json', '/request.ready', '/submission.json'))
+                             for call in reads.call_args_list))
+        cached = next(client.submission_root.glob(req['job_id'] + '-*.json'))
+        cached.write_bytes(cached.read_bytes()[:-1] + b' ')
+        with self.assertRaises(GdiError):
+            client.status(req['job_id'])
 
     def test_claim_without_status_gets_grace_then_heartbeat_timeout(self):
         old, other, client, req = self.pair()
@@ -179,7 +179,8 @@ class SchedulingTests(InboxTestCase):
         self.store.fail = 'read'
         with self.assertRaises(GdiError):self.step(client, req, self.at + 1000)
         self.store.fail = None
-        self.store.data.pop('repos/a/ci/jobs/' + req['job_id'] + '/request.ready')
+        cached = next(client.submission_root.glob(req['job_id'] + '-*.json'))
+        cached.write_bytes(b'{}')
         with self.assertRaises(GdiError):self.step(client, req, self.at + 1000)
         self.assertNotIn('repos/a/ci/jobs/' + req['job_id'] + '/cancel.json', self.store.data)
 
@@ -367,7 +368,7 @@ class AgentSchedulingTests(InboxTestCase):
 
     def test_offline_supervisor_cancel_successor_retry_and_verified_result(self):
         old = self.worker();value = self.prepare(old)
-        self.transfer(value, 'request', 'ready', 'inbox')
+        self.transfer(value, 'inbox')
         config = self.config();config['worker_id'] = 'other-host';other = self.worker(config)
         policy_path = self.root / 'policy.json'
         settings = policy({'queue_timeout_seconds': 10, 'heartbeat_timeout_seconds': 20,
@@ -393,9 +394,9 @@ class AgentSchedulingTests(InboxTestCase):
         self.transfer(successor, 'successor')
         retry = step(4, at + 18)
         self.assertEqual(retry['state'], 'RETRY_PREPARED')
-        self.assertFalse(retry['plan']['safe_to_upload_inbox'])
+        self.assertTrue(retry['plan']['safe_to_upload_inbox'])
         frozen = retry['plan']['job_id']
-        self.transfer(retry['plan'], 'request', 'ready')
+
         ready = step(5, at + 19)
         self.assertTrue(ready['plan']['safe_to_upload_inbox'])
         self.transfer(ready['plan'], 'inbox')

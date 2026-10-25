@@ -33,7 +33,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_ci_cancel tests.test_ag
 
 Эти проверки используют временные git-репозитории, fake transport и тестовый runner.
 Проверяются отмена до запуска и во время исполнения, offline очередь A и явная
-замена на B, сохранение request/ready/истории, отказ неподдерживаемого worker,
+замена на B, сохранение submission/истории, отказ неподдерживаемого worker,
 канонические bytes marker и совпадение identity. Поздняя отмена проверяется после
 подготовки локального PASS, во время artifact/result upload и после потерянного
 ответа; restart продолжает доставку CANCELLED без повторного исполнения.
@@ -48,7 +48,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_ci_cancel tests.test_ag
 Пройдите сценарий отмены offline A, явной замены на B и последующего возвращения
 A, затем сценарий отмены во время доставки результата. Проверяйте полный
 CANCELLED старой попытки, результат новой и отсутствие повторного запуска старой;
-ручное удаление request/ready/inbox/claim не является проверкой отмены.
+ручное удаление submission/inbox/claim не является проверкой отмены.
 Локальные fixtures сами эту проверку Drive/host не подтверждают.
 
 ## Автоматический выбор и перенос по таймауту
@@ -65,8 +65,8 @@ A до старта, потеря связи после claim, продолжа�
 backoff/лимит, confirmed_stop/never, отказ при конфликте successor, повтор доставки
 с теми же bytes и полный агентский цикл через snapshots/inbox proof.
 Молчание логов со свежим heartbeat не вызывает переноса; ошибки чтения Drive
-не превращаются в доказательство отмены. Follow перечитывает request/ready на
-следующем polling, переиспользуя проверенную пару внутри первого запроса.
+не превращаются в доказательство отмены. Новая отправка проверяется одним inbox
+proof; follow использует сохранённый исходный запрос и свежие status/result, без downloads request/ready.
 Диагностика проверяется для старого/отсутствующего/ошибочного heartbeat и часов
 впереди клиента, перехода FRESH → STALE без обновления timestamp, несовместимых
 profiles/revisions/меток/platforms и агентского snapshot без status download.

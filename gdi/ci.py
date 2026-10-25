@@ -13,7 +13,7 @@ import time
 
 from .ci_protocol import (atomic_write, job_id, marker, request, upload_json,
                           validate_result, verify_file, workflow_selection, capability_revision, prepare_request,
-                          cancellation, validate_cancellation, cancellation_capability)
+                          cancellation, validate_cancellation, cancellation_capability, submission_capability)
 from .exchange import decode, digest, encode, file_digest, hex_value
 from .git import GdiError
 from .ci_package import PACKAGE_PATTERN, package_checksum, read_package
@@ -45,7 +45,16 @@ def publication(exchange, transport, repository_id, publication_id):
     return dict(chain)[publication_id], chain
 
 
-def files(transport, path):
+def files(transport, path, *, optional=False):
+    if optional:
+        parent = ''
+        for part in path.split('/'):
+            entries = {item['Path']: item for item in transport.list(parent)}
+            if part not in entries:
+                return set()
+            if not entries[part]['IsDir']:
+                raise GdiError('CI folder path is not a directory: ' + path)
+            parent += ('/' if parent else '') + part
     return {item["Path"] for item in transport.list(path) if not item["IsDir"]}
 
 
@@ -115,14 +124,73 @@ def migrate_state(old, root):
 class CiResultReader:
     """Shared result verification for live transports and offline connector snapshots."""
 
-    def __init__(self, git, transport, repository_id, root):
+    def __init__(self, git, transport, repository_id, root, *, submission_root=None):
         self.git, self.transport, self.repository_id = git, transport, repository_id
         self.root = Path(root)
         self.package_sources = {}
+        self.submission_root = Path(submission_root) if submission_root is not None else None
+        self.repository_path = getattr(transport, 'repository_path', None)
+        self.request_inbox = None
+
+    def remember_submission(self, event):
+        from .inbox import filename, submission
+        req, raw = submission(event, self.git, self.repository_id, self.repository_path)
+        if self.submission_root is None:
+            return req, raw
+        self.submission_root.mkdir(parents=True, exist_ok=True)
+        target = self.submission_root / filename(event)
+        previous = list(self.submission_root.glob(req['job_id'] + '-*.json'))
+        if any(path != target or path.read_bytes() != encode(event) for path in previous):
+            raise GdiError('local CI submission conflicts with the saved job identity')
+        if not target.exists():
+            atomic_write(target, encode(event))
+        return req, raw
+
+    def cached_submission(self, jid):
+        if self.submission_root is None:
+            return None
+        from .inbox import filename, submission
+        entries = list(self.submission_root.glob(jid + '-*.json'))
+        if not entries:
+            return None
+        if len(entries) != 1:
+            raise GdiError('multiple saved CI submissions for one job')
+        from .snapshot import metadata_file
+        content = metadata_file(entries[0])
+        event = decode(content)
+        req, raw = submission(event, self.git, self.repository_id, self.repository_path)
+        if req['job_id'] != jid or filename(event) != entries[0].name or encode(event) != content:
+            raise GdiError('saved CI submission checksum/identity mismatch')
+        return event, req, raw
 
     def load_request(self, jid):
         job_id(jid)
+        cached = self.cached_submission(jid)
+        if cached is not None:
+            return cached[1], cached[2]
         prefix = f"ci/jobs/{jid}"
+        content = optional_read(self.transport, prefix + '/submission.json')
+        if content is not None:
+            event = decode(content)
+            if encode(event) != content:
+                raise GdiError('CI submission is not canonical')
+            req, raw = self.remember_submission(event)
+            if req['job_id'] != jid:
+                raise GdiError('CI submission/job identity mismatch')
+            return req, raw
+        if self.request_inbox is not None:
+            from .inbox import NAME, read
+            names = [item['Path'] for item in self.request_inbox.list('inbox')
+                     if not item['IsDir'] and item['Path'].startswith(jid + '-')]
+            if len(names) > 1:
+                raise GdiError('ambiguous CI submissions for one job')
+            if names:
+                if not NAME.fullmatch(names[0]):
+                    raise GdiError('invalid CI submission filename')
+                req, raw = self.remember_submission(read(self.request_inbox, names[0]))
+                if req['job_id'] != jid:
+                    raise GdiError('CI inbox submission/job identity mismatch')
+                return req, raw
         raw = self.transport.read(prefix + "/request.json")
         req = request(decode(raw), self.git, self.repository_id)
         if req["job_id"] != jid or decode(self.transport.read(prefix + "/request.ready")) != marker(req, raw):
@@ -144,7 +212,7 @@ class CiResultReader:
 
     def delivery_result(self, prefix, req, raw, *, listing=None):
         """Prefer the single package; retain read-only support for old results."""
-        listing = files(self.transport, prefix) if listing is None else listing
+        listing = files(self.transport, prefix, optional=True) if listing is None else listing
         candidates = sorted(name for name in listing if name.startswith('result-'))
         sources = self.package_sources
         sources.pop(prefix, None)
@@ -184,7 +252,7 @@ class CiResultReader:
     def result_source(self, req, raw, *, listing=None):
         """Cancellation fences ordinary results, including an upload already in flight."""
         prefix = f"ci/jobs/{req['job_id']}"
-        listing = files(self.transport, prefix) if listing is None else listing
+        listing = files(self.transport, prefix, optional=True) if listing is None else listing
         cancelled = self.cancellation_record(req, raw, listing=listing)
         if cancelled is not None:
             directories = {item['Path'] for item in self.transport.list(prefix) if item['IsDir']}
@@ -329,8 +397,13 @@ class CiClient(CiResultReader):
         self.exchange = exchange
         transport, repository_id = exchange.connect(remote)
         super().__init__(exchange.git, transport, repository_id,
-                         exchange.git.gdi_dir() / 'ci' / repository_id)
+                         exchange.git.gdi_dir() / 'ci' / repository_id,
+                         submission_root=exchange.git.gdi_dir() / 'ci' / repository_id / 'submissions')
         self.settings = exchange.remote(remote)
+        if self.settings['inbox_root'] is not None:
+            from .local_config import repository_path
+            self.repository_path = repository_path(self.settings['inbox_root'], self.settings['url'])
+            self.request_inbox = exchange.transport_factory(self.settings['inbox_root'])
         old = self.git.common_dir() / "gdi-ci" / self.repository_id
         migrate_state(old, self.root)
 
@@ -343,11 +416,13 @@ class CiClient(CiResultReader):
         if self.settings["inbox_root"] is not None:
             candidate = self.exchange.transport_factory(self.settings["inbox_root"])
             raw_capabilities = optional_read(candidate, f"ci/workers/{worker_id}/capabilities.json")
-            if raw_capabilities is not None:
-                capabilities = decode(raw_capabilities)
-                if capabilities.get("inbox_version") != 1:
-                    raise GdiError("worker does not support the shared inbox")
-                shared = candidate
+            if raw_capabilities is None:
+                raise GdiError('shared worker capabilities are missing; update worker')
+            capabilities = decode(raw_capabilities)
+            submission_capability(capabilities, worker_id)
+            if capabilities.get("inbox_version") != 1:
+                raise GdiError("worker does not support the shared inbox")
+            shared = candidate
         if capabilities is None:
             capabilities = decode(self.transport.read(f"ci/workers/{worker_id}/capabilities.json"))
         revision = capability_revision(capabilities, worker_id, profile_id,
@@ -388,7 +463,28 @@ class CiClient(CiResultReader):
             atomic_write(outbox, raw)
         jid = req["job_id"]
         prefix = f"ci/jobs/{jid}"
-        for directory in ((prefix,) if shared is not None else ("ci/queue", prefix)):
+        if shared is not None:
+            from .inbox import notification, publish, read, filename
+            event = notification(self.repository_id, self.repository_path, pub, publication_id, req, raw)
+            self.remember_submission(event)
+            existing = files(self.transport, prefix, optional=True)
+            if 'result.json' in existing or any(PACKAGE_PATTERN.fullmatch(name) for name in existing):
+                self.result(jid)
+                return req
+            if 'cancel.json' in existing:
+                self.cancellation_requested(jid)
+                return req
+            if req['retry_of'] is not None:
+                successor = optional_read(self.transport, f"ci/jobs/{req['retry_of']}/successor.json")
+                if successor is not None:
+                    from .scheduling import validate_successor
+                    old, old_raw = self.load_request(req['retry_of'])
+                    validate_successor(successor, old, old_raw, req)
+            publish(shared, event)
+            if read(shared, filename(event)) != event:
+                raise GdiError('CI inbox submission changed during read-back')
+            return req
+        for directory in ("ci/queue", prefix):
             self.transport.mkdir(directory)
         # A repeated successful submit must not put a completed job back in the queue.
         existing = files(self.transport, prefix)
@@ -403,8 +499,7 @@ class CiClient(CiResultReader):
             source.write_bytes(raw)
             self.transport.upload(source, prefix + "/request.json")
             ready = marker(req, raw)
-            if shared is None:
-                upload_json(self.transport, f"ci/queue/{jid}.json", ready)
+            upload_json(self.transport, f"ci/queue/{jid}.json", ready)
             upload_json(self.transport, prefix + "/request.ready", ready)
             checked, checked_raw = self.load_request(jid)
             if checked != req or checked_raw != raw:
@@ -415,12 +510,6 @@ class CiClient(CiResultReader):
                     from .scheduling import validate_successor
                     old, old_raw = self.load_request(req['retry_of'])
                     validate_successor(successor, old, old_raw, req)
-            if shared is not None:
-                from .inbox import notification, publish
-                from .local_config import repository_path
-                event = notification(self.repository_id, repository_path(self.settings["inbox_root"], self.settings["url"]),
-                                     pub, publication_id, req, raw)
-                publish(shared, event)
         return req
 
     def workers(self, profile_id='full', *, settings=None):
@@ -532,7 +621,7 @@ class CiClient(CiResultReader):
         if result is not None:
             return {**result, "verified": True}
         cancelled = self.cancellation_record(req, raw)
-        listing = files(self.transport, f"ci/jobs/{jid}")
+        listing = files(self.transport, f"ci/jobs/{jid}", optional=True)
         live, freshness = self.live_status(req, raw, heartbeat_timeout=heartbeat_timeout, listing=listing)
         if cancelled is not None:
             return {**req, 'state': 'CANCEL_REQUESTED', 'verified': False,
@@ -727,6 +816,7 @@ class CiClient(CiResultReader):
         content = encode(existing if existing is not None else cancellation(req, raw, supported=supported))
         path = self.root / 'cancellations' / (jid + '.json')
         atomic_write(path, content)
+        self.transport.mkdir(f'ci/jobs/{jid}')
         self.transport.upload(path, f'ci/jobs/{jid}/cancel.json')
         validate_cancellation(self.transport.read(f'ci/jobs/{jid}/cancel.json'), req, raw)
         if withdraw:

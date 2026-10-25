@@ -383,25 +383,44 @@ class LocalAutonomousTests(unittest.TestCase):
                 command(['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', content])
                 return command(['git', 'rev-parse', 'HEAD']).stdout.strip()
             command(['git', 'init', '-q', '-b', 'main'])
+            workflow = agent / '.github/workflows/checks.yml'
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text('name: tests\non: push\njobs:\n  tests:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo tests\n')
+            command(['git', 'add', '.github'])
             commit('bad')
             command(['git', 'clone', '-q', str(agent), str(user)])
             url = 'gditest:' + str(remote)
             gdi('remote', 'create', 'drive', url)
             identity = decode((remote / 'repository.json').read_bytes())['repository_id']
             gdi('remote', 'add', 'drive', url, '--repository-id', identity, cwd=user)
-            script = "import time; from pathlib import Path; print('EARLY-CONSOLE',flush=True); time.sleep(1.5); assert Path('file.txt').read_text() == 'fixed', 'broken source'; print('ALL-PASSED')"
+            executable = root / 'fake-act'
+            executable.write_text('#!' + sys.executable + '\n' + '''import json, sys, time
+from pathlib import Path
+args = sys.argv[1:]
+if args == ['--version']:
+    print('act version 0.2.89')
+    raise SystemExit(0)
+checkout = Path(args[args.index('--directory') + 1])
+print(json.dumps({'raw_output': True, 'msg': 'EARLY-CONSOLE'}), flush=True)
+time.sleep(1.5)
+passed = (checkout / 'file.txt').read_text() == 'fixed'
+print(json.dumps({'raw_output': True, 'msg': 'ALL-PASSED' if passed else 'broken source'}), flush=True)
+print(json.dumps({'jobResult': 'success' if passed else 'failure', 'job': 'tests'}), flush=True)
+raise SystemExit(0 if passed else 1)
+''')
+            executable.chmod(0o700)
             config = root / 'worker.json'
-            config.write_bytes(encode({'config_version': 1, 'worker_id': 'user-host',
+            config.write_bytes(encode({'config_version': 2, 'worker_id': 'user-host',
+                'remote_url': 'gditest:' + str(root), 'act_executable': str(executable),
+                'platforms': {'ubuntu-latest': '-self-hosted'},
                 'state_dir': str(root / 'state'), 'cache_dir': str(root / 'cache'),
-                'poll_active_seconds': .2, 'poll_idle_max_seconds': .5,
-                'repositories': [{'repository_id': identity, 'remote_url': url,
-                    'profiles': {'full': {'stages': [{'name': 'tests', 'argv': [sys.executable, '-c', script]}]}}}]}))
+                'poll_active_seconds': .2, 'poll_idle_max_seconds': .5}))
             with (root / 'worker-console.log').open('w+') as console:
                 worker = subprocess.Popen([sys.executable, '-m', 'gdi', 'worker', 'run', '--config', str(config)],
                     cwd=root, env=env, stdout=console, stderr=console)
                 try:
                     deadline = time.monotonic() + 20
-                    while not (remote / 'ci/workers/user-host/capabilities.json').exists():
+                    while not (root / 'ci/workers/user-host/capabilities.json').exists():
                         if worker.poll() is not None or time.monotonic() > deadline:
                             console.seek(0)
                             self.fail('worker failed to advertise: ' + console.read())

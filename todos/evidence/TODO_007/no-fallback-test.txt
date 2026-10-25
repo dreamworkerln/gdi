@@ -1,0 +1,6 @@
+test_capabilities_corruption_and_network_failures_do_not_fall_back (tests.test_inbox.InboxTests) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.326s
+
+OK

@@ -367,7 +367,7 @@ CI logs/results этим GC не удаляются. Подробнее: [docs/g
 запуск на этот файл. Git checkout самой утилиты для обновления не требуется.
 
 Агент запускает `python3 /mnt/data/gdi.pyz agent ...` с Python и Git, без pip и rclone. GDI
-готовит bundle/manifest и CI request/ready/inbox, агент передаёт их коннектором
+готовит bundle/manifest и один самодостаточный CI inbox-файл; агент передаёт их коннектором
 и возвращает скачанные bytes для проверки. Команды, снимки, порядок загрузок
 и восстановление проектов: [docs/agent.md](docs/agent.md).
 

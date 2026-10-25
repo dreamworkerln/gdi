@@ -211,6 +211,13 @@ def capability_revision(capabilities, worker_id, profile_id, repository_id=None)
     return revision
 
 
+def submission_capability(capabilities, worker_id):
+    if (not isinstance(capabilities, dict) or capabilities.get('worker_id') != worker_id or
+            type(capabilities.get('ci_submission_version')) is not int or
+            capabilities['ci_submission_version'] != 1):
+        raise GdiError('worker does not support single-file CI submissions; update worker')
+
+
 def prepare_request(git, repository_id, publication_id, pub, worker_id, profile_id, revision,
                     *, shared=True, workflow=None, github_repository='', retry_of=None):
     import uuid

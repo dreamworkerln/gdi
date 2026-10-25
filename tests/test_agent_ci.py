@@ -66,33 +66,22 @@ class AgentCiTests(InboxTestCase):
         with patch('gdi.transport.Rclone.call', side_effect=AssertionError('no rclone')), \
                 patch('gdi.rc_transport.RcServer.__enter__', side_effect=AssertionError('no RC')):
             value = self.prepare(worker)
-            self.assertFalse(value['safe_to_upload_inbox'])
-            raw = (self.plan / 'request.json').read_bytes()
+            self.assertEqual(set(value['files']), {'inbox'})
+            self.assertTrue(value['safe_to_upload_inbox'])
+            raw = (self.plan / 'inbox.json').read_bytes()
             replay = agent_ci.prepare(self.a, self.snapshot('retry'), self.identity, self.plan,
                                       value['publication_id'], 'user-host', 'full', self.capabilities())
             self.assertEqual(replay, value)
-            self.assertEqual((self.plan / 'request.json').read_bytes(), raw)
-            self.transfer(value, 'request')
-            with self.assertRaisesRegex(GdiError, 'download is missing'):
-                agent_ci.check(self.a, self.plan, self.snapshot('partial', value['job_id']), self.identity,
-                               capabilities_path=self.capabilities())
-            worker.tick()
-            self.assertFalse(self.counter.exists())
-            self.transfer(value, 'ready')
-            checked = agent_ci.check(self.a, self.plan, self.snapshot('ready', value['job_id']), self.identity,
-                                     capabilities_path=self.capabilities())
-            self.assertTrue(checked['safe_to_upload_inbox'])
+            self.assertEqual((self.plan / 'inbox.json').read_bytes(), raw)
             worker.tick()
             self.assertFalse(self.counter.exists())
             self.transfer(value, 'inbox')
-            accepted = agent_ci.accept(self.a, self.plan, self.snapshot('accept', value['job_id']), self.identity,
-                                      capabilities_path=self.capabilities(), inbox_proof=self.proof(value))
+            accepted = agent_ci.accept(self.a, self.plan, self.root / 'prepare/snapshot.json', self.identity,
+                                       capabilities_path=self.capabilities(), inbox_proof=self.proof(value))
             self.assertEqual(accepted['state'], 'accepted')
             worker.tick()
-            self.assertEqual(self.counter.read_text(), 'x')
             result = agent_ci.result(self.a, self.plan, self.snapshot('result', value['job_id'], True), self.identity)
-            self.assertTrue(result['verified'])
-            self.assertEqual(result['state'], 'PASS')
+            self.assertEqual((result['state'], result['verified']), ('PASS', True))
             self.assertEqual(result['head'], value['head'])
             self.assertTrue((Path(result['local_artifacts']) / 'build.log').exists())
             worker.tick()
@@ -113,9 +102,7 @@ class AgentCiTests(InboxTestCase):
             value = agent_ci.prepare(self.a, self.snapshot('work-published', ref=ref), self.identity,
                                      plan, publication, 'user-host', 'full', self.capabilities())
             self.assertEqual((value['ref'], value['head']), (ref, first['head']))
-            self.transfer(value, 'request', 'ready')
-            agent_ci.check(self.a, plan, self.snapshot('work-ready', value['job_id'], ref=ref),
-                           self.identity, capabilities_path=self.capabilities())
+
             self.transfer(value, 'inbox')
             agent_ci.accept(self.a, plan, self.snapshot('work-accepted', value['job_id'], ref=ref),
                             self.identity, capabilities_path=self.capabilities(), inbox_proof=self.proof(value))
@@ -167,9 +154,7 @@ class AgentCiTests(InboxTestCase):
         retry = agent_ci.prepare(self.a, result_snapshot, self.identity, retry_plan,
                                  value['publication_id'], 'user-host', 'full', self.capabilities(),
                                  retry_of=value['job_id'])
-        self.transfer(retry, 'request', 'ready')
-        agent_ci.check(self.a, retry_plan, self.snapshot('retry-ready', retry['job_id'], ref=ref),
-                       self.identity, capabilities_path=self.capabilities())
+
         self.transfer(retry, 'inbox')
         agent_ci.accept(self.a, retry_plan, self.snapshot('retry-accepted', retry['job_id'], ref=ref),
                         self.identity, capabilities_path=self.capabilities(), inbox_proof=self.proof(retry))
@@ -179,27 +164,29 @@ class AgentCiTests(InboxTestCase):
         self.assertEqual((result['state'], result['verified'], result['head']), ('PASS', True, first['head']))
         self.assertEqual(self.counter.read_text(), 'xx')
 
-    def test_stale_capabilities_and_exact_request_ready_bytes(self):
+    def test_stale_capabilities_and_exact_submission_bytes(self):
         worker = self.worker()
         value = self.prepare(worker)
-        self.transfer(value, 'request', 'ready')
-        path = 'repos/a/ci/jobs/' + value['job_id'] + '/request.ready'
-        original = self.store.data[path]
-        self.store.data[path] = original.replace(b'\n', b' ')
+        self.transfer(value, 'inbox')
+        proof = self.proof(value)
+        source = self.plan / 'inbox.json'
+        original = source.read_bytes()
+        source.write_bytes(original[:-1] + b' ')
         with self.assertRaisesRegex(GdiError, 'checksum'):
-            agent_ci.check(self.a, self.plan, self.snapshot('bad-ready', value['job_id']), self.identity,
-                           capabilities_path=self.capabilities())
-        self.store.data[path] = original
-        caps = decode(self.capabilities().read_bytes()); caps['profiles']['full'] = 'f' * 64
+            agent_ci.accept(self.a, self.plan, self.snapshot('bad-submission'), self.identity,
+                            capabilities_path=self.capabilities(), inbox_proof=proof)
+        source.write_bytes(original)
+        caps = decode(self.capabilities().read_bytes())
+        caps['profiles']['full'] = 'f' * 64
         self.capabilities().write_bytes(encode(caps))
         with self.assertRaisesRegex(GdiError, 'revision changed'):
-            agent_ci.check(self.a, self.plan, self.snapshot('ready', value['job_id']), self.identity,
-                           capabilities_path=self.root / 'capabilities.json')
+            agent_ci.accept(self.a, self.plan, self.snapshot('changed-revision'), self.identity,
+                            capabilities_path=self.root / 'capabilities.json', inbox_proof=proof)
         self.assertEqual(decode((self.plan / 'plan.json').read_bytes())['state'], 'prepared')
 
     def test_inbox_duplicate_names_and_download_tamper_rejected(self):
         worker = self.worker(); value = self.prepare(worker)
-        self.transfer(value, 'request', 'ready', 'inbox')
+        self.transfer(value, 'inbox')
         snap = self.snapshot('accept', value['job_id']); proof = self.proof(value)
         original = decode(proof.read_bytes())
         duplicate = copy.deepcopy(original)
@@ -217,7 +204,7 @@ class AgentCiTests(InboxTestCase):
     def test_single_package_snapshot_and_cached_result_still_require_download(self):
         worker = self.worker()
         value = self.prepare(worker)
-        self.transfer(value, 'request', 'ready', 'inbox')
+        self.transfer(value, 'inbox')
         worker.tick()
         snapshot = self.snapshot('packaged-result', value['job_id'], True)
         document = decode(snapshot.read_bytes())
@@ -241,7 +228,7 @@ class AgentCiTests(InboxTestCase):
 
     def test_historical_result_missing_artifact_corrupt_chunk_and_identity_are_rejected(self):
         worker = self.worker(); value = self.prepare(worker)
-        self.transfer(value, 'request', 'ready', 'inbox'); worker.tick()
+        self.transfer(value, 'inbox'); worker.tick()
         historical_delivery(self.store, 'repos/a/ci/jobs/' + value['job_id'])
         snap = self.snapshot('result', value['job_id'], True)
         doc = decode(snap.read_bytes())
@@ -267,14 +254,14 @@ class AgentCiTests(InboxTestCase):
     def test_no_completed_result_is_pending_and_ci_is_explicit(self):
         worker = self.worker(); value = self.prepare(worker)
         self.assertFalse(self.ci_events())
-        self.transfer(value, 'request', 'ready')
+
         self.assertEqual(agent_ci.result(self.a, self.plan, self.snapshot('pending', value['job_id']), self.identity),
                          {'job_id': value['job_id'], 'state': 'PENDING', 'verified': False,
                           'heartbeat': {'updated_at': None, 'age_seconds': None, 'timeout_seconds': 600, 'state': 'missing'}})
 
     def test_explicit_retry_requires_complete_terminal_result_and_creates_new_fixed_id(self):
         worker = self.worker(); value = self.prepare(worker)
-        self.transfer(value, 'request', 'ready')
+
         with self.assertRaisesRegex(GdiError, 'active job'):
             agent_ci.prepare(self.a, self.snapshot('active', value['job_id']), self.identity, self.root / 'retry-plan',
                              value['publication_id'], 'user-host', 'full', self.capabilities(), retry_of=value['job_id'])
@@ -291,7 +278,7 @@ class AgentCiTests(InboxTestCase):
     def test_offline_cancel_plan_and_replacement_worker_use_existing_tools(self):
         worker = self.worker()
         value = self.prepare(worker)
-        self.transfer(value, 'request', 'ready', 'inbox')
+        self.transfer(value, 'inbox')
         worker.discover()
         config = worker.config
         old_capabilities = self.root / 'old-capabilities.json'
@@ -327,7 +314,7 @@ class AgentCiTests(InboxTestCase):
             self.assertNotEqual(replacement['job_id'], value['job_id'])
             self.assertEqual(replacement_raw['retry_of'], value['job_id'])
             self.assertEqual(replacement['head'], value['head'])
-            self.transfer(replacement, 'request', 'ready', 'inbox')
+            self.transfer(replacement, 'inbox')
             other.tick()
             self.assertEqual(self.counter.read_text(), 'x')
             resumed = self.worker(config)
@@ -340,7 +327,7 @@ class AgentCiTests(InboxTestCase):
     def test_late_pass_is_fenced_and_cancelled_result_verified_offline(self):
         worker = self.worker()
         value = self.prepare(worker)
-        self.transfer(value, 'request', 'ready', 'inbox')
+        self.transfer(value, 'inbox')
         prefix = 'repos/a/ci/jobs/' + value['job_id']
         self.store.fail = prefix + '/result-'
         worker.tick()
@@ -371,7 +358,7 @@ class AgentCiTests(InboxTestCase):
 
     def test_cancel_plan_rejects_unsupported_worker_and_remote_marker_tamper(self):
         worker = self.worker();value = self.prepare(worker)
-        self.transfer(value, 'request', 'ready', 'inbox')
+        self.transfer(value, 'inbox')
         path=self.capabilities()
         caps=decode(path.read_bytes());caps.pop('cancel_version');path.write_bytes(encode(caps))
         with self.assertRaisesRegex(GdiError, 'does not advertise cancellation'):

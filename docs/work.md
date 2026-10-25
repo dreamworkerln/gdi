@@ -53,7 +53,7 @@ rclone или операторские команды и не воспроизв
 подтверждённая публикация защищает checkpoint от потери checkout.
 
 CI промежуточного checkpoint возможен без `!`: существующий `agent ci prepare`
-использует его Publication ID, далее штатные check/accept/result. Он проверяет
+использует его Publication ID, далее один inbox upload, accept и result. Он проверяет
 точный опубликованный SHA, даже если work ref уже продвинулся. Новый исходный
 checkpoint после FAIL — новый CI request, не retry прежнего SHA. CI запускается
 по согласованному разрешению, не автоматически каждым checkpoint. Workflows должны

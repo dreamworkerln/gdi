@@ -94,7 +94,8 @@ class Worker:
             transport = self.transport_factory(self.config['remote_url'])
             for path in ('inbox', f'ci/workers/{self.worker_id}'):
                 transport.mkdir(path)
-            capabilities = {'ci_version': 1, 'inbox_version': 1, 'cancel_version': 1, 'result_delivery_version': 1,
+            capabilities = {'ci_version': 1, 'inbox_version': 1, 'ci_submission_version': 1,
+                            'cancel_version': 1, 'result_delivery_version': 1,
                             'worker_id': self.worker_id,
                             'profiles': {'full': self.config['execution_profile']['revision']},
                             'labels': self.config.get('labels', []), 'platforms': sorted(self.config['platforms'])}
@@ -174,7 +175,11 @@ class Worker:
     def discover_inbox(self):
         from .inbox import NAME, read
         root = self.transport_factory(self.config['remote_url'])
-        for entry in sorted(root.list('inbox'), key=lambda item: item['Path']):
+        entries = root.list('inbox')
+        from collections import Counter
+        identities = Counter(match[1] for item in entries if not item['IsDir']
+                             for match in [NAME.fullmatch(item['Path'])] if match)
+        for entry in sorted(entries, key=lambda item: item['Path']):
             if self.stop.is_set():
                 return
             name = entry['Path']
@@ -182,6 +187,8 @@ class Worker:
                 if entry['IsDir'] or not NAME.fullmatch(name):
                     raise GdiError('invalid inbox entry')
                 event = read(root, name)
+                if event['type'] == 'ci_requested' and identities[event['job_id']] != 1:
+                    raise GdiError('multiple inbox submissions for the same CI job; resolve the conflict')
                 if event['type'] == 'ci_requested' and event['worker_id'] != self.worker_id:
                     continue
                 repo = self.routed_repository(event['repository_id'], event['repository_path'])
@@ -202,14 +209,8 @@ class Worker:
                         raise GdiError('durable inbox receipt differs')
                     root.delete_notification('inbox/' + name)
                     continue
-                prefix = 'ci/jobs/' + event['job_id']
-                raw = transport.read(prefix + '/request.json')
-                req = request(decode(raw), git, event['repository_id'])
-                expected = marker(req, raw)
-                if (req['ci_version'] != 2 or event['request_sha256'] != digest(raw)
-                        or any(event[key] != req[key] for key in ('job_id', 'worker_id', 'ref', 'head', 'publication_id'))
-                        or decode(transport.read(prefix + '/request.ready')) != expected):
-                    raise GdiError('inbox/request/ready identity mismatch')
+                from .inbox import submission
+                req, raw = submission(event, git, repo['repository_id'], event['repository_path'])
                 route = {'root_url': self.config['remote_url'], 'repository_path': event['repository_path']}
                 row = self.ledger.discover(req, raw, uuid.uuid4().hex, route=route, notification=name)
                 if row['state'] == 'PUBLISHED':
@@ -220,6 +221,39 @@ class Worker:
                         self.acknowledge(row)
             except (GdiError, OSError) as exc:
                 LOG.error('inbox=%s: %s; notification retained', name, exc)
+
+    def archive_submission(self, transport, row, req):
+        """Persist the received request before execution, including after restart."""
+        if row['route'] is None:
+            return
+        from .inbox import notification, filename
+        route = decode(row['route'])
+        event = notification(req['repository_id'], route['repository_path'], req,
+                             req['publication_id'], req, row['raw'])
+        if filename(event) != row['notification']:
+            raise GdiError('saved submission differs from the durable inbox identity')
+        spool = self.spool(req['job_id'])
+        receipt = spool / 'submission.archived'
+        content = encode(event)
+        if receipt.exists():
+            if receipt.read_bytes() != content:
+                raise GdiError('durable submission archive receipt differs')
+            return
+        source = spool / 'submission.json'
+        if source.exists() and source.read_bytes() != content:
+            raise GdiError('durable submission bytes differ')
+        atomic_write(source, content)
+        prefix = 'ci/jobs/' + req['job_id']
+        transport.mkdir(prefix)
+        destination = prefix + '/submission.json'
+        previous = optional_read(transport, destination)
+        if previous is not None and previous != content:
+            raise GdiError('archived CI submission conflicts with this job')
+        if previous is None:
+            transport.upload(source, destination)
+        if transport.read(destination) != content:
+            raise GdiError('archived CI submission differs after upload')
+        atomic_write(receipt, content)
 
     def routed_repository(self, repository_id, path):
         from .inbox import relative_repository
@@ -426,8 +460,11 @@ class Worker:
             previous = f"ci/jobs/{req['retry_of']}"
             successor = optional_read(transport, previous + '/successor.json')
             if successor is not None:
-                old_raw = transport.read(previous + '/request.json')
-                old = request(decode(old_raw), Git(self.root, isolated=True), req['repository_id'])
+                reader = CiResultReader(Git(self.root, isolated=True), transport,
+                                        req['repository_id'], self.root / 'predecessor-check')
+                if self.shared:
+                    reader.request_inbox = self.transport_factory(self.config['remote_url'])
+                old, old_raw = reader.load_request(req['retry_of'])
                 validate_successor(successor, old, old_raw, req)
                 cancel_raw = optional_read(transport, previous + '/cancel.json')
                 if cancel_raw is None or validate_cancellation(cancel_raw, old, old_raw).get('worker_cancellation_supported') is False:
@@ -435,6 +472,7 @@ class Worker:
 
     def deliver(self, repo, row, req, *, cancelled_result=False):
         transport = self.transport(repo)
+        self.archive_submission(transport, row, req)
         self.check_successor(transport, req)
         spool = self.spool(req['job_id'])
         prefix = f"ci/jobs/{req['job_id']}"
@@ -492,6 +530,7 @@ class Worker:
         if repo is None:
             raise GdiError('pending repository was removed from config; restore registration to deliver result')
         transport = self.transport(repo)
+        self.archive_submission(transport, row, req)
         self.check_successor(transport, req)
         spool = self.spool(req['job_id'])
         if (spool / 'result.json').exists():

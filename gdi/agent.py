@@ -191,19 +191,18 @@ def verdict(directory, value):
                 'cancellation_requested': state == 'accepted'}
     publication = value['kind'] == 'publication'
     next_step = ({'prepared': 'upload_bundle', 'bundle_checked': 'upload_manifest', 'accepted': 'publication_accepted'}
-                 if publication else {'prepared': 'upload_request_then_ready', 'request_checked': 'upload_inbox', 'accepted': 'ci_request_accepted'})[state]
+                 if publication else {'prepared': 'upload_inbox', 'accepted': 'ci_request_accepted'})[state]
     return {**value, 'plan_path': str(directory / 'plan.json'),
             'files': {key: {**item, 'local_path': str(directory / item['local_path'])} for key, item in value['files'].items()},
             'next_step': next_step,
-            'upload_order': ['bundle', 'manifest', 'notification'] if publication else ['request', 'ready', 'inbox'],
+            'upload_order': ['bundle', 'manifest', 'notification'] if publication else ['inbox'],
             'freshness': 'connector_provided_snapshot',
             **({'safe_to_upload_bundle': state != 'accepted', 'safe_to_upload_manifest': state == 'bundle_checked',
                 'safe_to_upload_notification': state == 'accepted',
                 'expected_previous_publication': value['base_chain'][-1] if value['base_chain'] else None,
                 'bundle_kind': decode(metadata_file(local_file(directory, 'publication.json')))['bundle_kind'],
                 'expected_new_tip': value['publication_id']} if publication else
-               {'safe_to_upload_request': state == 'prepared', 'safe_to_upload_ready': state == 'prepared',
-                'safe_to_upload_inbox': state == 'request_checked'})}
+               {'safe_to_upload_inbox': state == 'prepared'})}
 
 
 def same_route(snapshot, value):

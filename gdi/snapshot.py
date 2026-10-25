@@ -175,6 +175,18 @@ class Snapshot:
 
     def list(self, relative, *, recursive=False):
         if relative not in self.folders:
+            # A full ancestor listing can prove that a not-yet-registered job
+            # does not exist. Existing folders still require their own listing.
+            parent = ''
+            for part in relative.split('/'):
+                if parent not in self.folders:
+                    break
+                entries = {item['name']: item for item in self.folders[parent]}
+                if part not in entries:
+                    return []
+                if not entries[part]['is_dir']:
+                    raise GdiError('snapshot path is not a folder: ' + relative)
+                parent += ('/' if parent else '') + part
             raise GdiError('snapshot requires a complete listing of folder: ' + relative)
         result = []
         for item in self.folders[relative]:

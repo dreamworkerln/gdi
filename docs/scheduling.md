@@ -155,8 +155,8 @@ ATTEMPTS_EXHAUSTED либо terminal state с `result.verified: true`. REASSIGNE
 Ручной режим использует `--worker ID --capabilities PATH` без автоматического fallback.
 Оба режима и общий порядок передачи описаны в [agent.md](agent.md#подготовить-запрос-ci).
 
-Получите свежий полный snapshot проекта, включая request/ready/status/claim/cancel/
-successor активного job. Включите предшественников при начальном восстановлении
+Получите свежий полный snapshot проекта, включая status/claim/cancel/successor
+активного job. Если исходного запроса нет локально, скачайте submission.json. Включите предшественников при начальном восстановлении
 цепочки retry и полный пакет любого принимаемого результата.
 
 Отдельный `workers.json` описывает полный listing общей `ci/workers`, все страницы
@@ -205,7 +205,7 @@ python3 -m gdi agent ci supervise --repo "$WORK_DIR" \
 ```
 
 Prepare без `--worker` выбирает host и сохраняет его в плане. Дальше используйте
-обычные check/accept с capabilities выбранного host и проверкой request/ready/inbox.
+upload одного plan.files.inbox и accept с capabilities выбранного host и inbox-proof.
 Supervisor выдаёт последовательные действия:
 
 1. CANCEL_PREPARED: загрузить `plan.files.cancel`, проверить доставку существующим
@@ -214,9 +214,9 @@ Supervisor выдаёт последовательные действия:
    данные на следующем цикле. Worker ID руками не назначается.
 3. SUCCESSOR_PREPARED: загрузить только точный `files.successor`; скачать обратно
    в новый snapshot. Этот файл фиксирует новую попытку до загрузки её inbox.
-4. RETRY_PREPARED: передать `plan.files.request`, затем ready; обновить snapshot,
-   повторить supervise/check. Inbox разрешён только после `safe_to_upload_inbox: true`.
-5. Передать inbox, сохранить полный inbox-proof как при обычном accept; выполнить
+4. RETRY_PREPARED: plan.files.inbox уже разрешён к загрузке; передать один этот
+   файл. Не загружать request/ready и не готовить промежуточный snapshot задания.
+5. Сохранить полный inbox-proof как при обычном accept; выполнить
    supervise с `--inbox-proof PATH` либо `agent ci accept --plan PATH` для выданного
    плана и затем повторить supervise. Сессия переключается на новый job после accept.
 6. Следующие снимки должны содержать новый активный job. Повтор supervise использует
