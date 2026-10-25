@@ -1,6 +1,6 @@
 # GDI через коннектор Google Drive
 
-Агент запускает GDI из полученных исходников или готового `gdi.pyz`.
+Агент получает и обновляет готовый `gdi.pyz` из папки `runtime/` на Drive.
 Нужны Python 3.10+ на Linux и Git;
 сторонние Python-пакеты, pip, setuptools, rclone, Docker и worker агенту не нужны.
 GDI читает локальные снимки и готовит файлы. Все операции Drive выполняет коннектор.
@@ -21,7 +21,7 @@ GDI читает локальные снимки и готовит файлы. �
 Не дублируйте вручную проверки hashes, manifests, цепочек публикаций или результатов
 CI, уже выполненные GDI, и не запускайте повторные проверки только из общего
 недоверия к инструменту. Это не отменяет обязательных шагов протокола, проверок
-bootstrap и получения файлов для `verified:true`, описанных ниже. Изучение кода
+runtime и получения файлов для `verified:true`, описанных ниже. Изучение кода
 целевого проекта, его тестов и CI-лога остаётся частью ревью этого проекта.
 
 Если при работе GDI или среды обнаружена аномалия, сообщите пользователю исходную
@@ -33,19 +33,18 @@ bootstrap и получения файлов для `verified:true`, описа�
 данные, обозначьте препятствие и продолжайте только независимую часть исходной
 задачи. Исследование и исправление инструмента требуют отдельной задачи.
 
-В примерах команды запускаются из каталога исходников GDI. `--repo` задаёт рабочий
-Git-репозиторий проекта; это может быть другой каталог. Вывод команд — один JSON
+В примерах команды запускают готовый runtime по абсолютному пути из любого
+каталога. `--repo` задаёт рабочий Git-репозиторий проекта. Вывод команд — один JSON
 на stdout; сообщения о ходе работы идут на stderr. Ошибка возвращает код 1 и JSON
 с `kind: GDI_ERROR`. Обычное `gdi agent ci result` возвращает код 0 и для проверенного
 FAIL: состояние CI определяется полями `state` и `verified`, а не кодом этой команды.
 
 ```bash
-INSTALL_DIR="/mnt/data/gdi-checkouts/gdi"
+GDI_RUNTIME="/mnt/data/gdi.pyz"
 WORK_DIR="/mnt/data/gdi-checkouts/my-project"
 EXCHANGE_DIR="/mnt/data/gdi-exchange/my-project"
 REPOSITORY_ID="доверенный_repository_id_пользователя"
-cd "$INSTALL_DIR"
-python3 -m gdi agent --help
+python3 "$GDI_RUNTIME" agent --help
 ```
 
 По наблюдению владельца, в используемой среде агента ChatGPT/OAI `/mnt/data`
@@ -53,8 +52,8 @@ python3 -m gdi agent --help
 содержимое по обоим путям**: ни один из них не защищает рабочую копию от потери.
 Для Git checkout-ов можно использовать отдельные каталоги под
 `/mnt/data/gdi-checkouts/<repo-name>`, например
-`/mnt/data/gdi-checkouts/serialterminal` и `/mnt/data/gdi-checkouts/gdi`.
-`WORK_DIR` и `INSTALL_DIR` могут находиться в `/mnt/data`; downloads, snapshots,
+`/mnt/data/gdi-checkouts/my-project`.
+`WORK_DIR` и `GDI_RUNTIME` могут находиться в `/mnt/data`; downloads, snapshots,
 bundles, manifests и планы обмена храните отдельно, например в `/mnt/data/gdi-exchange`.
 После `agent clone` проверьте наличие `.git`, фактические HEAD/ветку и чистоту
 worktree. После материализации или восстановления среды проверьте сохранившийся
@@ -74,8 +73,9 @@ bytes или дубликаты имён требуют остановки. Не
 ## Обязательный способ работы с GDI-репозиториями
 
 Для любого GDI-репозитория используйте существующие команды GDI. Это правило
-распространяется и на репозиторий самой утилиты: установленный доверенный GDI
-получает новую версию GDI с Drive. Не заменяйте интеграцию собственными скриптами
+распространяется и на исходники самой утилиты, если задача требует разработки GDI.
+Получение и обновление исполняемого инструмента выполняется из папки runtime/
+по следующему разделу. Не заменяйте обмен проектами собственными скриптами
 или ручным воспроизведением протокола.
 
 - Проверка снимка, выбор bundles и восстановление: `gdi agent snapshot`
@@ -98,237 +98,98 @@ HEAD/ветки разрешены; восстановление из файло
 При ошибке GDI исправьте указанные входные данные или получите свежий снимок;
 если продолжение невозможно, сообщите причину, сохранив файлы и план.
 
-Единственное исключение — первоначальный bootstrap, когда доверенной работоспособной
-копии GDI ещё нет: используйте только процедуру следующего раздела. Наличие этого
-исключения не разрешает ручную сборку при обычном обмене или обновлении уже
-работающего GDI.
-
-## Первое получение самих исходников GDI
+## Получить или обновить GDI агента
 
 ### Готовый runtime gdi.pyz
 
-Если локальная среда очищена и рабочего Python-пакета GDI больше нет, сначала
-попробуйте получить готовый runtime. В репозитории самой утилиты на Drive он лежит
-в `runtime/gdi.pyz`: для текущей установки владельца это
-`gdrive:gdi/gdi/runtime/gdi.pyz` (папка Google Drive `gdi/gdi/runtime`). Rclone-путь
-служит указанием расположения; агент скачивает файл через коннектор Drive,
-без rclone, распаковки, pip, `.git` или настройки `PYTHONPATH`.
-Рядом находится `runtime/agent.md` — копия этой инструкции из того же commit,
-которую публикует `scripts/deploy.py` вместе с runtime.
+Для первого запуска, после потери контейнера и для обычного обновления используйте
+**готовый runtime из папки runtime/ владельца на Google Drive**. Для текущей
+установки это gdrive:gdi/gdi/runtime/ (папка Drive gdi/gdi/runtime). Rclone-путь
+здесь только обозначает расположение: все скачивания выполняет Drive-коннектор.
+Исполняемая копия исходников GDI для этой процедуры не нужна.
 
-1. Получите доверенный SHA256 от владельца либо из ранее доверенных сведений
-   о выпуске. Не назначайте hash вычисленного скачанного файла доверенным.
-   `runtime.json` и `gdi.pyz.sha256` рядом с архивом описывают выпуск и помогают
-   проверить согласованность скачивания, но сами по себе не являются независимым
-   источником доверия. Обновление файлов не атомарно; при несовпадении повторите
-   скачивание и не запускайте архив.
-2. Скачайте архив и сопровождающий `gdi.pyz.sha256` коннектором в
-   `/mnt/data/gdi.pyz` и `/mnt/data/gdi.pyz.sha256`. Если коннектор добавил к
-   имени checksum-файла суффикс `.bin`, приведите локальное имя к указанному.
-3. Проверьте SHA256 до исполнения:
+Просьба «обнови GDI» означает скачать опубликованный runtime и переключить на него
+следующие вызовы инструмента. Рабочий репозиторий проекта при этом не меняется.
+Исходники самой утилиты восстанавливайте только по отдельной задаче на работу
+с кодом GDI. Для обновления инструмента не собирайте Git snapshot, не скачивайте
+manifests/bundles и не выполняйте clone репозитория самой утилиты.
+
+1. Используйте папку runtime/, указанную владельцем или уже сохранённую в настройках.
+   Это доверенный источник выпуска. Получите её свежий полный listing и скачайте
+   по найденным file IDs **четыре файла**: gdi.pyz, gdi.pyz.sha256, runtime.json
+   и agent.md. Используйте новый локальный каталог вне рабочего проекта, например:
 
    ```bash
+   GDI_UPDATE_DIR="/mnt/data/gdi-runtime-update-001"
+   mkdir -p "$GDI_UPDATE_DIR"
+   ```
+
+   Скачанные файлы сохраняйте туда с исходными именами. Если коннектор добавил
+   checksum-файлу суффикс .bin, верните имя gdi.pyz.sha256. Не используйте дату
+   изменения или номер версии вместо содержимого файлов.
+
+2. Проверьте checksum, размер и согласованность скачанного выпуска. Для штатного
+   обновления ожидаемые значения берутся из свежих runtime.json и gdi.pyz.sha256
+   той же доверенной папки. Если владелец дал ожидаемый SHA256 именно этого выпуска,
+   дополнительно сверяйте с ним; отдельно запрашивать hash при каждом обновлении
+   из уже указанного доверенного источника не требуется.
+
+   ```bash
+   set -eu
+   cd "$GDI_UPDATE_DIR"
+   sha256sum --check --strict gdi.pyz.sha256
+   python3 - <<'PY_RUNTIME'
+   import hashlib
+   import json
+   from pathlib import Path
+
+   metadata = json.loads(Path("runtime.json").read_text())
+   runtime = Path("gdi.pyz").read_bytes()
+   if len(runtime) != metadata["bytes"] or hashlib.sha256(runtime).hexdigest() != metadata["sha256"]:
+       raise SystemExit("runtime.json does not match gdi.pyz; download the release again")
+   print("Runtime HEAD:", metadata["head"])
+   print("Runtime SHA256:", metadata["sha256"])
+   PY_RUNTIME
+   ```
+
+   Продолжайте только после успеха обеих проверок. Файлы выпуска обновляются
+   неатомарно: при несовпадении повторите listing/download той же папки runtime/.
+   Ошибка доставки не является основанием переходить к восстановлению исходников.
+
+3. Сохраните проверенные runtime и checksum **в обоих каталогах: /mnt/data и /home/oai**:
+
+   ```bash
+   set -eu
+   for runtime_dir in /mnt/data /home/oai; do
+     cp "$GDI_UPDATE_DIR/gdi.pyz" "$GDI_UPDATE_DIR/gdi.pyz.sha256" "$runtime_dir/"
+     (cd "$runtime_dir" && sha256sum --check --strict gdi.pyz.sha256)
+   done
    GDI_RUNTIME="/mnt/data/gdi.pyz"
-   GDI_RUNTIME_SHA256="доверенный_sha256_от_владельца"
-   printf '%s  %s\n' "$GDI_RUNTIME_SHA256" "$GDI_RUNTIME" | sha256sum --check --strict
-   ```
-
-4. После успешной проверки сохраните одинаковые копии архива и checksum-файла
-   **в обоих каталогах: `/mnt/data` и `/home/oai`**. Эти каталоги могут очищаться
-   независимо; в наблюдаемом случае `/mnt/data/gdi.pyz` сохранился после потери
-   `/home/oai/gdi.pyz`. Проверяйте SHA256 скопированного архива перед исполнением:
-
-   ```bash
-   cp /mnt/data/gdi.pyz /home/oai/gdi.pyz
-   cp /mnt/data/gdi.pyz.sha256 /home/oai/gdi.pyz.sha256
-   printf '%s  %s\n' "$GDI_RUNTIME_SHA256" /home/oai/gdi.pyz | sha256sum --check --strict
-   ```
-
-   После каждого обновления runtime обновляйте обе копии и их checksum-файлы.
-5. После успешной проверки запускайте:
-
-   ```bash
    python3 "$GDI_RUNTIME" --version
    python3 "$GDI_RUNTIME" agent --help
    ```
 
-В дальнейших примерах `python3 -m gdi` заменяйте на `python3 "$GDI_RUNTIME"`.
-`agent snapshot` и `agent clone` восстанавливают проекты обычным проверенным
-способом. Для изменения самой утилиты отдельно восстановите её исходники через
-`agent clone`. Архив — готовый инструмент агента, а не checkout исходников.
-Нужны Python 3.10+ и Git. Если одна копия исчезнет, проверьте оставшуюся по
-доверенному SHA256, восстановите из неё вторую копию вместе с checksum-файлом
-и задайте `GDI_RUNTIME` на существующий проверенный архив. Если исчезли обе,
-скачайте и проверьте runtime заново. Две локальные копии не гарантируют сохранность
-при материализации или смене среды; проверяйте их наличие и checksum перед запуском.
+   Обновляйте обе копии при каждом обновлении. Прочитайте скачанный agent.md:
+   это инструкция опубликованного runtime. Во всех следующих командах используйте
+   python3 "$GDI_RUNTIME"; прежний вызов python3 -m gdi из mount/checkout может
+   продолжить запускать старый инструмент. Исходную mount-копию сохраняйте.
 
-### Bootstrap из полного bundle
+4. Сообщите источник runtime/, head из runtime.json, проверенный SHA256 и фактический
+   GDI_RUNTIME. Обновление завершено, когда следующие вызовы используют этот файл.
+   Если одна копия исчезла, проверьте оставшуюся по сохранённому checksum и восстановите
+   из неё вторую. Если исчезли обе, повторите скачивание готового runtime.
+   Две копии не гарантируют сохранность при материализации контейнера.
 
-Если доверенной копии GDI ещё нет или она не поддерживает протокол репозитория
-утилиты, для bootstrap нужны только Python, git и коннектор Drive.
+Версия вроде 0.4.0 может совпадать у разных выпусков. Идентификаторы runtime —
+его SHA256 и head в runtime.json. Head описывает commit, из которого собран этот
+выпуск; он **не обязан совпадать с текущей вершиной Git-ветки**. Ветка может
+продвинуться после публикации runtime. Это само по себе не ошибка и не требует
+скачивать manifests, восстанавливать checkout, сравнивать diff или пересобирать
+утилиту. Цель обычного обновления — опубликованный runtime, выбранный владельцем.
 
-1. Получите от владельца источник доверенного **полного** bundle самой утилиты:
-   Drive file ID или однозначное расположение, SHA256, имя ветки и полный HEAD.
-   Ожидаемые SHA256/HEAD должны прийти независимо от скачанного файла; не назначайте
-   вычисленный hash доверенным только потому, что скачивание удалось. Если этих
-   сведений нет, запросите их. Для дальнейшего обмена также сохраните доверенный
-   Repository ID и папку GDI-репозитория утилиты.
-2. Скачайте этот bundle коннектором в локальный файл. Не выбирайте произвольную
-   дельту и не пытайтесь вручную собирать цепочку prerequisites. Полный checkpoint
-   может быть старее tip ветки: его достаточно для первого запуска, после которого
-   сам GDI получает более свежую опубликованную версию по следующему разделу.
-3. Задайте фактические параметры. Bundle должен иметь абсолютный локальный путь;
-   каталоги проверки и установки должны ещё не существовать, а их родительские
-   каталоги — быть доступными для записи.
-
-   ```bash
-   BOOTSTRAP_BUNDLE="/путь/к/скачанному/полному.bundle"
-   BOOTSTRAP_SHA256="ожидаемый_sha256_от_владельца"
-   BOOTSTRAP_BRANCH="ветка_из_доверенных_сведений"
-   BOOTSTRAP_HEAD="полный_sha_commit_от_владельца"
-   BOOTSTRAP_VERIFY_DIR="/путь/к/новому/bootstrap-verify.git"
-   INSTALL_DIR="/путь/к/новой/локальной/копии/gdi"
-   ```
-
-4. Проверьте файл и восстановите первую копию. Все команды в этом блоке должны
-   завершиться успешно; `set -eu` останавливает bootstrap при первой ошибке.
-
-   ```bash
-   (
-     set -eu
-     test ! -e "$BOOTSTRAP_VERIFY_DIR"
-     test ! -e "$INSTALL_DIR"
-     printf '%s  %s\n' "$BOOTSTRAP_SHA256" "$BOOTSTRAP_BUNDLE" | sha256sum --check --strict
-     git -c core.hooksPath=/dev/null init --quiet --bare --template= "$BOOTSTRAP_VERIFY_DIR"
-     git -C "$BOOTSTRAP_VERIFY_DIR" bundle verify "$BOOTSTRAP_BUNDLE"
-     test "$(git -C "$BOOTSTRAP_VERIFY_DIR" bundle list-heads "$BOOTSTRAP_BUNDLE")" = \
-       "$BOOTSTRAP_HEAD refs/heads/$BOOTSTRAP_BRANCH"
-     git -c core.hooksPath=/dev/null clone --quiet --template= \
-       --branch "$BOOTSTRAP_BRANCH" "$BOOTSTRAP_BUNDLE" "$INSTALL_DIR"
-     test "$(git -C "$INSTALL_DIR" rev-parse HEAD)" = "$BOOTSTRAP_HEAD"
-     test "$(git -C "$INSTALL_DIR" symbolic-ref --short HEAD)" = "$BOOTSTRAP_BRANCH"
-     cd "$INSTALL_DIR"
-     python3 -m gdi --version
-     python3 -m gdi agent --help
-   )
-   ```
-
-   Проверка bundle в пустом bare repository отклонит файл с отсутствующими
-   prerequisites; проверка `list-heads` требует ровно согласованный ref/HEAD.
-   Если передана инкрементальная дельта, `git bundle verify` сообщит
-   `Repository lacks these prerequisite commits` и bootstrap остановится до clone
-   и запуска GDI, даже при правильном SHA256. Сообщите владельцу, что для bootstrap
-   нужен полный bundle; он может опубликовать его командой `gdi push REMOTE --full`
-   из репозитория утилиты. После получения полного bundle используйте новый пустой
-   каталог проверки. Не пытайтесь вручную догружать bases и обходить отказ.
-   До этих проверок не запускайте код скачанной утилиты. Установка через pip,
-   rclone и Docker для такого запуска не нужны.
-5. Прочитайте `AGENTS.md` и `docs/agent.md` восстановленной копии, затем запускайте
-   команды из `INSTALL_DIR`. Bootstrap завершён: дальнейшую работу с репозиториями
-   и обновление самого инструмента выполняйте командами GDI. Не повторяйте ручное
-   восстановление bundles после появления работоспособной доверенной копии.
-
-## Обновить локальную или mount-копию GDI агента с Google Drive
-
-Просьба «обнови GDI» означает получить опубликованную версию утилиты из её
-GDI-репозитория на Google Drive и использовать её вместо текущей копии агента.
-Направление обмена: **Drive → локальный инструмент агента**. Такая просьба
-не поручает разрабатывать GDI, создавать commits, публиковать локальные исходники
-на Drive, запускать CI или обновлять worker на компьютере пользователя.
-Рабочий репозиторий задачи (`WORK_DIR`) при этом не меняется.
-
-До восстановления новой копии используйте **текущий доверенный GDI**:
-`agent snapshot` определяет нужные bundles, `agent clone` проверяет их и создаёт
-готовую новую копию. Агент скачивает указанные файлы коннектором, а не собирает
-bundles или репозиторий вручную.
-
-1. Определите текущий `INSTALL_DIR`, откуда агент запускает `python3 -m gdi`.
-   Получите папку/Drive ID репозитория **самой утилиты GDI**, его доверенный
-   Repository ID и нужную ветку из уже известных настроек или сообщения владельца.
-   Это отдельные параметры: не подставляйте Repository ID, папку или ветку рабочего
-   проекта. Если источник или ветка неизвестны, уточните только недостающие данные.
-   Запишите текущий HEAD, если у локальной копии есть git metadata.
-
-   ```bash
-   GDI_CURRENT_DIR="$INSTALL_DIR"
-   GDI_REPOSITORY_ID="доверенный_repository_id_репозитория_утилиты"
-   GDI_BRANCH="ветка_утилиты_указанная_владельцем"
-   GDI_UPDATE_DIR="/путь/к/обмену/для/этого/обновления"
-   NEW_GDI_DIR="/путь/к/новой/копии/gdi"
-   ```
-
-   `GDI_UPDATE_DIR` должен находиться вне tracked файлов обоих репозиториев,
-   а `NEW_GDI_DIR` — быть доступным для записи и ещё не существовать.
-   `REPOSITORY_ID` и `WORK_DIR` рабочего проекта сохраните без изменений.
-
-2. Коннектором скачайте свежие `repository.json` и все manifests выбранной ветки
-   репозитория утилиты. Получите полные listings его корня, `branches` и каталога
-   ветки. Соберите `$GDI_UPDATE_DIR/source/snapshot.json` по разделу
-   «Снимок коннектора» ниже, с `ref: refs/heads/<GDI_BRANCH>` и реальными Drive IDs
-   именно этого репозитория. Текущая доверенная копия GDI проверяет снимок:
-
-   ```bash
-   cd "$INSTALL_DIR"
-   python3 -m gdi agent snapshot \
-     --snapshot "$GDI_UPDATE_DIR/source/snapshot.json" \
-     --repository-id "$GDI_REPOSITORY_ID" > "$GDI_UPDATE_DIR/source-plan.json"
-   ```
-
-   Продолжайте только после успешной команды. Из ответа сохраните `head`, `ref`,
-   `publication_id` и `required_bundles`. Цель обновления — опубликованный tip
-   указанной ветки. Если текущий HEAD уже равен этому `head` и worktree чист,
-   сообщите, что копия актуальна. Номер версии пакета может совпадать у разных
-   commits; сравнивайте SHA. Локальные изменения сохраните в прежней копии,
-   а опубликованную версию восстановите отдельно.
-
-3. Скачайте коннектором bundles из `required_bundles`, добавьте полный listing
-   `bundles` и downloads в тот же снимок. Сохраните точные bytes metadata и bundles.
-   Не выбирайте один произвольный bundle: GDI определяет checkpoint и нужные дельты.
-   Восстановите опубликованную версию в отдельный каталог текущей копией инструмента:
-
-   ```bash
-   python3 -m gdi agent clone \
-     --snapshot "$GDI_UPDATE_DIR/source/snapshot.json" \
-     --repository-id "$GDI_REPOSITORY_ID" --destination "$NEW_GDI_DIR" \
-     > "$GDI_UPDATE_DIR/clone-result.json"
-   git -C "$NEW_GDI_DIR" rev-parse HEAD
-   git -C "$NEW_GDI_DIR" symbolic-ref --short HEAD
-   ```
-
-   Продолжайте только после успешного clone. Сверьте его HEAD/ветку и ответ clone
-   с `head`/`ref`/`publication_id` проверенного снимка. Clone проверяет repository ID,
-   SHA256, цепочку публикаций и git objects до создания готового каталога. Если
-   известен прежний HEAD, проверьте в новом clone, что он является предком целевого
-   HEAD (`git merge-base --is-ancestor`). При расхождении или отсутствии старого
-   commit сохраните обе копии и уточните источник/ветку перед переключением.
-   Если старая копия не понимает опубликованный протокол, используйте процедуру
-   «Первое получение самих исходников GDI», а не обходите проверки.
-
-4. Прочитайте инструкции и обновлённый `docs/agent.md` из нового clone. Переключите
-   путь запуска агента на проверенную копию:
-
-   ```bash
-   INSTALL_DIR="$NEW_GDI_DIR"
-   cd "$INSTALL_DIR"
-   python3 -m gdi --version
-   python3 -m gdi agent --help
-   python3 -c 'import gdi; print(gdi.__file__)'
-   ```
-
-   Путь `gdi.__file__` должен указывать на новую копию. Используйте этот `INSTALL_DIR`
-   во всех следующих вызовах; запуск по прежнему mount-пути оставит старый код.
-   Для read-only mount достаточно переключить путь на новый доступный clone:
-   не пытайтесь перезаписать или удалить точку монтирования. Старую копию сохраните.
-
-   `agent clone` требует отсутствующий каталог назначения и не обновляет существующий
-   mount-путь на месте. Используйте восстановленный GDI и переключение `INSTALL_DIR`,
-   а не ручной импорт bundles или принудительную замену файлов старой копии.
-
-5. Сообщите источник на Drive, Repository ID утилиты, ветку, прежний HEAD (если
-   известен), полученный HEAD/Publication ID, фактический `INSTALL_DIR` и результат
-   проверки запуска. Обновление завершено, когда следующие команды агента используют
-   скачанную версию. Получение нового clone без переключения используемого пути
-   не означает, что инструмент агента обновлён.
+Если runtime недоступен или проверка повторно не проходит, сообщите конкретную
+ошибку доставки/проверки и сохраните прежнюю рабочую копию. Не заменяйте обновление
+инструмента самостоятельным аудитом или сборкой исходников.
 
 ## Снимок коннектора
 
@@ -462,7 +323,7 @@ snapshot.json; запрещены абсолютные пути, `..`, symlinks 
 не являются доказательством независимого доступа GDI к Drive.
 
 ```bash
-python3 -m gdi agent snapshot \
+python3 "$GDI_RUNTIME" agent snapshot \
   --snapshot "$EXCHANGE_DIR/before/snapshot.json" --repository-id "$REPOSITORY_ID"
 ```
 
@@ -478,7 +339,7 @@ Repository ID задавайте из сообщения пользовател�
 и их downloads в снимок. GDI восстанавливает tip выбранной ветки в новый каталог:
 
 ```bash
-python3 -m gdi agent clone --snapshot "$EXCHANGE_DIR/source/snapshot.json" \
+python3 "$GDI_RUNTIME" agent clone --snapshot "$EXCHANGE_DIR/source/snapshot.json" \
   --repository-id "$REPOSITORY_ID" --destination "$WORK_DIR"
 ```
 
@@ -492,7 +353,7 @@ work-ветку по следующему разделу. Автоматичес
 
 ## Отдельная work-ветка и checkpoints разработки
 
-Для новых work-команд используйте обновлённый runtime/исходники GDI. Активацию
+Для новых work-команд используйте обновлённый runtime GDI. Активацию
 work lifecycle в существующем remote выполняет оператор после обновления всех
 клиентов/worker; новые remote через `remote create` уже имеют `work_version=1`;
 агент не меняет repository.json самостоятельно. При `work_version:1` новый snapshot
@@ -515,7 +376,7 @@ retirement record выбранного Work-ID, если он есть. На с�
 **offline интерфейс агента**, без rclone и настройки `.gdi` remote:
 
 ```bash
-python3 -m gdi agent work start "$WORK_ID" --repo "$WORK_DIR" \
+python3 "$GDI_RUNTIME" agent work start "$WORK_ID" --repo "$WORK_DIR" \
   --snapshot "$EXCHANGE_DIR/assigned-target/snapshot.json" \
   --repository-id "$REPOSITORY_ID"
 ```
@@ -533,7 +394,7 @@ GitHub push, изменение firmware, запуск CI/аппаратуры �
 Затем создайте checkpoint:
 
 ```bash
-python3 -m gdi agent work checkpoint --repo "$WORK_DIR" \
+python3 "$GDI_RUNTIME" agent work checkpoint --repo "$WORK_DIR" \
   --repository-id "$REPOSITORY_ID" -m 'feat: описание результата' \
   --body-file "$EXCHANGE_DIR/checkpoint-message.txt"
 ```
@@ -557,7 +418,7 @@ bundle ещё не подтверждают сохранность: нужен �
 work-ветки и восстановите **её**, а не исходную target. Проверить контекст можно так:
 
 ```bash
-python3 -m gdi agent work status --repo "$WORK_DIR" \
+python3 "$GDI_RUNTIME" agent work status --repo "$WORK_DIR" \
   --repository-id "$REPOSITORY_ID"
 ```
 
@@ -582,7 +443,7 @@ ID. Оператор использует `gdi import` в target; агент н�
 2. Подготовьте публикацию:
 
    ```bash
-   python3 -m gdi agent prepare --repo "$WORK_DIR" \
+   python3 "$GDI_RUNTIME" agent prepare --repo "$WORK_DIR" \
      --snapshot "$EXCHANGE_DIR/before/snapshot.json" --repository-id "$REPOSITORY_ID" \
      --output "$EXCHANGE_DIR/publication-plan"
    ```
@@ -606,7 +467,7 @@ ID. Оператор использует `gdi import` в target; агент н�
    listing `bundles` и downloaded bundle. Выполните:
 
    ```bash
-   python3 -m gdi agent check --plan "$EXCHANGE_DIR/publication-plan" \
+   python3 "$GDI_RUNTIME" agent check --plan "$EXCHANGE_DIR/publication-plan" \
      --snapshot "$EXCHANGE_DIR/after-bundle/snapshot.json" --repository-id "$REPOSITORY_ID"
    ```
 
@@ -618,7 +479,7 @@ ID. Оператор использует `gdi import` в target; агент н�
    и проверенный bundle вместе со свежими listings:
 
    ```bash
-   python3 -m gdi agent accept --plan "$EXCHANGE_DIR/publication-plan" \
+   python3 "$GDI_RUNTIME" agent accept --plan "$EXCHANGE_DIR/publication-plan" \
      --snapshot "$EXCHANGE_DIR/after-manifest/snapshot.json" --repository-id "$REPOSITORY_ID"
    ```
 
@@ -718,10 +579,10 @@ Drive-коннектор полный свежий снимок общей `ci/w
 точный формат и правила полноты описаны в [scheduling.md](scheduling.md#агент-через-drive-коннектор).
 
 ```bash
-python3 -m gdi agent ci workers --repo "$WORK_DIR" \
+python3 "$GDI_RUNTIME" agent ci workers --repo "$WORK_DIR" \
   --snapshot "$EXCHANGE_DIR/published/snapshot.json" --repository-id "$REPOSITORY_ID" \
   --workers "$EXCHANGE_DIR/workers.json"
-python3 -m gdi agent ci prepare --repo "$WORK_DIR" \
+python3 "$GDI_RUNTIME" agent ci prepare --repo "$WORK_DIR" \
   --snapshot "$EXCHANGE_DIR/published/snapshot.json" --repository-id "$REPOSITORY_ID" \
   --publication PUBLICATION_ID --profile full \
   --workers "$EXCHANGE_DIR/workers.json" --output "$EXCHANGE_DIR/ci-plan"
@@ -777,7 +638,7 @@ WORKER_ID="фактический_worker_id_из_config_CI_host"
 скачивание неизменившегося файла прежнего worker не делает его окружение актуальным.
 
 ```bash
-python3 -m gdi agent ci prepare --repo "$WORK_DIR" \
+python3 "$GDI_RUNTIME" agent ci prepare --repo "$WORK_DIR" \
   --snapshot "$EXCHANGE_DIR/published/snapshot.json" --repository-id "$REPOSITORY_ID" \
   --publication PUBLICATION_ID --worker "$WORKER_ID" --profile full \
   --capabilities "$EXCHANGE_DIR/capabilities.json" \
@@ -824,7 +685,7 @@ worker с другим ID не перенаправляет существующ
    listings `ci`, `ci/jobs`, `ci/jobs/JOB_ID` и downloads request/ready.
 
    ```bash
-   python3 -m gdi agent ci check --repo "$WORK_DIR" --plan "$EXCHANGE_DIR/ci-plan" \
+   python3 "$GDI_RUNTIME" agent ci check --repo "$WORK_DIR" --plan "$EXCHANGE_DIR/ci-plan" \
      --snapshot "$EXCHANGE_DIR/ready/snapshot.json" --repository-id "$REPOSITORY_ID" \
      --capabilities "$EXCHANGE_DIR/capabilities.json"
    ```
@@ -848,7 +709,7 @@ worker с другим ID не перенаправляет существующ
    Имена/bytes замените фактическими; pages сохраняются по тем же правилам.
 
    ```bash
-   python3 -m gdi agent ci accept --repo "$WORK_DIR" --plan "$EXCHANGE_DIR/ci-plan" \
+   python3 "$GDI_RUNTIME" agent ci accept --repo "$WORK_DIR" --plan "$EXCHANGE_DIR/ci-plan" \
      --snapshot "$EXCHANGE_DIR/ready/snapshot.json" --repository-id "$REPOSITORY_ID" \
      --capabilities "$EXCHANGE_DIR/capabilities.json" --inbox-proof "$EXCHANGE_DIR/inbox-proof.json"
    ```
@@ -873,7 +734,7 @@ request/ready и скачайте capabilities исходного worker из о
 проверенный terminal result не отменяется задним числом.
 
 ```bash
-python3 -m gdi agent ci cancel --repo "$WORK_DIR" \
+python3 "$GDI_RUNTIME" agent ci cancel --repo "$WORK_DIR" \
   --snapshot "$EXCHANGE_DIR/before-cancel/snapshot.json" --repository-id "$REPOSITORY_ID" \
   --job OLD_JOB_ID --capabilities "$EXCHANGE_DIR/old-worker-capabilities.json" \
   --output "$EXCHANGE_DIR/cancel-plan"
@@ -888,7 +749,7 @@ python3 -m gdi agent ci cancel --repo "$WORK_DIR" \
 Скачайте файл обратно и включите его в свежий полный снимок с исходным запросом:
 
 ```bash
-python3 -m gdi agent ci cancel-check --repo "$WORK_DIR" \
+python3 "$GDI_RUNTIME" agent ci cancel-check --repo "$WORK_DIR" \
   --plan "$EXCHANGE_DIR/cancel-plan" \
   --snapshot "$EXCHANGE_DIR/cancel-proof/snapshot.json" --repository-id "$REPOSITORY_ID"
 ```
@@ -906,7 +767,7 @@ python3 -m gdi agent ci cancel-check --repo "$WORK_DIR" \
 с profile full и selector по умолчанию подготовьте отдельный план:
 
 ```bash
-python3 -m gdi agent ci prepare --repo "$WORK_DIR" \
+python3 "$GDI_RUNTIME" agent ci prepare --repo "$WORK_DIR" \
   --snapshot "$EXCHANGE_DIR/cancel-proof/snapshot.json" --repository-id "$REPOSITORY_ID" \
   --publication PUBLICATION_ID --worker "$WORKER_ID" --profile full \
   --capabilities "$EXCHANGE_DIR/capabilities.json" --retry-of OLD_JOB_ID \
@@ -964,7 +825,7 @@ artifacts. Chunks и отдельные файлы лога/artifacts скачи
 их не создают. Наличие cancelled/ само по себе не доказывает завершение отмены.
 
 ```bash
-python3 -m gdi agent ci result --repo "$WORK_DIR" --plan "$EXCHANGE_DIR/ci-plan" \
+python3 "$GDI_RUNTIME" agent ci result --repo "$WORK_DIR" --plan "$EXCHANGE_DIR/ci-plan" \
   --snapshot "$EXCHANGE_DIR/result/snapshot.json" --repository-id "$REPOSITORY_ID"
 ```
 
@@ -1116,14 +977,13 @@ download: GDI покажет `heartbeat.state: missing`. Это допустим
 
 ```bash
 HEARTBEAT_SNAPSHOT="$EXCHANGE_DIR/heartbeat-001/snapshot.json"
-python3 -m gdi agent ci result --repo "$WORK_DIR" --plan "$CI_PLAN" \
+python3 "$GDI_RUNTIME" agent ci result --repo "$WORK_DIR" --plan "$CI_PLAN" \
   --snapshot "$HEARTBEAT_SNAPSHOT" --repository-id "$REPOSITORY_ID" \
   --heartbeat-timeout 600 > "$EXCHANGE_DIR/heartbeat-001/ci-observation.json"
 cat "$EXCHANGE_DIR/heartbeat-001/ci-observation.json"
 ```
 
-Для готового runtime используйте `python3 "$GDI_RUNTIME" agent ci result` с
-теми же аргументами. Команда проверяет identity проекта, публикации, плана,
+Команда проверяет identity проекта, публикации, плана,
 request/ready и соответствие скачанного status своей задаче. Не объявляйте
 наблюдение успешным при `kind: GDI_ERROR`: исправьте указанный снимок/передачу,
 не подменяя проверки ручным разбором JSON.

@@ -23,8 +23,8 @@ Work checkpoints и операторский squash import, с текущими 
 [docs/work.md](work.md).
 Профилирование времени команд и журнал всех вызовов rclone: [docs/profiling.md](profiling.md).
 
-Агент с Drive-коннектором запускает `python3 -m gdi agent ...` из исходников
-без rclone и сторонних Python-пакетов: [docs/agent.md](agent.md).
+Агент с Drive-коннектором получает и обновляет готовый gdi.pyz из папки runtime/
+на Drive, запускает `python3 /путь/gdi.pyz agent ...` без rclone и Python-пакетов: [docs/agent.md](agent.md).
 
 На Linux CLI и worker используют временные процессы native rclone RC с ограничением
 жизни операцией, свежей проверкой repository ID и остановкой при гибели родителя.
