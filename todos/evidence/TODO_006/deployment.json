@@ -1,0 +1,39 @@
+{
+  "github": {
+    "branch": "dev",
+    "published_source_commit": "7b47d820027acdd06a4a9017159c5ef3f4967448",
+    "remote": "origin"
+  },
+  "runtime": {
+    "bytes": 148660,
+    "directory": "gdrive:gdi/gdi/runtime/",
+    "files": [
+      "gdi.pyz",
+      "runtime.json",
+      "gdi.pyz.sha256",
+      "agent.md"
+    ],
+    "isolated_offline_ci_result": {
+      "state": "PASS",
+      "verified": true
+    },
+    "readback_all_bytes_match": true,
+    "sha256": "e23264c1f5d875ee3b57a6e6333e77c6635aeb84cc7bdba01f8dbed3d077ceaa"
+  },
+  "scope": "Local editable CLI, local user-dream service, published shared runtime/agent.md; other hosts and already-running agent containers are not remotely controlled.",
+  "source_commit": "7b47d820027acdd06a4a9017159c5ef3f4967448",
+  "source_gdi_publication": "478a3b1977d35871f4a7004eb5ab66e82192ec94009346b95fa1209288395f18",
+  "source_ref": "refs/heads/dev",
+  "worker": {
+    "active_enter_timestamp": "2026-10-25 20:03:54 MSK",
+    "active_state": "active",
+    "drive_capabilities": {
+      "ci_version": 1,
+      "result_delivery_version": 1
+    },
+    "exec_main_status": 0,
+    "main_pid": 380402,
+    "sub_state": "running",
+    "worker_id": "user-dream"
+  }
+}

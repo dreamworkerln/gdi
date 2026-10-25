@@ -1,6 +1,6 @@
 # TODO_006 — Пакет результата CI без log chunks
 
-Status: IMPLEMENTED; software validation PASS, обновление окружения выполняется.
+Status: CLOSED; software validation и запрошенное обновление выполнены.
 Implementation: DONE.
 Validation: PASS — bash test.sh, 446 tests: 441 PASS, 5 opt-in SKIP.
 Оператор отдельно разрешил тесты перед обновлением.
@@ -91,6 +91,34 @@ init: второй git.snapshot сам обновлял .git/index перед п
 сначала сравнивает защищённые bytes после init, затем проверяет Git snapshot;
 производственный код init не изменён.
 
-Обновление окружения и публикация ещё не выполнены. Установленный CLI — editable
-из этого checkout; systemd user worker использует тот же venv, нужен явный restart
-после успешных проверок. Runtime/agent.md собираются из committed чистого дерева.
+## Публикация и обновление — выполнено
+
+Оператор отдельно подтвердил публикацию проверенного commit на Drive, замену
+runtime/agent.md и restart user-dream; затем явно поручил GitHub push.
+Исходный commit: `7b47d820027acdd06a4a9017159c5ef3f4967448`, опубликован в GitHub
+origin/dev и GDI dev. Полная GDI publication:
+`478a3b1977d35871f4a7004eb5ab66e82192ec94009346b95fa1209288395f18`.
+
+`python3 scripts/deploy.py`: сборка/smoke, full GDI publication, upload всех четырёх
+runtime files и обратное сравнение bytes — PASS. Корневой deploy.sh не запускался;
+GitHub push выполнен отдельно по прямому запросу оператора.
+Runtime HEAD совпадает с исходным commit, 148660 bytes, SHA256:
+`e23264c1f5d875ee3b57a6e6333e77c6635aeb84cc7bdba01f8dbed3d077ceaa`.
+Папка: `gdrive:gdi/gdi/runtime/`; обновлены gdi.pyz/runtime.json/gdi.pyz.sha256/agent.md.
+Дополнительный isolated zipapp smoke вызвал agent ci result из вне source tree
+на полном offline-пакете: PASS, verified:true, точные bytes build.log совпали.
+Сырой итог: [runtime-smoke.txt](evidence/TODO_006/runtime-smoke.txt).
+
+Локальный CLI — editable из этого checkout, default checkpoint-every=5 подтверждён
+справкой. Перед restart ledger user-dream не содержал pending jobs. После
+`gdi worker restart`: active/running, ExecMainStatus=0, MainPID=380402,
+ActiveEnterTimestamp=2026-10-25 20:03:54 MSK. Свежий read Drive capabilities
+подтвердил worker_id=user-dream и result_delivery_version=1.
+[Deployment record](evidence/TODO_006/deployment.json).
+
+Другие hosts и уже работающие контейнеры агентов дистанционно не управляются
+из этой сессии; агентам перед новым CI нужно получить опубликованный runtime
+и актуальную agent.md. Исторические данные/remote IDs сохранены, remote migration
+и пользовательские CI/hardware runs не выполнялись. Замер реального выигрыша
+через пользовательский Drive-коннектор остаётся последующим наблюдением,
+а не заявленным результатом этих software checks.

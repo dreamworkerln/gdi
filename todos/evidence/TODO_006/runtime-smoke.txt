@@ -1,0 +1,1 @@
+{"check": "isolated zipapp agent ci result, one offline package", "runtime_head": "7b47d820027acdd06a4a9017159c5ef3f4967448", "state": "PASS", "verified": true}
