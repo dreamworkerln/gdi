@@ -1,0 +1,22 @@
+diff --git a/gdi/__init__.py b/gdi/__init__.py
+index a33ec06..d4364df 100644
+--- a/gdi/__init__.py
++++ b/gdi/__init__.py
+@@ -1,3 +1,3 @@
+ """Git bundle exchange over rclone."""
+ 
+-__version__ = "0.4.0"
++__version__ = "0.5.0"
+diff --git a/pyproject.toml b/pyproject.toml
+index 689a74e..6a40680 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
+ 
+ [project]
+ name = "gdi"
+-version = "0.4.0"
++version = "0.5.0"
+ description = "Verified Git exchange and autonomous host CI over rclone"
+ readme = "README.md"
+ requires-python = ">=3.10"

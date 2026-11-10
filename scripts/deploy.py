@@ -109,7 +109,8 @@ def main(argv=None):
             verification = Path(temporary)
             stage = 'runtime smoke checks'
             smoke_environment = {**process_environment, 'XDG_CONFIG_HOME': str(verification / 'config')}
-            for arguments in (('--help',), ('--version',), ('agent', 'snapshot', '--help'), ('agent', 'clone', '--help')):
+            for arguments in (('--help',), ('--version',), ('agent', 'snapshot-build', '--help'),
+                              ('agent', 'snapshot', '--help'), ('agent', 'clone', '--help')):
                 subprocess.run([sys.executable, '-I', str(output / 'gdi.pyz'), *arguments],
                                cwd=verification, env=smoke_environment, stdout=subprocess.DEVNULL, check=True)
             if args.build_only:

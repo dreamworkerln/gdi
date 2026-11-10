@@ -1,0 +1,14 @@
+{
+  "base_source_checkpoint": "source-checkpoint.json",
+  "checks": [
+    "AST source version equals TOML package version and actual CLI output",
+    "Only gdi/__init__.py and pyproject.toml changed against the full-run source manifest",
+    "git diff --check"
+  ],
+  "cli_version": "gdi 0.5.0",
+  "full_suite_repeated": false,
+  "package_version": "0.5.0",
+  "published": false,
+  "version": "0.5.0",
+  "version_patch_sha256": "2959ed5b0882ed96154186511de427bf5cddc7ea9ae0f99c712491a51811f20e"
+}

@@ -55,7 +55,7 @@ SHA256, неизменяемые файлы публикаций и `verified: t
 
 ## С чего начать
 
-Текущая версия — **0.4.0, pre-alpha**. Нужны Linux, Python 3.10+ и Git.
+Текущая версия — **0.5.0, pre-alpha**. Нужны Linux, Python 3.10+ и Git.
 Сторонних Python-библиотек во время работы нет. На компьютере владельца нужен
 настроенный rclone; для CI дополнительно нужны act и Docker. Агент получает
 и обновляет готовый `gdi.pyz` из папки runtime/ на Drive без установки пакетов и rclone.
@@ -99,11 +99,41 @@ gdi pull drive --passed --job JOB_ID --profile full
 в [docs/work.md](docs/work.md). PASS исходного checkpoint не становится
 автоматически PASS нового squash-коммита.
 
+## Консоль CI на машине worker
+
+Из любой директории на машине worker можно посмотреть лог последней запущенной
+CI-задачи — вывод GitHub Actions, выполняемых через act:
+
+```bash
+gdi worker job logs --follow
+```
+
+Команда показывает последние 10 строк и затем новые строки до завершения выбранной
+задачи. Во время просмотра она не переключается на другие задачи. Лог читается
+локально и сейчас выводится в формате JSON-записей act.
+
+Параметр `-n N` задаёт число последних строк для вывода. Например, показать
+последние 100 строк и следить за продолжением:
+
+```bash
+gdi worker job logs -n 100 --follow
+```
+
+Без `--follow` команда выводит выбранные строки и завершается:
+
+```bash
+gdi worker job logs -n 100
+```
+
+`-n 0 --follow` позволяет следить только за новыми строками. Журнал самой службы
+worker доступен отдельно через `gdi worker logs --follow`.
+
 ## Документация
 
 - [INSTALL.md](INSTALL.md) — установка, Google OAuth, rclone и первый запуск worker.
 - [QUICKSTART.md](QUICKSTART.md) — повседневные команды для человека.
 - [docs/agent.md](docs/agent.md) — канонический workflow агента с Drive-коннектором.
+- [docs/snapshot-builder.md](docs/snapshot-builder.md) — сборка агентского snapshot из ответов коннектора и отказы адаптера.
 - [docs/cli.md](docs/cli.md) — подробный справочник CLI, алиасы, обмен и публикация GDI.
 - [docs/ci.md](docs/ci.md) — отправка на CI, наблюдение, отмена и получение PASS через CLI.
 - [docs/worker.md](docs/worker.md) — настройка и обслуживание постоянного worker.
@@ -126,4 +156,4 @@ shallow/partial clones, публикация submodules и LFS pointers не п�
 SHA256 не подтверждает авторство. Папка Drive и исполняемые workflows должны быть
 доверенными: worker запускает код проекта с доступом к Docker Engine.
 
-Лицензия: [GPLv3](LICENSE). Текстовая версия этого введения: [README.txt](README.txt).
+Лицензия: [GPLv3](LICENSE).

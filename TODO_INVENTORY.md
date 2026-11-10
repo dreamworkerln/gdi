@@ -18,6 +18,7 @@
 | [TODO_005](todos/TODO_005_REPOSITORY_CLI.md) | Обычные init/clone/remote create | CLOSED; GDI 0.4.0, init/clone/remote create; BASE b5886b0 + source patch/evidence в задаче, 127 targeted PASS и полный discovery 429 PASS / 5 opt-in SKIP |
 | [TODO_006](todos/TODO_006_CI_RESULT_PACKAGE.md) | Один пакет результата CI, без log chunks | CLOSED; 7b47d82, один пакет без новых chunks; test.sh: 441 PASS / 5 opt-in SKIP; GitHub/GDI/runtime опубликованы, user-dream перезапущен и объявляет delivery v1 |
 | [TODO_007](todos/TODO_007_CI_SINGLE_SUBMISSION.md) | Один самодостаточный запрос CI в inbox | CLOSED; 3b5e7af, один inbox-файл; test.sh: 455 PASS / 5 opt-in SKIP; GitHub/GDI/runtime опубликованы, user-dream обновлён и объявляет submission v1 |
+| [TODO_008](todos/TODO_008_AGENT_SNAPSHOT_BUILDER.md) | Сборщик агентского snapshot и точный отчёт проверок | IMPLEMENTED; 0.5.0 локально; software validation: 32 targeted, test.sh до version bump 473 PASS / 3 opt-in service SKIP; version parity PASS; публикация отложена оператором |
 
 ## Следующие действия
 
@@ -29,6 +30,6 @@
 2. Остальные открытые темы TODO_001–003 сохранены; их исполнительный приоритет
    оператор пока не назначил. После выбора обновить порядок здесь.
 
-Следующий новый тематический ID: **TODO_008**. Work-ID и CI job ID имеют отдельные
+Следующий новый тематический ID: **TODO_009**. Work-ID и CI job ID имеют отдельные
 пространства имён. Исторические сведения о миграции и прежних публикациях сохранены
 в тематических задачах; они не означают проверки или активации текущих remote.

@@ -95,10 +95,35 @@ class DeployTests(unittest.TestCase):
                                  for name in archive.namelist()))
         self.deploy('--build-only')
         self.assertEqual((self.output / 'gdi.pyz').read_bytes(), data)
+        from gdi.publication import encode
+        from tests.snapshot_captures import capture_snapshot
+        transport = MemoryTransport()
+        transport.mkdir('branches')
+        transport.mkdir('bundles')
+        identity = 'a' * 32
+        transport.data['repository.json'] = encode({'version': 3, 'repository_id': identity,
+                                                     'object_format': 'sha1'})
+        capture = capture_snapshot(self.root / 'connector-capture', transport)
         shutil.rmtree(self.repo)
         self.env['PYTHONPATH'] = '/no/such/source'
-        for args in (('--help',), ('--version',), ('agent', 'snapshot', '--help'), ('agent', 'clone', '--help')):
+        for args in (('--help',), ('--version',), ('agent', 'snapshot-build', '--help'),
+                     ('agent', 'snapshot', '--help'), ('agent', 'clone', '--help')):
             self.run_command([sys.executable, '-I', str(self.output / 'gdi.pyz'), *args], cwd=self.root)
+
+        assembled = capture.parent / 'assembled.json'
+        result = self.run_command([sys.executable, '-I', str(self.output / 'gdi.pyz'), 'agent', 'snapshot-build',
+                                   '--capture', str(capture), '--repository-id', identity,
+                                   '--output', str(assembled)], cwd=self.root)
+        self.assertEqual(json.loads(result.stdout)['validation']['manifests_validated'], 0)
+        value = json.loads(capture.read_text())
+        value['adapter'] = 'unsupported-future-connector'
+        capture.write_text(json.dumps(value))
+        result = self.run_command([sys.executable, '-I', str(self.output / 'gdi.pyz'), 'agent', 'snapshot-build',
+                                   '--capture', str(capture), '--repository-id', identity,
+                                   '--output', str(capture.parent / 'failed.json')], cwd=self.root, expected=1)
+        self.assertEqual(json.loads(result.stdout)['kind'], 'SNAPSHOT_BUILD_ERROR')
+        self.assertTrue(assembled.is_file())
+        self.assertFalse((capture.parent / 'failed.json').exists())
 
     def test_build_only_without_rclone_uses_default_output_from_another_directory(self):
         tools = self.root / 'tools'

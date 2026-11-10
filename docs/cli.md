@@ -1,4 +1,4 @@
-# Справочник CLI и эксплуатации gdi 0.4.0 (pre-alpha)
+# Справочник CLI и эксплуатации gdi 0.5.0 (pre-alpha)
 
 Введение в проект: [README.md](../README.md). Команды ниже выполняются из корня
 репозитория, если не указан другой каталог.
@@ -377,3 +377,13 @@ worker образы из `platforms` должны быть загружены ч
 разрешённом окружении; тесты rclone local не подменяют её.
 
 Лицензия: [GPLv3](../LICENSE).
+
+
+## Агентский сборщик snapshot
+
+`gdi agent snapshot-build --capture CAPTURE --repository-id ID --output SNAPSHOT`
+создаёт новый snapshot v1 из сохранённых ответов коннектора. Команда offline,
+не меняет Drive и не перезаписывает output. Она возвращает проверенную metadata
+сводку либо структурированный `SNAPSHOT_BUILD_ERROR`. Capture schema, ограничения
+поддерживаемого адаптера и действия агента при отказе описаны в
+[snapshot-builder.md](snapshot-builder.md). Операторским командам сборщик не нужен.

@@ -1,0 +1,37 @@
+test_cli_success_and_actionable_structured_failure (tests.test_snapshot_builder.SnapshotBuilderTests) ... ok
+test_duplicate_ids_names_and_unrelated_parents_are_refused (tests.test_snapshot_builder.SnapshotBuilderTests) ... ok
+test_empty_repository_assembled_without_rclone_or_connector_calls (tests.test_snapshot_builder.SnapshotBuilderTests) ... ok
+test_existing_branch_full_and_delta_clone_from_assembled_snapshot (tests.test_snapshot_builder.SnapshotBuilderTests) ... ok
+test_failure_after_validation_cannot_truncate_existing_snapshot (tests.test_snapshot_builder.SnapshotBuilderTests) ... ok
+test_id_url_typo_and_download_metadata_mismatch_are_refused (tests.test_snapshot_builder.SnapshotBuilderTests) ... ok
+test_metadata_only_snapshot_reports_required_bundles_as_not_downloaded (tests.test_snapshot_builder.SnapshotBuilderTests) ... ok
+test_missing_listing_or_manifest_is_refused (tests.test_snapshot_builder.SnapshotBuilderTests) ... ok
+test_missing_size_bool_or_negative_sizes_do_not_become_zero (tests.test_snapshot_builder.SnapshotBuilderTests) ... ok
+test_output_and_inputs_cannot_be_overwritten_and_symlinks_are_refused (tests.test_snapshot_builder.SnapshotBuilderTests) ... ok
+test_tool_error_is_not_exposed_or_interpreted_as_empty (tests.test_snapshot_builder.SnapshotBuilderTests) ... ok
+test_truncated_paginated_or_at_limit_responses_are_refused (tests.test_snapshot_builder.SnapshotBuilderTests) ... ok
+test_unchanged_structured_data_is_supported_and_extra_fields_are_ignored (tests.test_snapshot_builder.SnapshotBuilderTests) ... ok
+test_unknown_adapter_capture_or_response_formats_stop (tests.test_snapshot_builder.SnapshotBuilderTests) ... ok
+test_unknown_listing_envelope_and_changed_pagination_types_fail_closed (tests.test_snapshot_builder.SnapshotBuilderTests) ... ok
+test_wrong_repository_identity_preserves_capture_and_no_output (tests.test_snapshot_builder.SnapshotBuilderTests) ... ok
+test_already_published_requires_no_new_upload_and_changed_head_requires_new_plan (tests.test_agent.AgentTests) ... ok
+test_changed_identity_concurrent_publication_and_mismatched_ref (tests.test_agent.AgentTests) ... ok
+test_checkpoint_cadence_forced_full_and_existing_full_plan_retry (tests.test_agent.AgentTests) ... ok
+test_cli_is_json_and_can_run_from_source_against_another_repo (tests.test_agent.AgentTests) ... ok
+test_download_corruption_and_missing_manifest_do_not_advance_plan (tests.test_agent.AgentTests) ... ok
+test_extra_objects_in_local_base_cannot_hide_an_incomplete_delta (tests.test_agent.AgentTests) ... ok
+test_incomplete_preparation_is_not_replaced_and_failed_fsync_grants_no_permission (tests.test_agent.AgentTests) ... ok
+test_incremental_base_damage_and_wrong_base_do_not_grant_permission (tests.test_agent.AgentTests) ... ok
+test_initial_empty_chain_and_clone_full_and_incremental (tests.test_agent.AgentTests) ... ok
+test_lost_local_plan_rename_ack_reuses_same_nonce_and_bytes (tests.test_agent.AgentTests) ... ok
+test_metadata_hash_tamper_symlink_download_and_saved_artifact_tamper (tests.test_agent.AgentTests) ... ok
+test_pages_duplicates_missing_download_and_path_escape (tests.test_agent.AgentTests) ... ok
+test_prepare_retry_check_accept_and_native_pull_without_rclone (tests.test_agent.AgentTests) ... ok
+test_small_delta_is_self_contained_and_accepted_by_native_pull (tests.test_agent.AgentTests) ... ok
+test_snapshot_reports_the_shared_restore_order_and_source_launch_needs_no_packages (tests.test_agent.AgentTests) ... ok
+test_unicode_percent_branch_and_other_branch_listing_are_supported (tests.test_agent.AgentTests) ... ok
+
+----------------------------------------------------------------------
+Ran 32 tests in 13.789s
+
+OK

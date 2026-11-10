@@ -285,6 +285,12 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             sub.add_argument("--json", action="store_true")
     agent = commands.add_parser('agent', help='offline connector exchange (Python and git only)')
     agent_ops = agent.add_subparsers(dest='operation', required=True)
+    builder = agent_ops.add_parser('snapshot-build', help='assemble snapshot v1 from saved connector captures')
+    diagnostics_arguments(builder)
+    builder.set_defaults(json=True)
+    builder.add_argument('--capture', required=True, help='versioned connector capture JSON; inputs are preserved')
+    builder.add_argument('--output', required=True, help='new snapshot JSON beside the capture; never overwritten')
+    builder.add_argument('--repository-id', required=True, help='trusted identity supplied independently')
     for operation in ('snapshot', 'prepare', 'check', 'accept', 'clone'):
         sub = agent_ops.add_parser(operation)
         diagnostics_arguments(sub)
@@ -444,7 +450,9 @@ def main(argv=None):
         return 130
     except (GdiError, OSError, UnicodeError) as exc:
         if getattr(args, "json", False):
-            emit({"error": str(exc), "kind": "GDI_ERROR"}, True)
+            from .snapshot_builder import SnapshotBuildError
+            emit(exc.result() if isinstance(exc, SnapshotBuildError)
+                 else {"error": str(exc), "kind": "GDI_ERROR"}, True)
         print_error(exc)
         return 1
 
@@ -482,15 +490,13 @@ def execute(args, *, transport_factory=None):
                         body = Path(args.body_file).read_text(encoding='utf-8') if args.body_file else ''
                         value = agent_work.checkpoint(git, args.repository_id, args.message,
                                                       body=body, final=args.final)
+            elif args.operation == 'snapshot-build':
+                from .snapshot_builder import build
+                value = build(args.capture, args.repository_id, args.output)
             elif args.operation == 'snapshot':
                 from .snapshot import Snapshot
-                snapshot = Snapshot(args.snapshot, args.repository_id)
-                value = {'repository_id': snapshot.repository_id, 'repository_path': snapshot.repository_path,
-                         'ref': snapshot.ref, 'publications': len(snapshot.chain),
-                         'publication_id': snapshot.chain[-1][0] if snapshot.chain else None,
-                         'head': snapshot.chain[-1][1]['head'] if snapshot.chain else None,
-                         'required_bundles': snapshot.required_bundles(),
-                         'snapshot_fingerprint': snapshot.fingerprint, 'freshness': 'connector_provided_snapshot'}
+                from .snapshot_builder import summary
+                value = summary(Snapshot(args.snapshot, args.repository_id))
             elif args.operation == 'prepare':
                 git = Git.discover(args.repo)
                 with git.lock():
@@ -803,7 +809,9 @@ def execute(args, *, transport_factory=None):
         return 130
     except (GdiError, OSError, UnicodeError) as exc:
         if getattr(args, "json", False):
-            emit({"error": str(exc), "kind": "GDI_ERROR"}, True)
+            from .snapshot_builder import SnapshotBuildError
+            emit(exc.result() if isinstance(exc, SnapshotBuildError)
+                 else {"error": str(exc), "kind": "GDI_ERROR"}, True)
         print_error(exc)
         return 1
 

@@ -321,4 +321,7 @@ def clone(snapshot_path, expected_id, destination):
             git.call('checkout', '-q', '-b', snapshot.ref[11:], head)
         persist_directory(directory, build)
         return {'repository_id': expected_id, 'ref': snapshot.ref, 'head': snapshot.chain[-1][1]['head'],
-                'publication_id': snapshot.chain[-1][0], 'destination': str(directory)}
+                'publication_id': snapshot.chain[-1][0], 'destination': str(directory),
+                'validation': {'manifests_validated': len(snapshot.chain),
+                               'bundles_verified': len(snapshot.required_bundles()),
+                               'git_objects_verified': True, 'drive_freshness_verified': False}}

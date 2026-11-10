@@ -1,0 +1,651 @@
+diff --git a/gdi/agent.py b/gdi/agent.py
+index 3730cfb..4aab747 100644
+--- a/gdi/agent.py
++++ b/gdi/agent.py
+@@ -321,4 +321,7 @@ def clone(snapshot_path, expected_id, destination):
+             git.call('checkout', '-q', '-b', snapshot.ref[11:], head)
+         persist_directory(directory, build)
+         return {'repository_id': expected_id, 'ref': snapshot.ref, 'head': snapshot.chain[-1][1]['head'],
+-                'publication_id': snapshot.chain[-1][0], 'destination': str(directory)}
++                'publication_id': snapshot.chain[-1][0], 'destination': str(directory),
++                'validation': {'manifests_validated': len(snapshot.chain),
++                               'bundles_verified': len(snapshot.required_bundles()),
++                               'git_objects_verified': True, 'drive_freshness_verified': False}}
+diff --git a/gdi/cli.py b/gdi/cli.py
+index 8f12bfc..8eb4522 100644
+--- a/gdi/cli.py
++++ b/gdi/cli.py
+@@ -285,6 +285,12 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
+             sub.add_argument("--json", action="store_true")
+     agent = commands.add_parser('agent', help='offline connector exchange (Python and git only)')
+     agent_ops = agent.add_subparsers(dest='operation', required=True)
++    builder = agent_ops.add_parser('snapshot-build', help='assemble snapshot v1 from saved connector captures')
++    diagnostics_arguments(builder)
++    builder.set_defaults(json=True)
++    builder.add_argument('--capture', required=True, help='versioned connector capture JSON; inputs are preserved')
++    builder.add_argument('--output', required=True, help='new snapshot JSON beside the capture; never overwritten')
++    builder.add_argument('--repository-id', required=True, help='trusted identity supplied independently')
+     for operation in ('snapshot', 'prepare', 'check', 'accept', 'clone'):
+         sub = agent_ops.add_parser(operation)
+         diagnostics_arguments(sub)
+@@ -444,7 +450,9 @@ def main(argv=None):
+         return 130
+     except (GdiError, OSError, UnicodeError) as exc:
+         if getattr(args, "json", False):
+-            emit({"error": str(exc), "kind": "GDI_ERROR"}, True)
++            from .snapshot_builder import SnapshotBuildError
++            emit(exc.result() if isinstance(exc, SnapshotBuildError)
++                 else {"error": str(exc), "kind": "GDI_ERROR"}, True)
+         print_error(exc)
+         return 1
+ 
+@@ -482,15 +490,13 @@ def execute(args, *, transport_factory=None):
+                         body = Path(args.body_file).read_text(encoding='utf-8') if args.body_file else ''
+                         value = agent_work.checkpoint(git, args.repository_id, args.message,
+                                                       body=body, final=args.final)
++            elif args.operation == 'snapshot-build':
++                from .snapshot_builder import build
++                value = build(args.capture, args.repository_id, args.output)
+             elif args.operation == 'snapshot':
+                 from .snapshot import Snapshot
+-                snapshot = Snapshot(args.snapshot, args.repository_id)
+-                value = {'repository_id': snapshot.repository_id, 'repository_path': snapshot.repository_path,
+-                         'ref': snapshot.ref, 'publications': len(snapshot.chain),
+-                         'publication_id': snapshot.chain[-1][0] if snapshot.chain else None,
+-                         'head': snapshot.chain[-1][1]['head'] if snapshot.chain else None,
+-                         'required_bundles': snapshot.required_bundles(),
+-                         'snapshot_fingerprint': snapshot.fingerprint, 'freshness': 'connector_provided_snapshot'}
++                from .snapshot_builder import summary
++                value = summary(Snapshot(args.snapshot, args.repository_id))
+             elif args.operation == 'prepare':
+                 git = Git.discover(args.repo)
+                 with git.lock():
+@@ -803,7 +809,9 @@ def execute(args, *, transport_factory=None):
+         return 130
+     except (GdiError, OSError, UnicodeError) as exc:
+         if getattr(args, "json", False):
+-            emit({"error": str(exc), "kind": "GDI_ERROR"}, True)
++            from .snapshot_builder import SnapshotBuildError
++            emit(exc.result() if isinstance(exc, SnapshotBuildError)
++                 else {"error": str(exc), "kind": "GDI_ERROR"}, True)
+         print_error(exc)
+         return 1
+ 
+diff --git a/scripts/deploy.py b/scripts/deploy.py
+index f2a8ed8..7d794c4 100755
+--- a/scripts/deploy.py
++++ b/scripts/deploy.py
+@@ -109,7 +109,8 @@ def main(argv=None):
+             verification = Path(temporary)
+             stage = 'runtime smoke checks'
+             smoke_environment = {**process_environment, 'XDG_CONFIG_HOME': str(verification / 'config')}
+-            for arguments in (('--help',), ('--version',), ('agent', 'snapshot', '--help'), ('agent', 'clone', '--help')):
++            for arguments in (('--help',), ('--version',), ('agent', 'snapshot-build', '--help'),
++                              ('agent', 'snapshot', '--help'), ('agent', 'clone', '--help')):
+                 subprocess.run([sys.executable, '-I', str(output / 'gdi.pyz'), *arguments],
+                                cwd=verification, env=smoke_environment, stdout=subprocess.DEVNULL, check=True)
+             if args.build_only:
+diff --git a/tests/test_deploy.py b/tests/test_deploy.py
+index d34a122..e8cf19d 100644
+--- a/tests/test_deploy.py
++++ b/tests/test_deploy.py
+@@ -95,11 +95,36 @@ class DeployTests(unittest.TestCase):
+                                  for name in archive.namelist()))
+         self.deploy('--build-only')
+         self.assertEqual((self.output / 'gdi.pyz').read_bytes(), data)
++        from gdi.publication import encode
++        from tests.snapshot_captures import capture_snapshot
++        transport = MemoryTransport()
++        transport.mkdir('branches')
++        transport.mkdir('bundles')
++        identity = 'a' * 32
++        transport.data['repository.json'] = encode({'version': 3, 'repository_id': identity,
++                                                     'object_format': 'sha1'})
++        capture = capture_snapshot(self.root / 'connector-capture', transport)
+         shutil.rmtree(self.repo)
+         self.env['PYTHONPATH'] = '/no/such/source'
+-        for args in (('--help',), ('--version',), ('agent', 'snapshot', '--help'), ('agent', 'clone', '--help')):
++        for args in (('--help',), ('--version',), ('agent', 'snapshot-build', '--help'),
++                     ('agent', 'snapshot', '--help'), ('agent', 'clone', '--help')):
+             self.run_command([sys.executable, '-I', str(self.output / 'gdi.pyz'), *args], cwd=self.root)
+ 
++        assembled = capture.parent / 'assembled.json'
++        result = self.run_command([sys.executable, '-I', str(self.output / 'gdi.pyz'), 'agent', 'snapshot-build',
++                                   '--capture', str(capture), '--repository-id', identity,
++                                   '--output', str(assembled)], cwd=self.root)
++        self.assertEqual(json.loads(result.stdout)['validation']['manifests_validated'], 0)
++        value = json.loads(capture.read_text())
++        value['adapter'] = 'unsupported-future-connector'
++        capture.write_text(json.dumps(value))
++        result = self.run_command([sys.executable, '-I', str(self.output / 'gdi.pyz'), 'agent', 'snapshot-build',
++                                   '--capture', str(capture), '--repository-id', identity,
++                                   '--output', str(capture.parent / 'failed.json')], cwd=self.root, expected=1)
++        self.assertEqual(json.loads(result.stdout)['kind'], 'SNAPSHOT_BUILD_ERROR')
++        self.assertTrue(assembled.is_file())
++        self.assertFalse((capture.parent / 'failed.json').exists())
++
+     def test_build_only_without_rclone_uses_default_output_from_another_directory(self):
+         tools = self.root / 'tools'
+         tools.mkdir()
+diff --git a/gdi/snapshot_builder.py b/gdi/snapshot_builder.py
+new file mode 100644
+index 0000000..7ead381
+--- /dev/null
++++ b/gdi/snapshot_builder.py
+@@ -0,0 +1,220 @@
++"""Offline, versioned adapters from saved connector responses to snapshot v1."""
++
++import os
++from pathlib import Path
++import re
++import tempfile
++from urllib.parse import urlsplit
++
++from .diagnostics import phase
++from .git import GdiError
++from .publication import decode, encode
++from .snapshot import Snapshot, listing_pages, local_file, metadata_file, opaque_id
++
++
++ADAPTER = 'google-drive-list-folder-v1'
++FOLDER_MIME = 'application/vnd.google-apps.folder'
++
++
++class SnapshotBuildError(GdiError):
++    def __init__(self, code, message, *, source=None, stage='connector adaptation'):
++        super().__init__('snapshot builder: ' + message)
++        self.code, self.source, self.stage = code, source, stage
++
++    def result(self):
++        return {'error': str(self), 'kind': 'SNAPSHOT_BUILD_ERROR', 'code': self.code,
++                'stage': self.stage, 'source': self.source, 'inputs_preserved': True,
++                'snapshot_written': False,
++                'next_step': 'report_to_operator; do not assemble a snapshot manually'}
++
++
++def fail(code, message, source=None):
++    raise SnapshotBuildError(code, message, source=source)
++
++
++def drive_id(url, folder=False):
++    if not isinstance(url, str):
++        fail('UNSUPPORTED_RESPONSE', 'expected a Google Drive URL')
++    parsed = urlsplit(url)
++    pattern = r'/drive/(?:u/[0-9]+/)?folders/([A-Za-z0-9_-]+)' if folder else r'/file/d/([A-Za-z0-9_-]+)(?:/view)?'
++    match = re.fullmatch(pattern, parsed.path.rstrip('/'))
++    if parsed.scheme != 'https' or parsed.netloc != 'drive.google.com' or not match:
++        fail('UNSUPPORTED_RESPONSE', 'unsupported Google Drive URL format')
++    return match[1]
++
++
++def response(root, name):
++    """Accept the saved tool result or its unchanged structuredContent object."""
++    try:
++        data = decode(metadata_file(local_file(root, name)))
++    except (GdiError, OSError, ValueError, TypeError) as exc:
++        fail('INVALID_INPUT', 'cannot read saved connector response', name)
++    if not isinstance(data, dict):
++        fail('UNSUPPORTED_RESPONSE', 'connector response must be an object', name)
++    if data.get('isError') not in (None, False):
++        fail('CONNECTOR_ERROR', 'connector returned an error', name)
++    if 'structuredContent' in data and 'content' in data and isinstance(data['content'], list):
++        data = data['structuredContent']
++    if not isinstance(data, dict):
++        fail('UNSUPPORTED_RESPONSE', 'missing structured connector data', name)
++    return data
++
++
++def listing(root, item, mime_types):
++    if not isinstance(item, dict) or set(item) != {'request', 'response'}:
++        fail('INVALID_CAPTURE', 'listing must contain request and response')
++    request, name = item['request'], item['response']
++    if not isinstance(request, dict) or set(request) != {'url', 'top_k'}:
++        fail('UNSUPPORTED_REQUEST', 'list_folder capture requires exactly url and top_k', name)
++    limit = request['top_k']
++    # This profile deliberately does not assume that raising top_k bypasses a provider cap.
++    if type(limit) is not int or not 1 <= limit <= 100:
++        fail('UNSUPPORTED_REQUEST', 'list_folder adapter supports explicit top_k from 1 to 100', name)
++    folder = drive_id(request['url'], folder=True)
++    data = response(root, name)
++    if not isinstance(data.get('files'), list):
++        fail('UNSUPPORTED_RESPONSE', 'list_folder response has no files array; update the adapter', name)
++    tokens = {'next_page_token', 'nextPageToken'}
++    flags = {'has_more', 'truncated', 'incompleteSearch'}
++    if set(data) - {'files'} - tokens - flags:
++        fail('UNSUPPORTED_RESPONSE', 'unknown listing envelope fields; update the adapter', name)
++    for flag in tokens | flags:
++        value = data.get(flag)
++        if value is not None and type(value) is not (str if flag in tokens else bool):
++            fail('UNSUPPORTED_RESPONSE', 'invalid pagination/completeness field type', name)
++        if value:
++            fail('INCOMPLETE_LISTING', 'connector listing is partial or paginated; update the adapter', name)
++    if len(data['files']) >= limit:
++        fail('INCOMPLETE_LISTING', 'listing reached top_k; completeness is not established', name)
++    entries = []
++    for row in data['files']:
++        required = {'id', 'title', 'mime_type', 'file_or_folder', 'size', 'url'}
++        if not isinstance(row, dict) or not required.issubset(row):
++            fail('UNSUPPORTED_RESPONSE', 'list_folder item is missing required metadata', name)
++        if not isinstance(row['mime_type'], str) or not row['mime_type']:
++            fail('UNSUPPORTED_RESPONSE', 'invalid MIME type', name)
++        is_dir = row['mime_type'] == FOLDER_MIME
++        if row['file_or_folder'] != ('folder' if is_dir else 'file'):
++            fail('UNSUPPORTED_RESPONSE', 'conflicting item type and MIME type', name)
++        identity = opaque_id(row['id'])
++        if drive_id(row['url'], folder=is_dir) != identity:
++            fail('INVALID_IDENTITY', 'item URL and Drive ID disagree', name)
++        parents = row.get('parent_ids')
++        if parents is not None and (not isinstance(parents, list) or folder not in parents):
++            fail('INVALID_IDENTITY', 'item does not belong to the requested folder', name)
++        size = row['size']
++        if is_dir:
++            if size is not None:
++                fail('UNSUPPORTED_RESPONSE', 'folder size must be null', name)
++        elif isinstance(size, str) and re.fullmatch(r'0|[1-9][0-9]*', size):
++            size = int(size)
++        elif type(size) is not int or size < 0:
++            fail('UNSUPPORTED_RESPONSE', 'file size must be a nonnegative integer or decimal string', name)
++        mime_types[identity] = row['mime_type']
++        entries.append({'id': identity, 'name': row['title'], 'is_dir': is_dir, 'bytes': size})
++    pages = [{'page_token': None, 'next_page_token': None, 'entries': entries}]
++    listing_pages(pages)
++    return {'folder_id': folder, 'pages': pages}
++
++
++def download(root, item):
++    if not isinstance(item, dict) or set(item) != {'response', 'local_path'}:
++        fail('INVALID_CAPTURE', 'download must contain response and local_path')
++    name = item['response']
++    data = response(root, name)
++    required = {'id', 'file_name', 'file_size_bytes', 'mime_type', 'url', 'file_uri'}
++    if not required.issubset(data) or not isinstance(data['file_uri'], dict):
++        fail('UNSUPPORTED_RESPONSE', 'raw fetch response is missing file metadata or file_uri', name)
++    if data.get('b64_string') is not None or data.get('content') not in (None, ''):
++        fail('UNSUPPORTED_RESPONSE', 'use raw fetch with include_base64=false', name)
++    identity = opaque_id(data['id'])
++    if drive_id(data['url']) != identity:
++        fail('INVALID_IDENTITY', 'download URL and Drive ID disagree', name)
++    if (type(data['file_size_bytes']) is not int or data['file_size_bytes'] < 0
++            or not isinstance(data['file_name'], str) or not isinstance(data['mime_type'], str)):
++        fail('UNSUPPORTED_RESPONSE', 'invalid raw download metadata', name)
++    path = local_file(root, item['local_path'])
++    if path.stat().st_size != data['file_size_bytes']:
++        fail('DOWNLOAD_MISMATCH', 'materialized file size differs from fetch metadata', name)
++    return {'file_id': identity, 'local_path': item['local_path']}, data
++
++
++def build(capture_path, expected_id, output):
++    """Build without network access, mutation of inputs, or replacement of old snapshots."""
++    capture_path, output = Path(capture_path).absolute(), Path(output).absolute()
++    temporary = None
++    stage = 'capture validation'
++    try:
++        if output.parent != capture_path.parent:
++            fail('INVALID_OUTPUT', 'output must be beside capture.json so local paths remain unchanged')
++        if output.exists() or output.is_symlink():
++            fail('INVALID_OUTPUT', 'output already exists; choose a new snapshot filename')
++        capture = decode(metadata_file(capture_path))
++        keys = {'capture_version', 'adapter', 'repository_path', 'repository_url', 'ref', 'listings', 'downloads'}
++        if (not isinstance(capture, dict) or set(capture) != keys
++                or type(capture.get('capture_version')) is not int or capture['capture_version'] != 1):
++            fail('INVALID_CAPTURE', 'unsupported capture schema/version')
++        if capture['adapter'] != ADAPTER:
++            fail('UNSUPPORTED_ADAPTER', 'unsupported connector adapter; update GDI instead of guessing fields')
++        if not isinstance(capture['listings'], list) or not isinstance(capture['downloads'], list):
++            fail('INVALID_CAPTURE', 'listings and downloads must be arrays')
++        root = capture_path.parent
++        with phase('adapt connector responses'):
++            stage = 'connector adaptation'
++            mime_types = {}
++            listings = [listing(root, item, mime_types) for item in capture['listings']]
++            files, details = [], []
++            for item in capture['downloads']:
++                descriptor, metadata = download(root, item)
++                files.append(descriptor)
++                details.append(metadata)
++        entries = {row['id']: row for folder in listings for page in folder['pages'] for row in page['entries']}
++        for data in details:
++            row = entries.get(data['id'])
++            if (row is None or row['is_dir'] or row['name'] != data['file_name']
++                    or row['bytes'] != data['file_size_bytes']
++                    or mime_types[data['id']] != data['mime_type']):
++                fail('DOWNLOAD_MISMATCH', 'fetch metadata does not match saved listing', data['id'])
++        value = {'snapshot_version': 1, 'repository_path': capture['repository_path'],
++                 'repository_folder_id': drive_id(capture['repository_url'], folder=True),
++                 'ref': capture['ref'], 'listings': listings, 'files': files}
++        stage = 'snapshot validation'
++        with phase('validate assembled snapshot'):
++            with tempfile.NamedTemporaryFile(dir=root, prefix='.gdi-snapshot-', suffix='.json', delete=False) as handle:
++                temporary = Path(handle.name)
++                handle.write(encode(value))
++                handle.flush()
++                os.fsync(handle.fileno())
++            snapshot = Snapshot(temporary, expected_id)
++            report = summary(snapshot)
++        stage = 'snapshot creation'
++        # Atomic no-clobber publication: even a concurrent creator cannot lose a file.
++        os.link(temporary, output)
++        return {'snapshot': str(output), 'adapter': ADAPTER, 'inputs_preserved': True, **report}
++    except SnapshotBuildError as exc:
++        exc.stage = stage
++        if exc.source is None:
++            exc.source = capture_path.name
++        raise
++    except (GdiError, OSError, ValueError, TypeError, KeyError, OverflowError) as exc:
++        # Do not echo raw connector objects, bearer URLs, or file contents in errors.
++        raise SnapshotBuildError('INVALID_DATA', str(exc), stage=stage) from exc
++    finally:
++        if temporary is not None:
++            temporary.unlink(missing_ok=True)
++
++
++def summary(snapshot):
++    """Metadata validation is distinct from bundle content verification and Drive freshness."""
++    required = snapshot.required_bundles()
++    return {'repository_id': snapshot.repository_id, 'repository_path': snapshot.repository_path,
++            'ref': snapshot.ref, 'publications': len(snapshot.chain),
++            'publication_id': snapshot.chain[-1][0] if snapshot.chain else None,
++            'head': snapshot.chain[-1][1]['head'] if snapshot.chain else None,
++            'required_bundles': required, 'snapshot_fingerprint': snapshot.fingerprint,
++            'freshness': 'connector_provided_snapshot',
++            'validation': {'manifests_validated': len(snapshot.chain),
++                           'bundles_required': len(required),
++                           'required_bundles_present': sum(item['relative_path'] in snapshot.downloads for item in required),
++                           'bundle_contents_verified': False,
++                           'drive_freshness_verified': False}}
+diff --git a/tests/snapshot_captures.py b/tests/snapshot_captures.py
+new file mode 100644
+index 0000000..f8af160
+--- /dev/null
++++ b/tests/snapshot_captures.py
+@@ -0,0 +1,58 @@
++"""Sanitized fixtures matching Google Drive list_folder/raw fetch structured data.
++
++Field names were checked against connector responses on 2026-11-11. Fake IDs,
++URLs and generated Git data keep real Drive files and signed download URLs out.
++"""
++
++from pathlib import Path
++
++from gdi.publication import decode, digest, encode
++from gdi.snapshot_builder import ADAPTER, FOLDER_MIME
++from tests.snapshots import export_snapshot
++
++
++def capture_snapshot(root, transport, *, downloads=None):
++    source = export_snapshot(root, transport, include=['', 'branches', 'branches/main', 'bundles'],
++                             downloads=downloads)
++    root = Path(root)
++    original = decode(source.read_bytes())
++    responses = root / 'responses'
++    responses.mkdir()
++    def ident(old):
++        return 'fixture-' + digest(old.encode())[:16]
++    def url(identity, folder=False):
++        return ('https://drive.google.com/drive/folders/' + identity if folder else
++                'https://drive.google.com/file/d/' + identity + '/view')
++    def save(name, data):
++        relative = 'responses/' + name + '.json'
++        (root / relative).write_bytes(encode({'content': [{'type': 'text', 'text': 'Action completed.'}],
++                                            'structuredContent': data, 'isError': False}))
++        return relative
++    capture = {'capture_version': 1, 'adapter': ADAPTER, 'repository_path': 'project',
++               'repository_url': url(ident(original['repository_folder_id']), True),
++               'ref': original['ref'], 'listings': [], 'downloads': []}
++    by_id = {}
++    for number, listing in enumerate(original['listings']):
++        files = []
++        for page in listing['pages']:
++            for row in page['entries']:
++                data = {'id': ident(row['id']), 'title': row['name'],
++                        'mime_type': FOLDER_MIME if row['is_dir'] else 'application/octet-stream',
++                        'file_or_folder': 'folder' if row['is_dir'] else 'file',
++                        'size': None if row['is_dir'] else str(row['bytes']),
++                        'url': url(ident(row['id']), row['is_dir']),
++                        'parent_ids': None, 'can_download': True}
++                files.append(data)
++                by_id[row['id']] = data
++        capture['listings'].append({'request': {'url': url(ident(listing['folder_id']), True), 'top_k': 100},
++                                    'response': save('listing-' + str(number), {'files': files})})
++    for number, item in enumerate(original['files']):
++        row = by_id[item['file_id']]
++        data = {'id': row['id'], 'title': row['title'], 'file_name': row['title'],
++                'mime_type': row['mime_type'], 'url': row['url'], 'file_size_bytes': int(row['size']),
++                'file_uri': {'file_id': 'sediment://fake-' + row['id']}, 'content': '', 'b64_string': None}
++        capture['downloads'].append({'response': save('fetch-' + str(number), data),
++                                     'local_path': item['local_path']})
++    path = root / 'capture.json'
++    path.write_bytes(encode(capture))
++    return path
+diff --git a/tests/test_snapshot_builder.py b/tests/test_snapshot_builder.py
+new file mode 100644
+index 0000000..988b9a6
+--- /dev/null
++++ b/tests/test_snapshot_builder.py
+@@ -0,0 +1,226 @@
++import contextlib
++import copy
++import io
++from pathlib import Path
++from unittest.mock import patch
++
++from gdi import agent
++from gdi.cli import main
++from gdi.publication import decode, encode
++from gdi.snapshot import Snapshot
++from gdi.snapshot_builder import ADAPTER, SnapshotBuildError, build, summary
++from tests.snapshot_captures import capture_snapshot
++from tests.test_exchange import ExchangeTestCase
++
++
++class SnapshotBuilderTests(ExchangeTestCase):
++    def capture(self, name='capture', **kwargs):
++        return capture_snapshot(self.root / name, self.store, **kwargs)
++
++    def rewrite(self, path, update):
++        value = decode(path.read_bytes())
++        update(value)
++        path.write_bytes(encode(value))
++
++    def first_response(self, capture, key='listings'):
++        value = decode(capture.read_bytes())
++        return capture.parent / value[key][0]['response']
++
++    def assert_build_failure_preserves_inputs(self, capture, code=None):
++        before = {p.relative_to(capture.parent): p.read_bytes()
++                  for p in capture.parent.rglob('*') if p.is_file()}
++        output = capture.parent / 'assembled.json'
++        with self.assertRaises(SnapshotBuildError) as error:
++            build(capture, self.identity, output)
++        if code:
++            self.assertEqual(error.exception.code, code)
++        self.assertFalse(output.exists())
++        after = {p.relative_to(capture.parent): p.read_bytes()
++                 for p in capture.parent.rglob('*') if p.is_file()}
++        self.assertEqual(before, after)
++        return error.exception
++
++    def test_empty_repository_assembled_without_rclone_or_connector_calls(self):
++        capture = self.capture()
++        with patch('socket.socket', side_effect=AssertionError('unexpected network')):
++            result = build(capture, self.identity, capture.parent / 'assembled.json')
++        snapshot = Snapshot(result['snapshot'], self.identity)
++        self.assertEqual(snapshot.chain, [])
++        self.assertEqual(result['adapter'], ADAPTER)
++        self.assertEqual(result['validation']['manifests_validated'], 0)
++        self.assertFalse(result['validation']['drive_freshness_verified'])
++
++    def test_existing_branch_full_and_delta_clone_from_assembled_snapshot(self):
++        self.ea.push('drive')
++        self.commit(self.a, 'second'); self.ea.push('drive')
++        capture = self.capture()
++        result = build(capture, self.identity, capture.parent / 'assembled.json')
++        self.assertEqual(result['validation'], {'manifests_validated': 2, 'bundles_required': 2,
++                                               'required_bundles_present': 2,
++                                               'bundle_contents_verified': False,
++                                               'drive_freshness_verified': False})
++        restored = agent.clone(result['snapshot'], self.identity, self.root / 'restored')
++        self.assertEqual(restored['head'], self.a.oid('HEAD'))
++        self.assertEqual(restored['validation']['bundles_verified'], 2)
++        self.assertTrue(restored['validation']['git_objects_verified'])
++        self.assertEqual((self.root / 'restored/file.txt').read_text(), 'second\n')
++        # Normal snapshot still accepts the unchanged v1 schema.
++        document = decode(Path(result['snapshot']).read_bytes())
++        self.assertEqual(document['snapshot_version'], 1)
++        self.assertNotIn('adapter', document)
++
++    def test_metadata_only_snapshot_reports_required_bundles_as_not_downloaded(self):
++        manifest = self.published()
++        capture = self.capture(downloads=['repository.json', manifest])
++        result = build(capture, self.identity, capture.parent / 'assembled.json')
++        self.assertEqual(result['validation']['bundles_required'], 1)
++        self.assertEqual(result['validation']['required_bundles_present'], 0)
++        self.assertFalse(result['validation']['bundle_contents_verified'])
++
++    def test_unknown_adapter_capture_or_response_formats_stop(self):
++        for name, mutate in [('adapter', lambda d: d.update(adapter='future-connector-v9')),
++                             ('version', lambda d: d.update(capture_version=2))]:
++            capture = self.capture(name)
++            self.rewrite(capture, mutate)
++            self.assert_build_failure_preserves_inputs(capture)
++        capture = self.capture('changed-response')
++        response = self.first_response(capture)
++        self.rewrite(response, lambda d: d['structuredContent'].update(files=None, results=[]))
++        self.assert_build_failure_preserves_inputs(capture, 'UNSUPPORTED_RESPONSE')
++
++    def test_truncated_paginated_or_at_limit_responses_are_refused(self):
++        for flag, value in [('next_page_token', 'more'), ('nextPageToken', 'more'),
++                            ('has_more', True), ('truncated', True), ('incompleteSearch', True)]:
++            capture = self.capture(flag)
++            self.rewrite(self.first_response(capture), lambda d: d['structuredContent'].update({flag: value}))
++            self.assert_build_failure_preserves_inputs(capture, 'INCOMPLETE_LISTING')
++        capture = self.capture('limit')
++        doc = decode(capture.read_bytes())
++        count = len(decode(self.first_response(capture).read_bytes())['structuredContent']['files'])
++        doc['listings'][0]['request']['top_k'] = count
++        capture.write_bytes(encode(doc))
++        self.assert_build_failure_preserves_inputs(capture, 'INCOMPLETE_LISTING')
++
++    def test_missing_listing_or_manifest_is_refused(self):
++        self.ea.push('drive')
++        for name, key in [('listing', 'listings'), ('manifest', 'downloads')]:
++            capture = self.capture(name)
++            doc = decode(capture.read_bytes())
++            if key == 'listings':
++                doc[key] = doc[key][:1]
++            else:
++                doc[key] = [item for item in doc[key] if not item['local_path'].startswith('downloads/branches/')]
++            capture.write_bytes(encode(doc))
++            self.assert_build_failure_preserves_inputs(capture)
++
++    def test_duplicate_ids_names_and_unrelated_parents_are_refused(self):
++        for name in ('duplicate-id', 'duplicate-name', 'parent'):
++            capture = self.capture(name)
++            path = self.first_response(capture)
++            doc = decode(path.read_bytes())
++            files = doc['structuredContent']['files']
++            if name == 'duplicate-id':
++                files.append(copy.deepcopy(files[0]))
++            elif name == 'duplicate-name':
++                files[1]['title'] = files[0]['title']
++            else:
++                files[0]['parent_ids'] = ['unrelated-folder']
++            path.write_bytes(encode(doc))
++            self.assert_build_failure_preserves_inputs(capture)
++
++    def test_id_url_typo_and_download_metadata_mismatch_are_refused(self):
++        capture = self.capture('bad-id')
++        self.rewrite(self.first_response(capture),
++                     lambda d: d['structuredContent']['files'][0].update(id='mistyped-id'))
++        self.assert_build_failure_preserves_inputs(capture, 'INVALID_IDENTITY')
++        for field, value in [('id', 'wrong-id'), ('file_name', 'wrong.json'), ('file_size_bytes', 123456), ('mime_type', 'text/plain')]:
++            capture = self.capture('bad-download-' + field)
++            self.rewrite(self.first_response(capture, 'downloads'), lambda d: d['structuredContent'].update({field: value}))
++            self.assert_build_failure_preserves_inputs(capture)
++
++    def test_missing_size_bool_or_negative_sizes_do_not_become_zero(self):
++        for number, value in enumerate([None, True, -1, '-1', '', '1.5']):
++            capture = self.capture('size-' + str(number))
++            self.rewrite(self.first_response(capture),
++                         lambda d: next(row for row in d['structuredContent']['files']
++                                        if row['file_or_folder'] == 'file').update(size=value))
++            self.assert_build_failure_preserves_inputs(capture, 'UNSUPPORTED_RESPONSE')
++
++    def test_unknown_listing_envelope_and_changed_pagination_types_fail_closed(self):
++        for name, fields in [('envelope', {'possibly_partial': True}),
++                             ('token-type', {'nextPageToken': 0}),
++                             ('flag-type', {'has_more': 'false'})]:
++            capture = self.capture(name)
++            self.rewrite(self.first_response(capture), lambda d: d['structuredContent'].update(fields))
++            self.assert_build_failure_preserves_inputs(capture, 'UNSUPPORTED_RESPONSE')
++
++    def test_tool_error_is_not_exposed_or_interpreted_as_empty(self):
++        capture = self.capture()
++        self.first_response(capture).write_bytes(encode({'isError': True, 'structuredContent': {'files': []},
++                                                        'private': 'https://secret.invalid/bearer'}))
++        error = self.assert_build_failure_preserves_inputs(capture, 'CONNECTOR_ERROR')
++        self.assertNotIn('secret', str(error))
++
++    def test_unchanged_structured_data_is_supported_and_extra_fields_are_ignored(self):
++        capture = self.capture()
++        for item in decode(capture.read_bytes())['listings']:
++            path = capture.parent / item['response']
++            data = decode(path.read_bytes())['structuredContent']
++            for row in data['files']:
++                row['new_optional_field'] = 'future value'
++            path.write_bytes(encode(data))
++        build(capture, self.identity, capture.parent / 'assembled.json')
++
++    def test_output_and_inputs_cannot_be_overwritten_and_symlinks_are_refused(self):
++        capture = self.capture()
++        output = capture.parent / 'assembled.json'
++        output.write_bytes(b'preserve me')
++        with self.assertRaises(SnapshotBuildError):
++            build(capture, self.identity, output)
++        self.assertEqual(output.read_bytes(), b'preserve me')
++        output.unlink()
++        with self.assertRaises(SnapshotBuildError):
++            build(capture, self.identity, self.root / 'elsewhere.json')
++        original = self.first_response(capture)
++        moved = original.with_suffix('.original')
++        original.rename(moved)
++        original.symlink_to(moved.name)
++        self.assert_build_failure_preserves_inputs(capture, 'INVALID_INPUT')
++
++    def test_failure_after_validation_cannot_truncate_existing_snapshot(self):
++        capture = self.capture()
++        output = capture.parent / 'assembled.json'
++        def concurrent_creator(source, destination):
++            Path(destination).write_bytes(b'concurrent file')
++            raise FileExistsError('already exists')
++        with patch('gdi.snapshot_builder.os.link', side_effect=concurrent_creator):
++            with self.assertRaises(SnapshotBuildError):
++                build(capture, self.identity, output)
++        self.assertEqual(output.read_bytes(), b'concurrent file')
++        self.assertFalse(list(capture.parent.glob('.gdi-snapshot-*.json')))
++
++    def test_wrong_repository_identity_preserves_capture_and_no_output(self):
++        capture = self.capture()
++        with self.assertRaises(SnapshotBuildError):
++            build(capture, 'f' * 32, capture.parent / 'assembled.json')
++        self.assertFalse((capture.parent / 'assembled.json').exists())
++
++    def test_cli_success_and_actionable_structured_failure(self):
++        capture = self.capture()
++        stream = io.StringIO()
++        with contextlib.redirect_stdout(stream):
++            code = main(['agent', 'snapshot-build', '--capture', str(capture), '--repository-id', self.identity,
++                         '--output', str(capture.parent / 'assembled.json')])
++        self.assertEqual(code, 0)
++        self.assertEqual(decode(stream.getvalue())['validation']['manifests_validated'], 0)
++        self.rewrite(capture, lambda d: d.update(adapter='changed-provider'))
++        stream = io.StringIO()
++        with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(io.StringIO()):
++            code = main(['agent', 'snapshot-build', '--capture', str(capture), '--repository-id', self.identity,
++                         '--output', str(capture.parent / 'failed.json')])
++        self.assertEqual(code, 1)
++        error = decode(stream.getvalue())
++        self.assertEqual(error['kind'], 'SNAPSHOT_BUILD_ERROR')
++        self.assertEqual(error['code'], 'UNSUPPORTED_ADAPTER')
++        self.assertTrue(error['inputs_preserved'])
++        self.assertFalse(error['snapshot_written'])
