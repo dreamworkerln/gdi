@@ -449,6 +449,35 @@ class RcTransport(Rclone):
                           srcFs=str(Path(source).parent), srcRemote=Path(source).name,
                           dstFs=self.url, dstRemote='repository.json', _config={'IgnoreTimes': True})
 
+    def enable_checkpoints(self, source):
+        from .publication import decode, validate_repository
+        from .publication_checkpoints import CAPABILITY
+        before = validate_repository(decode(self.read('repository.json')))
+        after = validate_repository(decode(Path(source).read_bytes()))
+        if after != {**before, CAPABILITY: 1}:
+            raise GdiError('checkpoint activation may only add its capability to the same repository')
+        self.transfer_api('operations/copyfile', label='enable publication checkpoints',
+                          srcFs=str(Path(source).parent), srcRemote=Path(source).name,
+                          dstFs=self.url, dstRemote='repository.json', _config={'IgnoreTimes': True})
+
+    def update_checkpoint(self, source, relative):
+        from .transport import validate_checkpoint_path
+        validate_checkpoint_path(relative)
+        source = Path(source).resolve(strict=True)
+        self.transfer_api('operations/copyfile', label='publish metadata checkpoint',
+                          srcFs=str(source.parent), srcRemote=source.name,
+                          dstFs=self.url, dstRemote=relative, _config={'IgnoreTimes': True})
+
+    def delete_publication(self, relative):
+        from .transport import validate_publication_path
+        validate_publication_path(relative)
+        self.api('operations/deletefile', fs=self.url, remote=relative)
+
+    def delete_checkpoint(self, relative):
+        from .transport import validate_checkpoint_path
+        validate_checkpoint_path(relative)
+        self.api('operations/deletefile', fs=self.url, remote=relative)
+
     def delete_work_manifest(self, relative):
         from .transport import validate_work_manifest_path
         validate_work_manifest_path(relative)

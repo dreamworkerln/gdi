@@ -96,6 +96,7 @@ class Worker:
                 transport.mkdir(path)
             capabilities = {'ci_version': 1, 'inbox_version': 1, 'ci_submission_version': 1,
                             'cancel_version': 1, 'result_delivery_version': 1,
+                            'publication_checkpoint_version': 1,
                             'worker_id': self.worker_id,
                             'profiles': {'full': self.config['execution_profile']['revision']},
                             'labels': self.config.get('labels', []), 'platforms': sorted(self.config['platforms'])}
@@ -103,6 +104,7 @@ class Worker:
             self.heartbeat()
             return
         capabilities = {'ci_version': 1, 'cancel_version': 1, 'result_delivery_version': 1,
+                        'publication_checkpoint_version': 1,
                         'worker_id': self.worker_id,
                         'labels': self.config.get('labels', []),
                         'repositories': {repo['repository_id']: {name: profile['revision'] for name, profile in repo['profiles'].items()}

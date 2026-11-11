@@ -24,9 +24,12 @@ def revision(path, worker, profile):
 
 
 def publication(snapshot, publication_id):
-    if publication_id not in dict(snapshot.chain):
+    chain = snapshot.chain
+    if publication_id not in dict(chain):
+        chain = snapshot.history_chain()
+    if publication_id not in dict(chain):
         raise GdiError('CI publication is not on the verified snapshot chain')
-    return dict(snapshot.chain)[publication_id]
+    return dict(chain)[publication_id]
 
 
 def ci_plan(git, directory, expected_id):

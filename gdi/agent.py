@@ -96,13 +96,14 @@ def publication_plan(directory, expected_id):
     value = load_plan(directory, expected_id)
     keys = {'plan_version', 'kind', 'repository_id', 'repository_path', 'ref', 'head',
             'publication_id', 'base_chain', 'base_head', 'files', 'state', 'checked_snapshot'}
-    if (set(value) not in (keys, keys | {'local_base'}) or value['state'] not in ('prepared', 'bundle_checked', 'accepted') or
+    if (set(value) not in (keys, keys | {'local_base'}, keys | {'checkpoint'}) or
+            value['state'] not in ('prepared', 'bundle_checked', 'manifest_accepted', 'checkpoint_accepted', 'accepted') or
             not hex_value(value['head'], 40) or not hex_value(value['publication_id'], 64) or
             not isinstance(value['base_chain'], list) or
             any(not hex_value(identity, 64) for identity in value['base_chain']) or
             len(value['base_chain']) != len(set(value['base_chain'])) or
             (not hex_value(value['base_head'], 40) if value['base_chain'] else value['base_head'] is not None) or
-            set(value['files']) != {'bundle', 'manifest', 'notification'}):
+            not {'bundle', 'manifest', 'notification'}.issubset(value['files'])):
         raise GdiError('invalid publication plan')
     raw = metadata_file(local_file(directory, 'publication.json'))
     data = validate_manifest(raw, value['publication_id'], expected_id, value['ref'])
@@ -123,6 +124,37 @@ def publication_plan(directory, expected_id):
             raise GdiError('saved base bundle checksum/size mismatch')
     elif 'local_base' in value:
         raise GdiError('full publication must not contain an incremental base')
+    extra_files = set(value['files']) - {'bundle', 'manifest', 'notification'}
+    if 'checkpoint' in value:
+        from .publication_checkpoints import validate_checkpoint, marker_path, archive_path, read_block
+        checkpoint = value['checkpoint']
+        if (not isinstance(checkpoint, dict) or set(checkpoint) != {'marker', 'base_checkpoint'}
+                or data['bundle_kind'] != 'full'):
+            raise GdiError('invalid publication checkpoint plan')
+        marker = validate_checkpoint(checkpoint['marker'], expected_id, value['ref'])
+        if (marker['root'] != value['publication_id'] or marker['previous'] != previous
+                or marker['previous_head'] != value['base_head']
+                or marker['archived_count'] != len(value['base_chain'])
+                or metadata_file(local_file(directory, 'checkpoint.json')) != encode(marker)):
+            raise GdiError('saved checkpoint differs from publication plan')
+        expected_marker = file_plan(directory / 'checkpoint.json', 'checkpoint.json',
+                                    value['repository_path'] + '/' + marker_path(value['ref']))
+        if value['files'].get('checkpoint') != expected_marker:
+            raise GdiError('saved checkpoint destination differs from plan')
+        for key in extra_files - {'checkpoint'}:
+            if not key.startswith('archive_'):
+                raise GdiError('unknown publication artifact')
+            item = value['files'][key]
+            target = archive_path(item['sha256'])
+            if item != file_plan(local_file(directory, item['local_path']), item['local_path'],
+                                 value['repository_path'] + '/' + target):
+                raise GdiError('saved publication archive destination differs from plan')
+            read_block(lambda _: metadata_file(local_file(directory, item['local_path'])),
+                       item['sha256'], expected_id, value['ref'])
+        if 'checkpoint' not in extra_files:
+            raise GdiError('checkpoint artifact is missing')
+    elif extra_files:
+        raise GdiError('unexpected publication artifacts')
     paths = {'bundle': 'bundles/' + data['bundle_sha256'] + '.bundle',
              'manifest': 'branches/' + branch_directory(value['ref']) + '/' + value['publication_id'] + '.json'}
     event = notification(expected_id, value['repository_path'], data, value['publication_id'])
@@ -190,15 +222,26 @@ def verdict(directory, value):
                 'safe_to_upload_cancel': state == 'prepared', 'verified': False,
                 'cancellation_requested': state == 'accepted'}
     publication = value['kind'] == 'publication'
-    next_step = ({'prepared': 'upload_bundle', 'bundle_checked': 'upload_manifest', 'accepted': 'publication_accepted'}
+    next_step = ({'prepared': ('upload_archives_and_bundle'
+                              if any(key.startswith('archive_') for key in value['files']) else 'upload_bundle'),
+                  'bundle_checked': 'upload_manifest',
+                  'manifest_accepted': 'upload_checkpoint', 'checkpoint_accepted': 'archive_cleanup',
+                  'accepted': 'publication_accepted'}
                  if publication else {'prepared': 'upload_inbox', 'accepted': 'ci_request_accepted'})[state]
     return {**value, 'plan_path': str(directory / 'plan.json'),
             'files': {key: {**item, 'local_path': str(directory / item['local_path'])} for key, item in value['files'].items()},
             'next_step': next_step,
-            'upload_order': ['bundle', 'manifest', 'notification'] if publication else ['inbox'],
+            'upload_order': ([key for key in value['files'] if key.startswith('archive_')] +
+                             ['bundle', 'manifest'] + (['checkpoint'] if 'checkpoint' in value else []) +
+                             ['notification']) if publication else ['inbox'],
             'freshness': 'connector_provided_snapshot',
             **({'safe_to_upload_bundle': state != 'accepted', 'safe_to_upload_manifest': state == 'bundle_checked',
                 'safe_to_upload_notification': state == 'accepted',
+                'safe_to_upload_archives': state == 'prepared',
+                'safe_to_upload_checkpoint': state == 'manifest_accepted',
+                'cleanup_paths': (['branches/' + branch_directory(value['ref']) + '/' + identity + '.json'
+                                   for identity in value['base_chain']]
+                                  if state == 'checkpoint_accepted' else []),
                 'expected_previous_publication': value['base_chain'][-1] if value['base_chain'] else None,
                 'bundle_kind': decode(metadata_file(local_file(directory, 'publication.json')))['bundle_kind'],
                 'expected_new_tip': value['publication_id']} if publication else
@@ -216,6 +259,8 @@ def same_base(snapshot, value):
         raise GdiError('remote changed: prepare a new plan using a fresh snapshot after reconciling history')
     if snapshot.chain and snapshot.chain[-1][1]['head'] != value['base_head']:
         raise GdiError('publication base HEAD changed')
+    if 'checkpoint' in value and getattr(snapshot.chain, 'checkpoint', None) != value['checkpoint']['base_checkpoint']:
+        raise GdiError('publication base checkpoint changed')
 
 
 def prepare(git, snapshot_path, expected_id, output, branch=None, *, full=False,
@@ -234,7 +279,10 @@ def prepare(git, snapshot_path, expected_id, output, branch=None, *, full=False,
             if value['head'] != head:
                 raise GdiError('HEAD changed; preserve this plan and use a new output directory')
             ids = [identity for identity, _ in snapshot.chain]
-            if ids not in (value['base_chain'], value['base_chain'] + [value['publication_id']]):
+            allowed = (value['base_chain'], value['base_chain'] + [value['publication_id']])
+            if 'checkpoint' in value and getattr(snapshot.chain, 'checkpoint', None) == value['checkpoint']['marker']:
+                allowed += ([value['publication_id']],)
+            if ids not in allowed:
                 raise GdiError('remote changed; prepare a new plan after reconciling history')
             return verdict(directory, value)
         tip = snapshot.chain[-1] if snapshot.chain else None
@@ -256,6 +304,16 @@ def prepare(git, snapshot_path, expected_id, output, branch=None, *, full=False,
                                'manifest': file_plan(publication.manifest, 'publication.json', snapshot.repository_path + '/' + publication.manifest_relative),
                                'notification': file_plan(temporary / 'notification.json', 'notification.json', 'inbox/' + filename(event))},
                      'state': 'prepared', 'checked_snapshot': None}
+            from . import publication_checkpoints as checkpoints
+            if is_full and checkpoints.enabled(snapshot.repository):
+                marker, archives, target = checkpoints.prepare(snapshot.chain, publication, snapshot.read, temporary)
+                value['checkpoint'] = {'marker': marker,
+                                       'base_checkpoint': getattr(snapshot.chain, 'checkpoint', None)}
+                value['files']['checkpoint'] = file_plan(target, target.name,
+                    snapshot.repository_path + '/' + checkpoints.marker_path(ref))
+                for number, (relative, path) in enumerate(archives.items()):
+                    value['files']['archive_' + str(number)] = file_plan(path, path.name,
+                        snapshot.repository_path + '/' + relative)
             if not is_full:
                 value['local_base'] = save_local_base(git, expected_id, ref, tip[1]['head'], temporary)
             with verify_planned_bundle(temporary, value, publication.data, publication.bundle):
@@ -275,6 +333,7 @@ def check(output, snapshot_path, expected_id):
         if value['state'] == 'accepted':
             raise GdiError('publication was already accepted; use accept with a fresh snapshot')
         bundle = snapshot.require_file('bundles/' + data['bundle_sha256'] + '.bundle', data['bundle_sha256'], data['bundle_bytes'])
+        verify_archives(directory, value, snapshot)
         with verify_planned_bundle(directory, value, data, bundle):
             pass
         value.update(state='bundle_checked', checked_snapshot=snapshot.fingerprint)
@@ -288,17 +347,42 @@ def accept(output, snapshot_path, expected_id):
         snapshot = Snapshot(snapshot_path, expected_id, ref=value['ref'])
         require_active(snapshot, expected_id, value['ref'])
         same_route(snapshot, value)
-        if [identity for identity, _ in snapshot.chain] != value['base_chain'] + [value['publication_id']]:
+        ids = [identity for identity, _ in snapshot.chain]
+        activated = ('checkpoint' in value and
+                     getattr(snapshot.chain, 'checkpoint', None) == value['checkpoint']['marker'])
+        if ids != ([value['publication_id']] if activated else value['base_chain'] + [value['publication_id']]):
             raise GdiError('publication is missing or remote advanced/conflicted; no acceptance')
+        if ('checkpoint' in value and not activated and
+                getattr(snapshot.chain, 'checkpoint', None) != value['checkpoint']['base_checkpoint']):
+            raise GdiError('publication checkpoint changed; no acceptance')
         path = 'branches/' + branch_directory(value['ref']) + '/' + value['publication_id'] + '.json'
         if snapshot.read(path) != metadata_file(local_file(directory, 'publication.json')):
             raise GdiError('uploaded manifest differs from saved bytes')
         bundle = snapshot.require_file('bundles/' + data['bundle_sha256'] + '.bundle', data['bundle_sha256'], data['bundle_bytes'])
+        verify_archives(directory, value, snapshot)
         with verify_planned_bundle(directory, value, data, bundle):
             pass
-        value.update(state='accepted', checked_snapshot=snapshot.fingerprint)
+        state = 'accepted'
+        if 'checkpoint' in value:
+            if not activated:
+                state = 'manifest_accepted'
+            elif getattr(snapshot.chain, 'residue', ()):
+                state = 'checkpoint_accepted'
+        value.update(state=state, checked_snapshot=snapshot.fingerprint)
         save_plan(directory, value)
-        return verdict(directory, value)
+        result = verdict(directory, value)
+        if state == 'checkpoint_accepted':
+            result['cleanup_paths'] = ['branches/' + branch_directory(value['ref']) + '/' + identity + '.json'
+                                       for identity in snapshot.chain.residue]
+        return result
+
+
+def verify_archives(directory, value, snapshot):
+    from .publication_checkpoints import archive_path
+    for key, item in value['files'].items():
+        if key.startswith('archive_'):
+            if snapshot.read(archive_path(item['sha256'])) != metadata_file(local_file(directory, item['local_path'])):
+                raise GdiError('uploaded publication archive differs from saved bytes')
 
 
 def clone(snapshot_path, expected_id, destination):
@@ -322,6 +406,8 @@ def clone(snapshot_path, expected_id, destination):
         persist_directory(directory, build)
         return {'repository_id': expected_id, 'ref': snapshot.ref, 'head': snapshot.chain[-1][1]['head'],
                 'publication_id': snapshot.chain[-1][0], 'destination': str(directory),
+                'metadata_scope': ('active_checkpoint_and_tail' if getattr(snapshot.chain, 'checkpoint', None)
+                                   else 'complete_publication_chain'),
                 'validation': {'manifests_validated': len(snapshot.chain),
                                'bundles_verified': len(snapshot.required_bundles()),
                                'git_objects_verified': True, 'drive_freshness_verified': False}}

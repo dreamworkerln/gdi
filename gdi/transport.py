@@ -176,6 +176,27 @@ class Rclone:
         validate_work_manifest_path(relative)
         self.call('deletefile', self.path(relative))
 
+    def enable_checkpoints(self, source):
+        from .publication import decode, validate_repository
+        from .publication_checkpoints import CAPABILITY
+        before = validate_repository(decode(self.read('repository.json')))
+        after = validate_repository(decode(Path(source).read_bytes()))
+        if after != {**before, CAPABILITY: 1}:
+            raise GdiError('checkpoint activation may only add its capability to the same repository')
+        self.call('copyto', str(source), self.path('repository.json'), '--ignore-times')
+
+    def update_checkpoint(self, source, relative):
+        validate_checkpoint_path(relative)
+        self.call('copyto', str(source), self.path(relative), '--ignore-times')
+
+    def delete_publication(self, relative):
+        validate_publication_path(relative)
+        self.call('deletefile', self.path(relative))
+
+    def delete_checkpoint(self, relative):
+        validate_checkpoint_path(relative)
+        self.call('deletefile', self.path(relative))
+
     def remove_work_directory(self, relative):
         validate_work_directory(relative)
         self.call('rmdir', self.path(relative))
@@ -190,6 +211,22 @@ def validate_work_directory(relative):
     if not ref.startswith(PREFIX):
         raise GdiError('ordinary branch directories must not be removed')
     work_id(ref[len(PREFIX):])
+
+
+def validate_publication_path(relative):
+    from .branches import directory_ref
+    match = re.fullmatch(r'branches/([^/]+)/[0-9a-f]{64}\.json', relative)
+    if not match:
+        raise GdiError('only an exact archived publication may be removed')
+    directory_ref(match[1])
+
+
+def validate_checkpoint_path(relative):
+    from .branches import directory_ref
+    match = re.fullmatch(r'branches/([^/]+)/checkpoint\.json', relative)
+    if not match:
+        raise GdiError('expected an exact branch checkpoint path')
+    directory_ref(match[1])
 
 
 def validate_work_manifest_path(relative):

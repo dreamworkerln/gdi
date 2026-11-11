@@ -4,7 +4,7 @@ Metadata remains immutable and complete. This is deliberately not an online GC:
 snapshot checks detect observed changes but cannot replace a distributed lock.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import re
 import tempfile
@@ -51,6 +51,7 @@ class Snapshot:
     chains: dict
     bundles: dict
     lifecycle: tuple = ()
+    checkpoints: dict = field(default_factory=dict)
 
 
 def snapshot(exchange, transport, repository_id):
@@ -66,12 +67,17 @@ def snapshot(exchange, transport, repository_id):
     metadata = {}
     directories = []
     refs = set()
+    checkpoints = {}
     for item in listing:
         path = item["Path"]
         if item["IsDir"]:
             exchange.git.ref(directory_ref(path)[len("refs/heads/"):])
             if directory_ref(path) not in retired_refs:
                 directories.append(path)
+            continue
+        if path.endswith('/checkpoint.json'):
+            ref = directory_ref(path.split('/')[0])
+            checkpoints[ref] = transport.read('branches/' + path)
             continue
         if not re.fullmatch(r"[^/]+/[0-9a-f]{64}\.json", path):
             raise GdiError("GC found an unexpected metadata file: " + path)
@@ -101,8 +107,17 @@ def snapshot(exchange, transport, repository_id):
                              for pub, raw in value['manifests'].items()})
     # Reuse the reader's strict version, identity, checksum, base and chain checks.
     chains = {ref: exchange.publications(transport, repository_id, ref,
-                                         listing=listing, metadata=metadata)
+                                         listing=listing, metadata=metadata, history=True)
               for ref in sorted(refs)}
+    for ref, chain in chains.items():
+        prefix = branch_directory(ref) + '/'
+        for identity, data in chain:
+            path = prefix + identity + '.json'
+            if path not in metadata:
+                raw = getattr(chain, 'raw_records', {}).get(identity)
+                if raw is None or digest(raw) != identity:
+                    raise GdiError('archived GC manifest bytes are missing')
+                metadata[path] = raw
     chains.update(archived)
     bundles = {}
     for item in transport.list("bundles", recursive=True):
@@ -120,7 +135,7 @@ def snapshot(exchange, transport, repository_id):
             path = data["bundle_sha256"] + ".bundle"
             if path in bundles and bundles[path] != data["bundle_bytes"]:
                 raise GdiError("GC bundle size does not match metadata: " + path)
-    return Snapshot(metadata, tuple(sorted(directories)), chains, bundles, lifecycle)
+    return Snapshot(metadata, tuple(sorted(directories)), chains, bundles, lifecycle, checkpoints)
 
 
 def plan_collection(state, repository_id, keep_checkpoints):
@@ -318,7 +333,8 @@ def collect(exchange, name, *, apply=False, keep_checkpoints=2, quiescent=False,
     expected_bundles = dict(state.bundles)
     for bundle in plan.candidates:
         del expected_bundles[bundle.path[len("bundles/"):]]
-    expected = Snapshot(state.metadata, state.directories, state.chains, expected_bundles, state.lifecycle)
+    expected = Snapshot(state.metadata, state.directories, state.chains, expected_bundles,
+                        state.lifecycle, state.checkpoints)
     final_transport, final_id = exchange.connect(name)
     if final_id != repository_id or snapshot(exchange, final_transport, final_id) != expected:
         raise GdiError("remote changed or deletion was not reflected after GC; inspect state before resuming clients")

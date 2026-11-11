@@ -192,6 +192,12 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
     enable_work.add_argument('name')
     enable_work.add_argument('--quiescent', action='store_true')
     enable_work.add_argument('--all-clients-updated', action='store_true')
+    enable_checkpoints = operations.add_parser('enable-checkpoints', help='enable bounded metadata checkpoints after updating all clients')
+    diagnostics_arguments(enable_checkpoints)
+    enable_checkpoints.add_argument('name', nargs='?')
+    enable_checkpoints.add_argument('--all-under', metavar='URL', help='explicitly activate repositories immediately under a shared root')
+    enable_checkpoints.add_argument('--quiescent', action='store_true')
+    enable_checkpoints.add_argument('--all-clients-updated', action='store_true')
     status = commands.add_parser("status", help="show branch, HEAD, connections and fresh publication state")
     diagnostics_arguments(status)
     status.add_argument("remote", nargs="?", help="inspect this connection (default: all)")
@@ -688,6 +694,17 @@ def execute(args, *, transport_factory=None):
                     from .work_lifecycle import enable
                     emit(enable(exchange, args.name, quiescent=args.quiescent,
                                 all_clients_updated=args.all_clients_updated), True)
+                elif args.operation == 'enable-checkpoints':
+                    from .publication_checkpoints import enable, enable_all
+                    if bool(args.name) == bool(args.all_under):
+                        raise GdiError('choose a configured remote name or --all-under URL')
+                    value = (enable_all(exchange, args.all_under, quiescent=args.quiescent,
+                                        all_clients_updated=args.all_clients_updated) if args.all_under else
+                             enable(exchange, args.name, quiescent=args.quiescent,
+                                    all_clients_updated=args.all_clients_updated))
+                    emit(value, True)
+                    if value.get('complete') is False:
+                        return 1
                 elif args.operation == "remove":
                     exchange.remove(args.name)
                     print(f"Removed local configuration for {args.name}; files and fetched refs retained")

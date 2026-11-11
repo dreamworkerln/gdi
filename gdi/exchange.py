@@ -86,8 +86,8 @@ class Exchange:
             if transport.list(""):
                 raise GdiError("remote create requires an empty dedicated folder; create it once only")
             repository = {"version": PROTOCOL_VERSION, "repository_id": uuid.uuid4().hex,
-                          "object_format": "sha1", "work_version": 1}
-            for directory in ("bundles", "branches", "work", "work/imports", "work/retired"):
+                          "object_format": "sha1", "work_version": 1, "publication_checkpoint_version": 1}
+            for directory in ("bundles", "branches", "publication-archive", "work", "work/imports", "work/retired"):
                 transport.mkdir(directory)
             with tempfile.TemporaryDirectory(prefix="gdi-init-") as tmp:
                 path = Path(tmp) / "repository.json"
@@ -170,7 +170,7 @@ class Exchange:
             atomic_write(receipt, raw)
 
     @timed('read/verify publication chain')
-    def publications(self, transport, repository_id, ref, *, listing=None, metadata=None):
+    def publications(self, transport, repository_id, ref, *, listing=None, metadata=None, history=False):
         from .work_lifecycle import require_active
         require_active(transport, repository_id, ref)
         prefix = branch_directory(ref) + "/"
@@ -180,7 +180,8 @@ class Exchange:
                        else transport.list("branches", recursive=True))
         if metadata is None and callable(getattr(transport, 'read_many', None)):
             selected = [item['Path'] for item in listing if not item['IsDir'] and
-                        item['Path'].startswith(prefix) and item['Path'].endswith('.json')]
+                        item['Path'].startswith(prefix) and item['Path'].endswith('.json')
+                        and item['Path'] != prefix + 'checkpoint.json']
             for path in selected:
                 if not hex_value(path[len(prefix):-len('.json')], 64):
                     raise GdiError('invalid publication filename')
@@ -191,7 +192,20 @@ class Exchange:
         if metadata is None:
             metadata = {item['Path']: transport.read('branches/' + item['Path']) for item in listing
                         if not item['IsDir'] and item['Path'].startswith(prefix) and item['Path'].endswith('.json')}
-        return validate_publications(repository_id, ref, listing, metadata)
+        from .publication_checkpoints import CHECKPOINT, enabled, live_chain, history_chain
+        path = prefix + CHECKPOINT
+        has_marker = any(item['Path'] == path and not item['IsDir'] for item in listing)
+        repository = getattr(transport, 'repository', None)
+        if repository is None:
+            repository = validate_repository(decode(transport.read('repository.json')))
+        checkpoint = None
+        if has_marker:
+            if not enabled(repository):
+                raise GdiError('checkpoint found without repository capability')
+            raw = metadata.get(path) if metadata is not None else None
+            checkpoint = decode(raw if raw is not None else transport.read('branches/' + path))
+        result = live_chain(repository_id, ref, listing, metadata, checkpoint, transport.read)
+        return history_chain(result, transport.read) if history else result
 
     @timed('log')
     def log(self, name, branch=None, *, limit=20):
@@ -201,7 +215,7 @@ class Exchange:
         branch = branch if branch is not None else self.git.branch()
         ref = self.git.ref(branch)
         transport, repository_id = self.connect(name)
-        chain = self.publications(transport, repository_id, ref)
+        chain = self.publications(transport, repository_id, ref, history=True)
         records = []
         subjects = {}
         for publication_id, data in reversed(chain[-limit:]):
@@ -248,7 +262,8 @@ class Exchange:
             with tempfile.TemporaryDirectory(prefix="gdi-download-") as tmp:
                 bundle = Path(tmp) / "source.bundle"
                 transport.download("bundles/" + data["bundle_sha256"] + ".bundle", bundle)
-                previous = records.get(data["previous"])
+                from .publication_checkpoints import previous_metadata
+                previous = previous_metadata(chain, data)
                 with self.verified(bundle, data, data["ref"], cache, previous) as quarantine:
                     cache.accept(publication_id, data["head"], quarantine)
         return cache
@@ -265,6 +280,11 @@ class Exchange:
         self.git.check_payload(head)
         transport, repository_id = self.connect(name)
         chain = self.publications(transport, repository_id, ref)
+        from . import publication_checkpoints as checkpoints
+        if checkpoints.enabled(transport.repository) and getattr(chain, 'residue', ()):
+            checkpoints.compact(transport, chain.checkpoint,
+                                [(identity, None) for identity in chain.residue])
+            chain = self.publications(transport, repository_id, ref)
         tip = chain[-1] if chain else None
         cache = VerifiedCache(self.git, repository_id)
         if tip is not None:
@@ -278,6 +298,19 @@ class Exchange:
                 cache = self.restore(transport, repository_id, chain)
                 self.git.import_objects(cache.path, tip[1]["head"])
             if head == tip[1]["head"] and (not full or tip[1]["bundle_kind"] == "full"):
+                if (checkpoints.enabled(transport.repository) and tip[1]['bundle_kind'] == 'full'
+                        and (chain.checkpoint is None or chain.checkpoint['root'] != tip[0])):
+                    # Resume a full publication whose manifest was committed before a crash.
+                    from .publication import PreparedPublication
+                    with tempfile.TemporaryDirectory(prefix='gdi-checkpoint-retry-') as temporary:
+                        raw = transport.read('branches/' + branch_directory(ref) + '/' + tip[0] + '.json')
+                        old = checkpoints.PublicationChain(chain[:-1], checkpoint=chain.checkpoint)
+                        prepared = PreparedPublication(Path(temporary) / 'unused.bundle', Path(temporary) / 'publication.json', raw)
+                        marker, archives, target = checkpoints.prepare(old, prepared, transport.read, temporary)
+                        transport.mkdir('publication-archive')
+                        for relative, path in archives.items():
+                            transport.upload(path, relative)
+                        checkpoints.activate(self, transport, repository_id, old, prepared, marker, archives, target)
                 self.verify_identity(transport, repository_id)
                 self.last_publication = tip[1]
                 self.notify_publication(name, tip[0])
@@ -290,6 +323,9 @@ class Exchange:
                                            previous=tip, incremental=not is_full)
             data = prepared.data
             publication_id = prepared.publication_id
+            rotation = None
+            if is_full and checkpoints.enabled(transport.repository):
+                rotation = checkpoints.prepare(chain, prepared, transport.read, tmp)
             # Recheck before exposing a publication. This detects observed competition,
             # but is not a compare-and-swap or a distributed lock.
             self.verify_identity(transport, repository_id)
@@ -298,6 +334,10 @@ class Exchange:
             with self.verified(prepared.bundle, data, ref, cache, tip[1] if tip else None) as quarantine:
                 with phase('upload git bundle'):
                     transport.upload(prepared.bundle, prepared.bundle_relative)
+                if rotation:
+                    transport.mkdir('publication-archive')
+                    for relative, path in rotation[1].items():
+                        transport.upload(path, relative)
                 directory = prepared.manifest_relative.rpartition('/')[0]
                 with phase('publish manifest'):
                     # Bundle transfer may outlive a folder replacement. Resolve
@@ -310,6 +350,8 @@ class Exchange:
                 latest = self.publications(transport, repository_id, ref)
                 if not latest or latest[-1][0] != publication_id:
                     raise GdiError("publication uploaded, but remote advanced concurrently; inspect with fetch")
+                if rotation:
+                    checkpoints.activate(self, transport, repository_id, chain, prepared, *rotation)
                 cache.accept(publication_id, head, quarantine)
         self.last_publication = data
         self.notify_publication(name, publication_id)

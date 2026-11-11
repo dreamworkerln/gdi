@@ -59,6 +59,18 @@ class PrefixTransport:
     def enable_work(self, source):
         self.store.data[self.path('repository.json')] = Path(source).read_bytes()
 
+    def enable_checkpoints(self, source):
+        self.store.data[self.path('repository.json')] = Path(source).read_bytes()
+
+    def update_checkpoint(self, source, path):
+        return self.store.update_checkpoint(source, self.path(path))
+
+    def delete_publication(self, path):
+        return self.store.delete_publication(self.path(path))
+
+    def delete_checkpoint(self, path):
+        return self.store.delete_checkpoint(self.path(path))
+
     def delete_work_manifest(self, path):
         return self.store.delete_work_manifest(self.path(path))
 
@@ -446,23 +458,25 @@ class InboxTests(InboxTestCase):
                 if kind == 'secret':
                     config['execution_profile']['workflow']['secrets'] = ['GDI_TEST_UNSET_SECRET']
                 worker = self.worker(config)
-                workflow = {'path': '.github/workflows/missing.yml'} if kind == 'missing' else None
-                if kind == 'symlink':
-                    path = self.a.path / '.github/workflows/checks.yml'
-                    path.unlink()
-                    path.symlink_to(self.root / 'outside.yml')
-                    self.a.call('add', '.github')
-                    self.commit(self.a, 'symlink')
-                client, req = self.submit(worker, workflow=workflow)
-                worker.tick()
-                self.assertEqual(client.status(req['job_id'])['state'], 'ERROR')
-                self.assertFalse(self.counter.exists())
-                worker.close(); self._cleanups.pop()
-                if kind == 'symlink':
-                    path.unlink()
-                    path.write_text('on: push\njobs: {}\n')
-                    self.a.call('add', '.github')
-                    self.commit(self.a, 'fixed')
+                try:
+                    workflow = {'path': '.github/workflows/missing.yml'} if kind == 'missing' else None
+                    if kind == 'symlink':
+                        path = self.a.path / '.github/workflows/checks.yml'
+                        path.unlink()
+                        path.symlink_to(self.root / 'outside.yml')
+                        self.a.call('add', '.github')
+                        self.commit(self.a, 'symlink')
+                    client, req = self.submit(worker, workflow=workflow)
+                    worker.tick()
+                    self.assertEqual(client.status(req['job_id'])['state'], 'ERROR')
+                    self.assertFalse(self.counter.exists())
+                finally:
+                    worker.close(); self._cleanups.pop()
+                    if kind == 'symlink' and path.is_symlink():
+                        path.unlink()
+                        path.write_text('on: push\njobs: {}\n')
+                        self.a.call('add', '.github')
+                        self.commit(self.a, 'fixed')
 
     def test_github_namespace_is_pinned_and_retry_preserves_it(self):
         self.a.call('remote', 'add', 'origin', 'git@github.com:example/project.git')

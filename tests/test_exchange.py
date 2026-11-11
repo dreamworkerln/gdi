@@ -88,6 +88,18 @@ class MemoryTransport:
     def enable_work(self, source):
         self.data['repository.json'] = Path(source).read_bytes()
 
+    def enable_checkpoints(self, source):
+        self.data['repository.json'] = Path(source).read_bytes()
+
+    def update_checkpoint(self, source, path):
+        self.update_advisory(source, path)
+
+    def delete_publication(self, path):
+        self.delete_bundle(path)
+
+    def delete_checkpoint(self, path):
+        self.delete_bundle(path)
+
     def delete_work_manifest(self, path):
         return self.delete_bundle(path)
 
@@ -111,6 +123,10 @@ class ExchangeTestCase(unittest.TestCase):
         self.ea = Exchange(self.a, lambda url: self.store)
         self.eb = Exchange(self.b, lambda url: self.store)
         self.identity = self.ea.create("drive", "memory:project")
+        # Legacy protocol fixtures keep their original complete-chain assertions.
+        repository = decode(self.store.data['repository.json'])
+        repository.pop('publication_checkpoint_version', None)
+        self.store.data['repository.json'] = encode(repository)
         self.eb.add("drive", "memory:project", expected_id=self.identity)
 
     def tearDown(self):
@@ -1035,8 +1051,11 @@ class LocalTransportTests(unittest.TestCase):
                 a.call("add", "hello.txt")
                 a.call("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", f"update {number}")
                 self.assertIn("Bundle: incremental", cli(source, "push", "drive"))
-            manifests = [decode(path.read_bytes()) for path in (root / "transport/branches").rglob("*.json")]
+            manifests = [decode(path.read_bytes()) for path in (root / "transport/branches").rglob("*.json")
+                         if path.name != 'checkpoint.json']
             self.assertEqual(sorted(value["bundle_kind"] for value in manifests), ["full", "incremental", "incremental"])
+            checkpoint = decode((root / 'transport/branches/main/checkpoint.json').read_bytes())
+            self.assertEqual(checkpoint['root'], digest(encode(next(value for value in manifests if value['bundle_kind'] == 'full'))))
             identity = Exchange(a).remote("drive")["repository_id"]
             cli(target, "remote", "add", "drive", url, "--repository-id", identity)
             cli(target, "fetch", "drive")

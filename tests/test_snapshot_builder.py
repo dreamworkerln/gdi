@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from gdi import agent
 from gdi.cli import main
+from gdi.git import GdiError
 from gdi.publication import decode, encode
 from gdi.snapshot import Snapshot
 from gdi.snapshot_builder import ADAPTER, SnapshotBuildError, build, summary
@@ -76,6 +77,73 @@ class SnapshotBuilderTests(ExchangeTestCase):
         self.assertEqual(result['validation']['bundles_required'], 1)
         self.assertEqual(result['validation']['required_bundles_present'], 0)
         self.assertFalse(result['validation']['bundle_contents_verified'])
+
+    def test_bundle_bin_download_names_restore_full_and_delta_without_changing_inputs(self):
+        self.ea.push('drive')
+        self.commit(self.a, 'second'); self.ea.push('drive')
+        capture = self.capture()
+        document = decode(capture.read_bytes())
+        for item in document['downloads']:
+            if not item['local_path'].endswith('.bundle'):
+                continue
+            self.rewrite(capture.parent / item['response'],
+                         lambda d: d['structuredContent'].update(
+                             file_name=d['structuredContent']['file_name'] + '.bin'))
+            local = capture.parent / item['local_path']
+            item['local_path'] += '.bin'
+            local.rename(capture.parent / item['local_path'])
+        capture.write_bytes(encode(document))
+        before = {p.relative_to(capture.parent): p.read_bytes()
+                  for p in capture.parent.rglob('*') if p.is_file()}
+        result = build(capture, self.identity, capture.parent / 'assembled.json')
+        snapshot = Snapshot(result['snapshot'], self.identity)
+        self.assertEqual(len(snapshot.required_bundles()), 2)
+        for item in snapshot.required_bundles():
+            self.assertTrue(item['target_name'].endswith('.bundle'))
+            self.assertTrue(str(snapshot.downloaded_file(item['relative_path'])).endswith('.bundle.bin'))
+        restored = agent.clone(result['snapshot'], self.identity, self.root / 'restored')
+        self.assertEqual(restored['head'], self.a.oid('HEAD'))
+        self.assertEqual(restored['validation']['bundles_verified'], 2)
+        self.assertEqual((self.root / 'restored/file.txt').read_text(), 'second\n')
+        for relative, raw in before.items():
+            self.assertEqual((capture.parent / relative).read_bytes(), raw)
+
+    def test_bin_suffix_does_not_allow_other_names_or_metadata_mismatches(self):
+        self.ea.push('drive')
+        changes = [('file_name', 'wrong.bundle.bin'), ('file_name', '{name}.bin.bin'),
+                   ('file_name', '{name}.BIN'), ('mime_type', 'text/plain'),
+                   ('file_size_bytes', 123456), ('id', 'wrong-id')]
+        for number, (field, value) in enumerate(changes):
+            with self.subTest(field=field, value=value):
+                capture = self.capture('bin-mismatch-' + str(number))
+                item = next(item for item in decode(capture.read_bytes())['downloads']
+                            if item['local_path'].endswith('.bundle'))
+                path = capture.parent / item['response']
+                data = decode(path.read_bytes())
+                metadata = data['structuredContent']
+                original = metadata['file_name']
+                metadata['file_name'] = original + '.bin'
+                metadata[field] = value.replace('{name}', original) if isinstance(value, str) else value
+                path.write_bytes(encode(data))
+                self.assert_build_failure_preserves_inputs(capture)
+
+    def test_bin_suffix_does_not_bypass_bundle_content_verification(self):
+        self.ea.push('drive')
+        capture = self.capture()
+        item = next(item for item in decode(capture.read_bytes())['downloads']
+                    if item['local_path'].endswith('.bundle'))
+        self.rewrite(capture.parent / item['response'],
+                     lambda d: d['structuredContent'].update(
+                         file_name=d['structuredContent']['file_name'] + '.bin'))
+        local = capture.parent / item['local_path']
+        raw = local.read_bytes()
+        local.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+        result = build(capture, self.identity, capture.parent / 'assembled.json')
+        self.assertFalse(result['validation']['bundle_contents_verified'])
+        destination = self.root / 'corrupted-restore'
+        with self.assertRaises(GdiError):
+            agent.clone(result['snapshot'], self.identity, destination)
+        self.assertFalse(destination.exists())
 
     def test_unknown_adapter_capture_or_response_formats_stop(self):
         for name, mutate in [('adapter', lambda d: d.update(adapter='future-connector-v9')),

@@ -70,12 +70,14 @@ def hex_value(value, length):
 
 
 def validate_repository(data):
-    if (set(data) not in ({"version", "repository_id", "object_format"},
-                          {"version", "repository_id", "object_format", "work_version"}) or
+    if (not {'version', 'repository_id', 'object_format'}.issubset(data) or
+            set(data) - {'version', 'repository_id', 'object_format', 'work_version', 'publication_checkpoint_version'} or
+            ('publication_checkpoint_version' in data and
+             (type(data['publication_checkpoint_version']) is not int or data['publication_checkpoint_version'] != 1)) or
             ("work_version" in data and (type(data["work_version"]) is not int or data["work_version"] != 1)) or
             type(data.get("version")) is not int or data["version"] != PROTOCOL_VERSION or
             not hex_value(data.get("repository_id"), 32) or data.get("object_format") != "sha1"):
-        raise GdiError("unsupported repository metadata: expected protocol v3, SHA-1; recreate the remote in an empty folder")
+        raise GdiError("unsupported repository metadata: expected protocol v3, SHA-1 and supported capabilities; update the client, do not overwrite repository.json")
     return data
 
 

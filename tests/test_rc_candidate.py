@@ -289,8 +289,15 @@ class RcCandidateTests(unittest.TestCase):
             with self.assertRaisesRegex(GdiError, 'lost upload response'):
                 self.exchange.push('drive')
         publication_paths = set((self.remote / 'branches/main').iterdir())
+        self.assertEqual(len(publication_paths), 1)
         self.assertFalse(self.exchange.push('drive')[2])
-        self.assertEqual(set((self.remote / 'branches/main').iterdir()), publication_paths)
+        checkpoint_path = self.remote / 'branches/main/checkpoint.json'
+        checkpoint = checkpoint_path.read_bytes()
+        self.assertEqual(set((self.remote / 'branches/main').iterdir()), publication_paths | {checkpoint_path})
+        self.assertEqual(decode(checkpoint)['root'], next(iter(publication_paths)).stem)
+        self.assertFalse(self.exchange.push('drive')[2])
+        self.assertEqual(checkpoint_path.read_bytes(), checkpoint)
+        self.assertEqual(set((self.remote / 'branches/main').iterdir()), publication_paths | {checkpoint_path})
 
     def test_batch_missing_oversized_symlink_and_invalid_paths(self):
         first = self.metadata(b'{"first":1}\n')

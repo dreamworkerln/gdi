@@ -80,6 +80,8 @@ checkout выбранной ветки. Если опубликована одн
 | `gdi alias set NAME "COMMAND [OPTIONS]"` | Создаёт или заменяет пользовательский алиас команды |
 | `gdi alias list` / `gdi alias remove NAME` | Показывает алиасы / удаляет выбранный алиас |
 | `gdi remote create NAME URL` | Один раз создаёт пустой remote с `work_version=1` и сохраняет repository ID локально |
+| `gdi remote enable-checkpoints NAME --quiescent --all-clients-updated` | Включает короткую цепочку manifests и архив с сохранением Repository ID и Git-истории |
+| `gdi remote enable-checkpoints --all-under URL --quiescent --all-clients-updated` | Явная активация подходящих репозиториев непосредственно под общим корнем; отчёт по каждому |
 | `gdi remote add NAME URL [--repository-id ID]` | Подключает существующий remote; без ID доверяет идентичности при первом подключении |
 | `gdi remote default NAME` | Выбирает подключение для коротких команд |
 | `gdi log [NAME] [BRANCH] [-n N] [--json]` | Проверенная история публикаций ветки, новые первыми; по умолчанию 20 записей |
@@ -104,6 +106,12 @@ checkout выбранной ветки. Если опубликована одн
 | `gdi gc NAME [--keep-checkpoints N]` | Показывает план очистки bundles всех веток; по умолчанию сохраняет два полных checkpoint и дельты после них |
 | `gdi gc NAME --apply --quiescent` | Проверяет сохраняемую историю с нуля, повторно сверяет remote и удаляет устаревшие bundles; требует остановки обмена на всех машинах |
 | `gdi -v`, `gdi --version` | Одинаковый вывод: версия и золотая ASCII-эмблема из C&C без надписей |
+
+Новые remote также получают `publication_checkpoint_version=1`. В enabled remote
+каждый full bundle, ручной и автоматический, создаёт metadata checkpoint и
+архивирует предыдущие активные manifests. Обычные clone/fetch/push не читают всю
+древнюю metadata цепочку. Git-коммиты не squash-ятся; исторические Publication ID
+доступны через архив. Правила перехода и сбоев: [protocol.md](protocol.md#publication-checkpoints-v1-gdi-06).
 | `gdi -h`, `gdi --help` | Одинаковая справка с примерами использования |
 
 Первое подключение выбирается по умолчанию; смена — `gdi remote default NAME`.

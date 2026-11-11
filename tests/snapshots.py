@@ -54,6 +54,22 @@ def export_snapshot(root, transport, *, repository_path='project', ref='refs/hea
             transport.download(path, target)
             value['files'].append({'file_id': entry['id'], 'local_path': target.relative_to(root).as_posix()})
     path = root / 'snapshot.json'
+    # Archives are content-addressed downloads, not an unbounded mandatory listing.
+    archive_files = []
+    if any(row['Path'] == 'publication-archive' and row['IsDir'] for row in transport.list('')):
+        for row in transport.list('publication-archive'):
+            if row['IsDir']:
+                continue
+            relative = 'publication-archive/' + row['Path']
+            if any(item['file_id'] == identity(relative) for item in value['files']):
+                continue
+            target = root / 'archive-downloads' / row['Path']
+            target.parent.mkdir(exist_ok=True)
+            transport.download(relative, target)
+            archive_files.append({'file_id': identity(relative), 'sha256': row['Path'][:-5],
+                                  'local_path': target.relative_to(root).as_posix()})
+    if archive_files:
+        value['archives'] = archive_files
     path.write_bytes(encode(value))
     return path
 

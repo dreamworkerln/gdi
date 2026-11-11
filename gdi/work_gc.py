@@ -90,7 +90,9 @@ def projected_state(state, retirements):
                         if path.split('/', 1)[0] not in {branch_directory(ref) for ref in dropped}},
                        tuple(path for path in state.directories if path not in directories),
                        {ref: chain for ref, chain in state.chains.items() if ref not in dropped},
-                       state.bundles, state.lifecycle)
+                       state.bundles, state.lifecycle,
+                       {ref: raw for ref, raw in state.checkpoints.items()
+                        if ref not in {value['ref'] for value in retirements.values()}})
 
 
 def collect(exchange, name, *, apply=False, keep_imported=DEFAULT_KEEP_IMPORTED,
@@ -169,6 +171,12 @@ def collect(exchange, name, *, apply=False, keep_imported=DEFAULT_KEEP_IMPORTED,
     for value in removals:
         directory = 'branches/' + branch_directory(value['ref'])
         for item in latest.list(directory):
+            if item['Path'] == 'checkpoint.json' and not item['IsDir']:
+                raw = latest.read(directory + '/checkpoint.json')
+                if raw != state.checkpoints.get(value['ref']):
+                    raise GdiError('retired branch checkpoint changed before deletion')
+                latest.delete_checkpoint(directory + '/checkpoint.json')
+                continue
             publication = item['Path'][:-5] if item['Path'].endswith('.json') else ''
             if item['IsDir'] or publication not in value['manifests']:
                 raise GdiError('unexpected file appeared in retired work directory; keep clients paused')
@@ -183,6 +191,7 @@ def collect(exchange, name, *, apply=False, keep_imported=DEFAULT_KEEP_IMPORTED,
     after = gc.snapshot(exchange, final, repository_id)
     expected_bundles = {path: size for path, size in state.bundles.items() if path not in bundle_names}
     if (final_id != repository_id or after.chains != projected.chains or after.metadata != projected.metadata or
+            after.checkpoints != projected.checkpoints or
             after.bundles != expected_bundles or gc.ci_guard(exchange, final, repository_id, inbox_root=exchange.remote(name).get('inbox_root')) != ci_state or
             work_lifecycle.records(final, repository_id, 'retired') != retiring or
             pending_notifications(exchange, name, repository_id, retiring)):

@@ -178,10 +178,15 @@ class DeployTests(unittest.TestCase):
         runtime = self.store / 'runtime'
         first_data = (runtime / 'gdi.pyz').read_bytes()
         self.assertEqual((runtime / 'agent.md').read_bytes(), (self.repo / 'docs/agent.md').read_bytes())
-        manifests = list((self.store / 'branches/main').glob('*.json'))
+        manifests = [path for path in (self.store / 'branches/main').glob('*.json')
+                     if path.name != 'checkpoint.json']
         self.assertEqual(len(manifests), 1)
+        checkpoint_path = self.store / 'branches/main/checkpoint.json'
+        checkpoint = checkpoint_path.read_bytes()
+        self.assertEqual(json.loads(checkpoint)['root'], manifests[0].stem)
         self.deploy('--runtime-dir', self.runtime_url)
-        self.assertEqual(list((self.store / 'branches/main').glob('*.json')), manifests)
+        self.assertEqual(set((self.store / 'branches/main').glob('*.json')), set(manifests) | {checkpoint_path})
+        self.assertEqual(checkpoint_path.read_bytes(), checkpoint)
         self.assertEqual((runtime / 'gdi.pyz').read_bytes(), first_data)
         (self.repo / 'example.txt').write_text('new committed contents\n')
         with (self.repo / 'docs/agent.md').open('a') as handle:
@@ -239,8 +244,12 @@ raise SystemExit(subprocess.call([{real_rclone!r}, *args]))
         self.env['PATH'] = str(tools) + os.pathsep + original_path
         result = self.deploy('--runtime-dir', self.runtime_url, expected=23)
         self.assertIn('failed during runtime upload', result.stderr)
-        publications = list((self.store / 'branches/main').glob('*.json'))
+        publications = [path for path in (self.store / 'branches/main').glob('*.json')
+                        if path.name != 'checkpoint.json']
         self.assertEqual(len(publications), 1)
+        checkpoint_path = self.store / 'branches/main/checkpoint.json'
+        checkpoint = checkpoint_path.read_bytes()
+        self.assertEqual(json.loads(checkpoint)['root'], publications[0].stem)
         self.assertFalse((self.store / 'runtime/runtime.json').exists())
         wrapper.write_text(f'''#!{sys.executable}
 import pathlib, subprocess, sys
@@ -256,5 +265,6 @@ raise SystemExit(code)
         self.assertNotIn('deploy: complete', result.stdout)
         self.env['PATH'] = original_path
         self.deploy('--runtime-dir', self.runtime_url)
-        self.assertEqual(list((self.store / 'branches/main').glob('*.json')), publications)
+        self.assertEqual(set((self.store / 'branches/main').glob('*.json')), set(publications) | {checkpoint_path})
+        self.assertEqual(checkpoint_path.read_bytes(), checkpoint)
         self.assertEqual((self.store / 'runtime/gdi.pyz').read_bytes(), (self.output / 'gdi.pyz').read_bytes())

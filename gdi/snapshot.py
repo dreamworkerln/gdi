@@ -7,7 +7,7 @@ import stat
 from .branches import branch_directory
 from .git import GdiError, Git
 from .inbox import relative_repository
-from .publication import bundle_sequence, decode, digest, hex_value, validate_publications, validate_repository
+from .publication import bundle_sequence, decode, digest, encode, file_digest, hex_value, validate_publications, validate_repository
 
 
 MAX_METADATA = 1024 * 1024
@@ -85,7 +85,8 @@ class Snapshot:
         self.document = decode(metadata_file(self.path))
         value = self.document
         keys = {'snapshot_version', 'repository_path', 'repository_folder_id', 'ref', 'listings', 'files'}
-        if set(value) != keys or type(value.get('snapshot_version')) is not int or value['snapshot_version'] != 1:
+        if (not keys.issubset(value) or set(value) - keys - {'archives', 'bundle_downloads'}
+                or type(value.get('snapshot_version')) is not int or value['snapshot_version'] != 1):
             raise GdiError('unsupported connector snapshot schema')
         self.repository_path = relative_repository(value['repository_path'])
         self.ref = value['ref']
@@ -140,6 +141,44 @@ class Snapshot:
             if local.stat().st_size != self.entries[name]['bytes']:
                 raise GdiError('snapshot download size differs from listing')
             self.downloads[name] = local
+        self.archives = {}
+        if not isinstance(value.get('archives', []), list):
+            raise GdiError('snapshot archive downloads must be a list')
+        for item in value.get('archives', []):
+            if (not isinstance(item, dict) or set(item) != {'file_id', 'sha256', 'local_path'}
+                    or not hex_value(item['sha256'], 64)):
+                raise GdiError('invalid snapshot archive descriptor')
+            identity = opaque_id(item['file_id'])
+            if identity in ids or item['sha256'] in self.archives:
+                raise GdiError('duplicate snapshot archive ID or checksum')
+            ids.add(identity)
+            local = local_file(self.path.parent, item['local_path'])
+            if local in used_local:
+                raise GdiError('snapshot downloads must use distinct local files')
+            used_local.add(local)
+            if digest(metadata_file(local)) != item['sha256']:
+                raise GdiError('snapshot archive checksum mismatch')
+            self.archives[item['sha256']] = local
+        self.direct_bundles = set()
+        if not isinstance(value.get('bundle_downloads', []), list):
+            raise GdiError('snapshot bundle downloads must be a list')
+        for item in value.get('bundle_downloads', []):
+            if (not isinstance(item, dict) or set(item) != {'file_id', 'sha256', 'local_path'}
+                    or not hex_value(item['sha256'], 64)):
+                raise GdiError('invalid direct bundle descriptor')
+            identity = opaque_id(item['file_id'])
+            name = 'bundles/' + item['sha256'] + '.bundle'
+            local = local_file(self.path.parent, item['local_path'])
+            if identity in ids or local in used_local or name in self.downloads:
+                raise GdiError('duplicate direct bundle download')
+            ids.add(identity)
+            used_local.add(local)
+            if file_digest(local) != item['sha256']:
+                raise GdiError('direct bundle checksum mismatch')
+            self.direct_bundles.add(name)
+            self.downloads[name] = local
+            self.entries[name] = {'id': identity, 'name': name.rsplit('/', 1)[1],
+                                  'is_dir': False, 'bytes': local.stat().st_size}
         for name in ('branches', 'bundles'):
             if name not in self.entries or not self.entries[name]['is_dir']:
                 raise GdiError('repository must contain branches and bundles folders')
@@ -159,10 +198,23 @@ class Snapshot:
                     for item in self.list('branches/' + directory)] if selected else [])
         manifests = {item['Path']: self.read('branches/' + item['Path']) for item in listing
                      if not item['IsDir'] and item['Path'].endswith('.json')}
+        from .publication_checkpoints import CHECKPOINT, enabled, live_chain
+        marker_path = 'branches/' + directory + '/' + CHECKPOINT
+        checkpoint = None
+        if marker_path in self.entries:
+            if not enabled(self.repository):
+                raise GdiError('checkpoint found without repository capability')
+            checkpoint = decode(self.read(marker_path))
+            manifests.pop(directory + '/' + CHECKPOINT, None)
         self.chain = (work_lifecycle.archived_chain(self.retired) if self.retired else
-                      validate_publications(expected_id, self.ref, listing, manifests))
+                      live_chain(expected_id, self.ref, listing, manifests, checkpoint, self.read))
         self.fingerprint = digest(self.read('repository.json') + b''.join(
-            identity.encode('ascii') for identity, _ in self.chain))
+            identity.encode('ascii') for identity, _ in self.chain) +
+            (encode(checkpoint) if checkpoint else b''))
+
+    def history_chain(self):
+        from .publication_checkpoints import history_chain
+        return history_chain(self.chain, self.read)
 
     def required_bundles(self):
         return [{'relative_path': 'bundles/' + data['bundle_sha256'] + '.bundle',
@@ -207,6 +259,19 @@ class Snapshot:
         return checked
 
     def read(self, relative):
+        if relative.startswith('publication-archive/'):
+            from .publication_checkpoints import archive_path
+            identity = relative[len('publication-archive/'):-5]
+            if archive_path(identity) != relative:
+                raise GdiError('invalid snapshot archive path')
+            if identity in self.archives:
+                path = local_file(self.path.parent, self.archives[identity].relative_to(self.path.parent).as_posix())
+                raw = metadata_file(path)
+                if digest(raw) != identity:
+                    raise GdiError('snapshot archive checksum changed')
+                return raw
+            if relative not in self.downloads:
+                raise GdiError('snapshot requires archive download: ' + relative)
         return metadata_file(self.downloaded_file(relative))
 
     def read_optional(self, relative):
@@ -221,7 +286,8 @@ class Snapshot:
 
     def require_file(self, relative, checksum, size):
         parent, _, name = relative.rpartition('/')
-        self.list(parent)  # Prove uniqueness against a complete listing.
+        if relative not in self.direct_bundles:
+            self.list(parent)  # Non-content-addressed files require complete listings.
         path = self.downloaded_file(relative)
         from .publication import file_digest
         if path.stat().st_size != size or file_digest(path) != checksum:

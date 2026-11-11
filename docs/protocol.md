@@ -18,7 +18,7 @@
 `repository.json`:
 
 ```json
-{"version":3,"repository_id":"0123456789abcdef0123456789abcdef","object_format":"sha1","work_version":1}
+{"version":3,"repository_id":"0123456789abcdef0123456789abcdef","object_format":"sha1","work_version":1,"publication_checkpoint_version":1}
 ```
 
 Repository ID закрепляется в локальной конфигурации:
@@ -101,6 +101,75 @@ Reader допускает более раннюю базу, но не другу
 затем `/` на `%2F`; Unicode сохраняется. Кодирование обратимо и различает
 `feature/login`, `feature_login` и `feature%2Flogin`. Полный ref хранится в manifest. Все поля
 обязательны; неизвестные поля, дубликаты ключей и неподдерживаемые версии отвергаются.
+
+## Publication checkpoints v1 (GDI 0.6)
+
+Optional `publication_checkpoint_version:1` включает короткую активную metadata
+цепочку. Новые пустые remote получают capability сразу. Существующий remote
+активируется явно после обновления CLI, worker и runtime, при остановленном обмене:
+
+```bash
+gdi remote enable-checkpoints drive --quiescent --all-clients-updated
+# Только при явном разрешении обработать весь общий корень:
+gdi remote enable-checkpoints --all-under gdrive:gdi --quiescent --all-clients-updated
+```
+
+Активация сохраняет version=3 и Repository ID; старые клиенты отвергают неизвестную
+capability. Обновление исходников само существующие remote не активирует.
+Для каждой существующей live ветки активация проверяет пригодный полный bundle
+и создаёт checkpoint на его существующую публикацию: Git HEAD, commits, SHA,
+Publication IDs и bytes manifests не переписываются. Учитываются incremental bases,
+в том числе старее непосредственного predecessor. Пустая ветка ждёт первого push;
+retired work refs не воскрешаются. Часть веток/remote может остаться неактивированной
+после ошибки; результат bulk-команды сообщает каждую отдельно. Повтор продолжает
+незавершённую архивацию без удаления неизвестных данных.
+
+```text
+branches/<branch>/checkpoint.json                  # текущая граница проверки
+branches/<branch>/<publication>.json               # только активный участок
+publication-archive/<sha256>.json                  # immutable архивные блоки
+bundles/<sha256>.bundle                            # Git-объекты, прежние адреса
+```
+
+`checkpoint.json` содержит ровно `checkpoint_version:1`, `repository_id`, `ref`,
+`root` (ID полного manifest), `previous` и `previous_head` (его predecessor),
+`history` (SHA-256 последнего архивного блока либо null) и `archived_count`
+(число manifests в только что закрытом активном участке). Исходная точка имеет
+null predecessor/history и archived_count=0. Manifest root остаётся обычным v3
+manifest с исходным `previous`; это поле не обнуляется для имитации новой истории.
+
+Архивный блок: `archive_version:1`, `repository_id`, `ref`, `previous` (hash
+предыдущего архивного блока либо null), `records` — массив объектов `id/manifest`.
+`manifest` хранит точные UTF-8 bytes в виде JSON-строки. Hash имени считается от
+точных bytes блока; размер writer-блока не больше 512 KiB. Большой исходный участок
+делится на несколько блоков, а каждый следующий checkpoint добавляет только
+свой закрытый участок. Старые блоки не переписываются и не копируются в новый
+растущий индекс. Архивы не удаляются обычной ротацией.
+
+У каждой full-публикации — явной `-f/--full` и автоматической по
+`--checkpoint-every` — одинаковая последовательность: immutable архивные блоки и
+полный bundle, manifest, обновление checkpoint, проверка нового состояния, затем
+удаление только точных активных копий уже проверенных архивированных manifests.
+Перед удалением сравниваются сохранённые bytes и текущий checkpoint. При сбое
+до checkpoint прежняя цепочка читается как раньше; после checkpoint остаточные
+копии сверяются с последним архивным участком. Потеря upload/delete ack допускает
+повтор с теми же artifacts. Неизвестная или конкурирующая публикация вызывает
+отказ, не автоматическую очистку. Это не распределённая транзакция или CAS;
+сохраняется правило одного writer на ref и обязательная quiescence при активации.
+
+Обычный reader проверяет root и активные продолжения, их hashes/schema/ref/bases,
+SHA-256 bundles и Git-объекты. При проверке полного root учитывается его
+`previous_head`. Checkpoint является явно доверенной границей: reader не утверждает,
+что повторно прочёл всю древнюю цепочку. Не допускаются произвольные отсутствующие
+predecessors, bases вне активного участка, скрытые конфликтующие manifests и
+несовпадающие архивные копии. `metadata_scope` отличает активную проверку от полной.
+
+При интервале K обычная branch-папка содержит не более K manifests и checkpoint;
+после сбоя временно остаются архивируемые копии. Для clone не требуется listing
+всех архивов или всех bundles: адресные downloads связываются с ожидаемым SHA-256
+из проверенной metadata. Архивные queries, CI по прежнему Publication ID, log,
+GC и work retirement могут прочитать исторические блоки и полную цепочку явно.
+Архивирование manifests не означает squash Git-коммитов или автоматический bundle GC.
 
 HEAD и prerequisites — 40 lowercase hex: протокол явно ограничен SHA-1 repositories.
 Принимаются unfiltered SHA-1 Git bundles формата v2/v3 с одним advertised ref.

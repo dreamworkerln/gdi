@@ -26,6 +26,24 @@ def publication(exchange, transport, repository_id, publication_id):
     listing = transport.list("branches", recursive=True)
     paths = [entry["Path"] for entry in listing if not entry["IsDir"] and entry["Path"].endswith('/' + publication_id + '.json')]
     if not paths:
+        # Closed live segments are addressed through their verified archive chain.
+        from .branches import directory_ref
+        from .work_lifecycle import records as lifecycle_records
+        retired = {value['ref'] for value in lifecycle_records(transport, repository_id, 'retired').values()}
+        found = []
+        for item in transport.list('branches'):
+            if not item['IsDir']:
+                continue
+            ref = directory_ref(item['Path'])
+            if ref in retired:
+                continue
+            current = exchange.publications(transport, repository_id, ref, listing=listing, history=True)
+            if publication_id in dict(current):
+                found.append((dict(current)[publication_id], current))
+        if len(found) == 1:
+            return found[0]
+        if found:
+            raise GdiError('CI publication is ambiguous across archived branches')
         from .work_lifecycle import records, archived_chain
         found = []
         for value in records(transport, repository_id, 'retired').values():
@@ -40,6 +58,9 @@ def publication(exchange, transport, repository_id, publication_id):
     if not isinstance(data.get("ref"), str) or not data["ref"].startswith("refs/heads/"):
         raise GdiError("invalid CI publication branch ref")
     chain = exchange.publications(transport, repository_id, data["ref"], listing=listing)
+    if publication_id not in dict(chain):
+        from .publication_checkpoints import history_chain
+        chain = history_chain(chain, transport.read)
     if publication_id not in dict(chain):
         raise GdiError("CI publication is not on the verified metadata chain")
     return dict(chain)[publication_id], chain
