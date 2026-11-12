@@ -74,13 +74,17 @@ def clone(url, destination=None, *, branch=None, expected_id=None, inbox_root=No
             identity = exchange.add('drive', url, expected_id=expected_id, inbox_root=inbox_root)
             transport, repository_id = exchange.connect('drive')
             published = []
-            for entry in transport.list('branches'):
-                if not entry['IsDir']:
-                    raise GdiError('remote branches must contain only branch directories')
-                ref = directory_ref(entry['Path'])
-                git.ref(ref[11:])
-                if exchange.publications(transport, repository_id, ref):
-                    published.append(ref[11:])
+            if hasattr(exchange, 'branches'):
+                published = ([branch] if branch is not None else
+                             [ref[11:] for ref in exchange.branches(transport, repository_id)])
+            else:
+                for entry in transport.list('branches'):
+                    if not entry['IsDir']:
+                        raise GdiError('remote branches must contain only branch directories')
+                    ref = directory_ref(entry['Path'])
+                    git.ref(ref[11:])
+                    if exchange.publications(transport, repository_id, ref):
+                        published.append(ref[11:])
             published.sort()
             selected = branch
             if selected is not None and selected not in published:
@@ -96,7 +100,8 @@ def clone(url, destination=None, *, branch=None, expected_id=None, inbox_root=No
                 git.call('checkout', '--quiet', '--no-track', '-b', selected, 'refs/remotes/drive/' + selected)
             if git.call('check-ignore', '-q', '--', '.gdi/config.json', allowed=(0, 1)).returncode:
                 raise GdiError('project ignore rules reinclude .gdi; add /.gdi/ to the source .gitignore before cloning')
-            exchange.verify_identity(transport, identity)
+            if not hasattr(exchange, 'branches'):
+                exchange.verify_identity(transport, identity)
             result = {'destination': str(target), 'repository_id': identity, 'branch': git.branch(),
                       'head': git.oid('HEAD'), 'branches': published}
         check_destination()

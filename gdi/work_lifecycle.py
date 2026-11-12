@@ -26,6 +26,16 @@ def validate_record(value, repository_id, ident, kind):
     if not isinstance(value, dict):
         raise GdiError('work lifecycle record must be an object')
     common = {'work_version', 'repository_id', 'work', 'ref', 'final', 'marker', 'target', 'squash'}
+    if kind == 'retired' and type(value.get('work_version')) is int and value['work_version'] == 2:
+        if (set(value) != common | {'receipt', 'packets'} or value['repository_id'] != repository_id
+                or value['work'] != ident or value['ref'] != work.PREFIX + ident
+                or not isinstance(value['packets'], list) or not value['packets']
+                or any(not hex_value(identity, 64) for identity in value['packets'])):
+            raise GdiError('invalid v4 work retirement')
+        receipt = validate_record(value['receipt'], repository_id, ident, 'imports')
+        if any(value[key] != receipt[key] for key in common - {'work_version'}):
+            raise GdiError('retirement differs from import receipt')
+        return value
     extra = {'order', 'target_publication', 'work_publication', 'confirmed_at'} if kind == 'imports' else {
         'receipt', 'archive', 'manifests', 'bundles'}
     if (set(value) != common | extra or type(value['work_version']) is not int or value['work_version'] != 1
@@ -84,14 +94,9 @@ def records(transport, repository_id, kind):
 def retirement(transport, repository_id, ident):
     if not enabled(transport, repository_id):
         return None
-    listing = transport.list('work/retired')
-    for item in listing:
-        if item['IsDir'] or not item['Path'].endswith('.json'):
-            raise GdiError('unexpected work retirement path')
-        work.work_id(item['Path'][:-5])
-    if not any(item['Path'] == ident + '.json' for item in listing):
-        return None
-    return validate_record(decode(transport.read('work/retired/' + ident + '.json')), repository_id, ident, 'retired')
+    from .ci import optional_read
+    raw = optional_read(transport, 'work/retired/' + ident + '.json')
+    return validate_record(decode(raw), repository_id, ident, 'retired') if raw is not None else None
 
 
 def require_active(transport, repository_id, ref):
@@ -120,8 +125,6 @@ def upload(transport, path, value):
         source = Path(tmp) / 'metadata.json'
         source.write_bytes(raw)
         transport.upload(source, path)
-    if transport.read(path) != encode(value):
-        raise GdiError('work lifecycle upload not confirmed; keep clients paused and retry')
 
 
 def enable(exchange, name, *, quiescent=False, all_clients_updated=False):
@@ -166,5 +169,4 @@ def confirm_import(exchange, name, value, target_publication, work_publication):
     receipt = {**common, 'order': max((item['order'] for item in prior.values()), default=0) + 1,
                'confirmed_at': now(), 'target_publication': target_publication, 'work_publication': work_publication}
     upload(transport, 'work/imports/' + ident + '.json', receipt)
-    records(transport, repository_id, 'imports')
     return receipt

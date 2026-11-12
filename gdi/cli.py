@@ -198,6 +198,11 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
     enable_checkpoints.add_argument('--all-under', metavar='URL', help='explicitly activate repositories immediately under a shared root')
     enable_checkpoints.add_argument('--quiescent', action='store_true')
     enable_checkpoints.add_argument('--all-clients-updated', action='store_true')
+    upgrade = operations.add_parser('upgrade', help='explicitly replace v3 metadata with packet protocol v4; preserve IDs and commits')
+    diagnostics_arguments(upgrade)
+    upgrade.add_argument('name')
+    upgrade.add_argument('--quiescent', action='store_true')
+    upgrade.add_argument('--all-clients-updated', action='store_true')
     status = commands.add_parser("status", help="show branch, HEAD, connections and fresh publication state")
     diagnostics_arguments(status)
     status.add_argument("remote", nargs="?", help="inspect this connection (default: all)")
@@ -295,6 +300,7 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
     diagnostics_arguments(pulling)
     pulling.set_defaults(json=True)
     pulling.add_argument('--package', required=True)
+    pulling.add_argument('--head', required=True, help='downloaded v4 branch pointer JSON')
     pulling.add_argument('--repository-id', required=True)
     target = pulling.add_mutually_exclusive_group(required=True)
     target.add_argument('--destination', help='new checkout directory')
@@ -307,6 +313,7 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
     pushing.add_argument('--output', required=True, help='durable plan directory outside tracked project files')
     pushing.add_argument('--full', action='store_true', help='ask host GDI for an explicit full checkpoint')
     pushing.add_argument('--receipt', help='one downloaded receipt; no connector read-back or snapshot required')
+    pushing.add_argument('--worker', help='compatible publisher ID from cached registry, only if the pointer has no route')
     builder = agent_ops.add_parser('snapshot-build', help='assemble snapshot v1 from saved connector captures')
     diagnostics_arguments(builder)
     builder.set_defaults(json=True)
@@ -378,9 +385,11 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             sub.add_argument('--heartbeat-timeout', type=float, default=600,
                              help='stale job heartbeat threshold in seconds (default: 600); does not cancel CI')
         if operation == 'accept':
-            sub.add_argument('--inbox-proof', required=True, help='complete inbox listing and downloaded event proof')
+            sub.add_argument('--inbox-proof', help='historical v3 only: downloaded event proof')
+            sub.add_argument('--uploaded', action='store_true', help='v4: connector upload completed, no read-back')
         if operation == 'supervise':
             sub.add_argument('--inbox-proof', help='proof of automatic retry notification; activates the replacement')
+            sub.add_argument('--uploaded', action='store_true', help='v4: successor inbox upload completed')
         if operation in ('prepare', 'accept', 'cancel'):
             sub.add_argument('--capabilities', required=operation != 'prepare', help='fresh downloaded worker capabilities JSON')
     worker = commands.add_parser("worker", help="host worker and systemd user service (works outside git)")
@@ -501,11 +510,11 @@ def execute(args, *, transport_factory=None):
             from . import agent
             if args.operation == 'pull':
                 from .agent_sync import pull
-                value = pull(args.package, args.repository_id, destination=args.destination, repo=args.repo)
+                value = pull(args.package, args.repository_id, head_path=args.head, destination=args.destination, repo=args.repo)
             elif args.operation == 'push':
                 from .agent_sync import push
                 value = push(Git.discover(args.repo), args.repository_id, args.output,
-                             full=args.full, receipt=args.receipt)
+                             full=args.full, receipt=args.receipt, worker_id=args.worker)
                 emit(value, True)
                 return 1 if value.get('state') in ('CONFLICT', 'ERROR') else 0
             elif args.operation == 'work':
@@ -557,7 +566,8 @@ def execute(args, *, transport_factory=None):
                 elif args.ci_operation == 'supervise':
                     with git.lock():
                         value = agent_ci.supervise(git, args.snapshot, args.repository_id, args.output,
-                                                  args.job, args.workers, args.policy, inbox_proof=args.inbox_proof)
+                                                  args.job, args.workers, args.policy, inbox_proof=args.inbox_proof,
+                                                  uploaded=args.uploaded)
                 elif args.ci_operation == 'cancel':
                     value = agent_ci.cancel(git, args.snapshot, args.repository_id, args.output,
                                             args.job, args.capabilities)
@@ -567,7 +577,7 @@ def execute(args, *, transport_factory=None):
                     value = getattr(agent_ci, args.ci_operation)(git, args.plan, args.snapshot, args.repository_id,
                         **({'capabilities_path': args.capabilities} if args.ci_operation != 'result' else {}),
                         **({'heartbeat_timeout': args.heartbeat_timeout} if args.ci_operation == 'result' else {}),
-                        **({'inbox_proof': args.inbox_proof} if args.ci_operation == 'accept' else {}))
+                        **({'inbox_proof': args.inbox_proof, 'uploaded': args.uploaded} if args.ci_operation == 'accept' else {}))
             else:
                 value = getattr(agent, args.operation)(args.plan, args.snapshot, args.repository_id)
             emit(value, True)
@@ -719,6 +729,9 @@ def execute(args, *, transport_factory=None):
                     from .work_lifecycle import enable
                     emit(enable(exchange, args.name, quiescent=args.quiescent,
                                 all_clients_updated=args.all_clients_updated), True)
+                elif args.operation == 'upgrade':
+                    emit(exchange.upgrade(args.name, quiescent=args.quiescent,
+                         all_clients_updated=args.all_clients_updated), True)
                 elif args.operation == 'enable-checkpoints':
                     from .publication_checkpoints import enable, enable_all
                     if bool(args.name) == bool(args.all_under):

@@ -23,6 +23,11 @@ from .diagnostics import phase
 def publication(exchange, transport, repository_id, publication_id):
     if not hex_value(publication_id, 64):
         raise GdiError("publication ID must be 64 lowercase hexadecimal characters")
+    if getattr(transport, 'repository', {}).get('version') == 4:
+        from .packet import load_publication, publication as project
+        value, _ = load_publication(exchange, transport, repository_id, publication_id)
+        data = project(value)
+        return data, [(publication_id, data)]
     listing = transport.list("branches", recursive=True)
     paths = [entry["Path"] for entry in listing if not entry["IsDir"] and entry["Path"].endswith('/' + publication_id + '.json')]
     if not paths:
@@ -464,6 +469,7 @@ class CiClient(CiResultReader):
                 key_fields.append(namespace)
         key = digest(encode(key_fields))
         outbox = self.root / "outbox" / (key + ".json")
+        repeated = outbox.exists()
         if outbox.exists():
             raw = outbox.read_bytes()
             req = request(decode(raw), self.git, self.repository_id)
@@ -488,7 +494,7 @@ class CiClient(CiResultReader):
             from .inbox import notification, publish, read, filename
             event = notification(self.repository_id, self.repository_path, pub, publication_id, req, raw)
             self.remember_submission(event)
-            existing = files(self.transport, prefix, optional=True)
+            existing = (files(self.transport, prefix, optional=True) if repeated else set())
             if 'result.json' in existing or any(PACKAGE_PATTERN.fullmatch(name) for name in existing):
                 self.result(jid)
                 return req
@@ -502,8 +508,6 @@ class CiClient(CiResultReader):
                     old, old_raw = self.load_request(req['retry_of'])
                     validate_successor(successor, old, old_raw, req)
             publish(shared, event)
-            if read(shared, filename(event)) != event:
-                raise GdiError('CI inbox submission changed during read-back')
             return req
         for directory in ("ci/queue", prefix):
             self.transport.mkdir(directory)
@@ -591,8 +595,6 @@ class CiClient(CiResultReader):
                 return decision
             req, raw, successor = supervisor.pending_request(decision['worker'])
             upload_json(self.transport, f'ci/jobs/{active}/successor.json', successor)
-            if self.transport.read(f'ci/jobs/{active}/successor.json') != encode(successor):
-                raise GdiError('automatic successor changed; stop competing coordinators')
             self.retry_request(active)
             delivered = self.submit(req['publication_id'], req['worker_id'], req['profile_id'],
                                     retry_of=active, workflow=req.get('workflow'),

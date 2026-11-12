@@ -9,5 +9,4 @@ if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
 fi
 
 git push
-python3 -m gdi push drive --full
 exec python3 scripts/deploy.py

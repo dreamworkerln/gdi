@@ -6,7 +6,7 @@ from unittest.mock import patch
 from gdi import agent, agent_work, work, work_import
 from gdi.branches import branch_directory
 from gdi.cli import parser
-from gdi.exchange import Exchange
+from gdi.exchange import LegacyExchange as Exchange
 from gdi.git import GdiError, Git
 from gdi.publication import decode
 from tests.snapshots import export_snapshot

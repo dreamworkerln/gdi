@@ -134,7 +134,7 @@ class AgentCiTests(InboxTestCase):
         self.eb.gc('drive', keep_imported=0, apply=True, quiescent=True, report=lambda line: None)
         from gdi.branches import branch_directory
         from gdi.ci import publication
-        from gdi.exchange import Exchange
+        from gdi.exchange import LegacyExchange as Exchange
         from gdi.publication import decode
         directory = 'repos/a/branches/' + branch_directory(ref)
         self.assertNotIn(directory, self.store.directories)

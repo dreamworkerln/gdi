@@ -6,8 +6,8 @@ import io
 from unittest.mock import patch
 import zipfile
 
-from gdi.agent_receiver import receive
-from gdi.agent_sync import BASE_FILE, export_name, pull, push, read_package, receipt_path
+from gdi.legacy_agent_receiver import receive
+from gdi.legacy_agent_sync import BASE_FILE, export_name, pull, push, read_package, receipt_path
 from gdi.git import GdiError, Git
 from gdi.publication import encode
 from tests.test_inbox import InboxTestCase
@@ -124,7 +124,7 @@ class AgentExchangeTests(InboxTestCase):
     def test_zip_runtime_error_is_reported_as_invalid_package(self):
         package, _ = self.export()
         error = RuntimeError('ZIP reader failure')
-        with patch('gdi.agent_sync.zipfile.ZipFile', side_effect=error):
+        with patch('gdi.legacy_agent_sync.zipfile.ZipFile', side_effect=error):
             with self.assertRaisesRegex(GdiError, 'invalid or incomplete agent package') as caught:
                 with read_package(package, self.identity, 'export'):
                     self.fail('invalid ZIP must not yield')
@@ -259,25 +259,6 @@ class AgentExchangeTests(InboxTestCase):
         checkpoint = decode(self.store.data['repos/a/branches/main/checkpoint.json'])
         self.assertEqual(result['state'], 'PUBLISHED')
         self.assertEqual(checkpoint['root'], result['publication_id'])
-
-    def test_cli_pull_and_push_never_open_transport_session(self):
-        from gdi.cli import main
-        from gdi.publication import decode
-        package, _ = self.export()
-        destination = self.root / 'cli-agent'
-        with patch('gdi.rc_transport.TransportSession', side_effect=AssertionError('network session')):
-            output = io.StringIO()
-            with contextlib.redirect_stdout(output):
-                code = main(['agent', 'pull', '--package', str(package), '--repository-id', self.identity,
-                             '--destination', str(destination)])
-            self.assertEqual(code, 0)
-            self.assertEqual(decode(output.getvalue())['state'], 'PULLED')
-            output = io.StringIO()
-            with contextlib.redirect_stdout(output):
-                code = main(['agent', 'push', '--repo', str(destination), '--repository-id', self.identity,
-                             '--output', str(self.root / 'cli-plan')])
-            self.assertEqual(code, 0)
-            self.assertEqual(decode(output.getvalue())['state'], 'ALREADY_PUBLISHED')
 
     def test_published_receipt_cannot_regress_a_newly_pulled_base(self):
         git, output, plan, _, _ = self.prepare()

@@ -341,9 +341,9 @@ python3 scripts/deploy.py
 воспроизводимый `dist/runtime/gdi.pyz` и проверяет запуск вне исходников, затем
 выполняет `python3 -m gdi push drive --full`. Только после полной публикации того
 же HEAD/ветки загружает `gdi.pyz`, `runtime.json` (версия, HEAD, ветка, SHA256,
-размер), `gdi.pyz.sha256` и `agent.md` из `docs/agent.md` того же commit
-в `gdrive:gdi/gdi/runtime/`. Скачивание обратно проверяет
-точные bytes всех четырёх файлов. Нужны Python 3.10+, Git и настроенный rclone;
+размер) и `agent.md` из `docs/agent.md` того же commit
+в `gdrive:gdi/gdi/runtime/`. Успешный upload подтверждает доставку; обратного
+скачивания runtime нет. Нужны Python 3.10+, Git и настроенный rclone;
 рабочее дерево должно быть чистым. Тесты, commit и GitHub push скрипт не делает.
 При ошибке последующие этапы не выполняются. Уже завершённая Git-публикация
 сохраняется, даже если загрузка runtime не удалась; исправьте причину и повторите
@@ -389,28 +389,26 @@ worker образы из `platforms` должны быть загружены ч
 Лицензия: [GPLv3](../LICENSE).
 
 
-## Однофайловый агентский обмен (0.7)
+## Единый packet protocol v4 (0.8)
 
-`gdi agent pull --package ZIP --repository-id ID --destination DIR` создаёт checkout
-из одного готового export. Вместо `--destination` используйте `--repo DIR` для
-fast-forward текущей ветки. Команда offline и не требует snapshot/capture.
+Обычный push читает один heads/<branch>.json, загружает один packets/<sha256>.zip
+и обновляет указатель. Нет read-back, второго export, manifests/checkpoint/archive,
+notification или очистки внутри push. Неизменившийся HEAD требует только чтения.
+Все пакеты полные; -f не создаёт отдельную повторную публикацию неизменившегося HEAD.
 
-`gdi agent push --repo DIR --repository-id ID --output PLAN` готовит один полный
-ZIP для общей папки inbox. Агент загружает файл по `files.package` ровно один раз.
-Worker публикует коммиты без squash, создаёт checkpoint по обычным правилам и
-обновляет export. `--full` запрашивает full checkpoint. Подготовка и upload ещё
-не означают публикацию; только квитанция `PUBLISHED` подтверждает результат.
+`gdi remote upgrade NAME --quiescent --all-clients-updated` явно переводит v3 remote
+в v4 с тем же Repository ID и Git-коммитами; старые файлы не удаляются. Обычное
+обновление исходников/worker не мигрирует remote. Все старые клиенты обновить.
 
-`gdi agent push --repo DIR --repository-id ID --output PLAN --receipt JSON`
-применяет одну скачанную квитанцию. `CONFLICT`/`ERROR` возвращают код 1; GDI не
-переписывает разошедшуюся историю. Сохраняйте исходный план при повторе доставки.
-Не запускайте цикл опроса Drive. При отсутствии подтверждения сообщайте состояние
-«отправлено», затем запрашивайте квитанцию позже.
+`gdi agent pull --head JSON --package ZIP --repository-id ID --destination DIR`
+либо `--repo DIR` получает указатель и тот же пакет. `gdi agent push --repo DIR
+--repository-id ID --output PLAN` готовит один inbox ZIP; после upload и локального
+ожидания получите одну квитанцию и примените `--receipt JSON` к тому же плану.
 
-Обычный host `gdi push` при настроенном inbox_root создаёт `agent/export-*.zip`.
-Worker обрабатывает уведомление и закрепляет свой маршрут в export. До обновления
-всех компонентов новый поток не активировать. Native Git protocol v3 и IDs не
-меняются. Подробнее: [инструкция](agent.md), [формат и recovery](agent-exchange.md).
+Подробности: [инструкция агента](agent.md), [формат/стоимость/recovery](agent-exchange.md).
+Runtime deploy загружает три файла (gdi.pyz, runtime.json, agent.md) без read-back;
+SHA256/размер zipapp находятся в runtime.json. Отдельный checksum-файл остаётся
+локальным build artifact. CI/work reference включён в zipapp.
 
 ## Специальный агентский сборщик snapshot
 

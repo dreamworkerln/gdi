@@ -21,10 +21,13 @@
 | [TODO_008](todos/TODO_008_AGENT_SNAPSHOT_BUILDER.md) | Сборщик агентского snapshot и точный отчёт проверок | IMPLEMENTED; 0.5.0 локально; software validation: 32 targeted, test.sh до version bump 473 PASS / 3 opt-in service SKIP; version parity PASS; публикация отложена оператором |
 | [TODO_009](todos/TODO_009_PUBLICATION_CHECKPOINTS.md) | Ограниченная активная цепочка, checkpoints и архив manifests | IMPLEMENTED; implementation DONE локально; test.sh: 490 tests, 485 PASS / 5 opt-in SKIP, 325.931 s; Docker/service и реальный connector acceptance открыты; deploy/активация/рестарт не выполнялись |
 | [TODO_010](todos/TODO_010_AGENT_SINGLE_EXCHANGE.md) | Один export для pull, один inbox ZIP для push и квитанция worker | IMPLEMENTED; ZIP handler исправлен; test.sh 507: 502 PASS / 5 opt-in SKIP, 378.432 s, exit 0; service/реальный Drive acceptance открыты, deploy не выполнялся |
+| [TODO_011](todos/TODO_011_UNIFIED_PACKET_PROTOCOL.md) | Общий packet protocol v4 для CLI/агента/worker без read-back | IMPLEMENTED локально; test.sh 528: 523 PASS / 5 opt-in SKIP, 391.008 s, exit 0; Git commit разрешён оператором; real Drive/service acceptance открыты, deploy/миграция не выполнялись |
 
 ## Следующие действия
 
-Текущий приоритет оператора — TODO_010: минимум агентских вызовов Drive-коннектора
+Текущий приоритет — TODO_011: минимум суммарного Drive I/O, включая операторский
+push и worker. TODO_010 остаётся историей первой реализации и её локальных тестов.
+Предыдущий приоритет оператора — TODO_010: минимум агентских вызовов Drive-коннектора
 и новая инструкция. Разрешённый повторный полный прогон после исправления ZIP
 handler завершился успешно; осталось 5 opt-in SKIP. Публикация требует отдельного
 запроса.
@@ -37,6 +40,6 @@ handler завершился успешно; осталось 5 opt-in SKIP. П�
 2. Остальные открытые темы TODO_001–003 сохранены; их исполнительный приоритет
    оператор пока не назначил. После выбора обновить порядок здесь.
 
-Следующий новый тематический ID: **TODO_011**. Work-ID и CI job ID имеют отдельные
+Следующий новый тематический ID: **TODO_012**. Work-ID и CI job ID имеют отдельные
 пространства имён. Исторические сведения о миграции и прежних публикациях сохранены
 в тематических задачах; они не означают проверки или активации текущих remote.

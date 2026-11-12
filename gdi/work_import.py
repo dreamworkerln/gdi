@@ -53,10 +53,9 @@ def candidates(exchange, name):
         raise GdiError('import requires the assigned ordinary target branch')
     transport, repository_id = exchange.connect(name)
     choices, rejected = [], []
-    for item in transport.list('branches'):
-        if not item['IsDir']:
-            raise GdiError('unexpected file in branch namespace')
-        ref = directory_ref(item['Path'])
+    refs = (exchange.branches(transport, repository_id) if hasattr(exchange, 'branches') else
+            [directory_ref(item['Path']) for item in transport.list('branches') if item['IsDir']])
+    for ref in refs:
         if not ref.startswith(work.PREFIX):
             continue
         try:

@@ -111,17 +111,42 @@ class Rclone:
             return result
 
     def read_optional(self, relative):
-        """Only documented not-found codes permit legacy discovery."""
-        result = self.call("lsjson", self.path(relative), "--stat", allowed=(0, 3, 4))
-        if result.returncode in (3, 4):
-            return None
-        try:
-            value = json.loads(result.stdout)
-        except ValueError as exc:
-            raise GdiError("rclone returned invalid file stat JSON") from exc
-        if not isinstance(value, dict) or value.get("IsDir") is not False:
-            raise GdiError("expected a regular remote metadata file: " + relative)
-        return self.read(relative)
+        # One content read, no type/size stat before it. Consumers validate the
+        # returned metadata locally; rclone cat has directory-stream semantics.
+        result = self.call('cat', self.path(relative), allowed=(0, 3, 4))
+        return None if result.returncode in (3, 4) else result.stdout.encode('utf-8')
+
+    def update_head(self, source, relative):
+        validate_head_path(relative)
+        self.call('copyto', str(source), self.path(relative), '--ignore-times')
+
+    def packet_exists(self, relative):
+        validate_packet_path(relative)
+        return self.call('lsjson', self.path(relative), '--stat', allowed=(0, 3, 4)).returncode == 0
+
+    def move_packet(self, source_url, source_relative, target_relative):
+        validate_url(source_url)
+        from .agent_sync import PUSH_NAME
+        if not source_relative.startswith('inbox/') or not PUSH_NAME.fullmatch(source_relative[6:]):
+            raise GdiError('expected an exact agent inbox packet')
+        validate_packet_path(target_relative)
+        if source_url.split(':', 1)[0] != self.url.split(':', 1)[0]:
+            raise GdiError('packet adoption requires the same rclone backend')
+        self.call('moveto', source_url + '/' + source_relative, self.path(target_relative), '--ignore-times')
+
+    def update_repository(self, source):
+        from .publication import decode, validate_repository
+        if validate_repository(decode(Path(source).read_bytes()))['version'] != 4:
+            raise GdiError('upgrade requires protocol v4 metadata')
+        self.call('copyto', str(source), self.path('repository.json'), '--ignore-times')
+
+    def delete_packet(self, relative):
+        validate_packet_path(relative)
+        self.call('deletefile', self.path(relative))
+
+    def delete_head(self, relative):
+        validate_head_path(relative)
+        self.call('deletefile', self.path(relative))
 
     def download(self, relative, target):
         self.call("copyto", self.path(relative), str(target))
@@ -245,3 +270,16 @@ def validate_work_manifest_path(relative):
     validate_work_directory(parent)
     if not separator or not re.fullmatch(r'[0-9a-f]{64}\.json', name):
         raise GdiError('only an exact retired work manifest may be removed')
+
+
+def validate_head_path(relative):
+    from .branches import directory_ref
+    match = re.fullmatch(r'heads/([^/]+)\.json', relative)
+    if not match:
+        raise GdiError('expected one branch pointer')
+    directory_ref(match[1])
+
+
+def validate_packet_path(relative):
+    if not re.fullmatch(r'packets/[0-9a-f]{64}\.zip', relative):
+        raise GdiError('expected one content-addressed Git packet')

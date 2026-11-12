@@ -17,7 +17,7 @@ import uuid
 from unittest.mock import patch
 
 from gdi.diagnostics import command_session
-from gdi.exchange import Exchange, decode, digest, encode
+from gdi.exchange import LegacyExchange as Exchange, decode, digest, encode
 from gdi.git import GdiError, Git, run
 from gdi.status import inspect
 from gdi.transport import Rclone

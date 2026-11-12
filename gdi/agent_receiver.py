@@ -1,122 +1,81 @@
-"""Host-side publication of the agent's single uploaded packet, without CI execution."""
+"""Worker adoption of one uploaded v4 packet; never rebuild/re-upload Git data."""
 
-from .agent_sync import (PUSH_NAME, VERSION, read_package, receipt_path, publish_export)
+from . import packet
+from .agent_sync import PUSH_NAME, VERSION, receipt_path
 from .ci_protocol import atomic_write
-from .exchange import Exchange
-from .git import GdiError, Git
+from .git import GdiError
 from .publication import decode, encode, file_digest
 
 
-def publisher(worker, repository_id, repository_path):
-    """Private object store: never change the operator's checkout or branch."""
-    route = worker.config['remote_url'] + '/' + repository_path
-    owner = worker.root / 'agent-publishers' / repository_id
-    owner.mkdir(parents=True, exist_ok=True, mode=0o700)
-    git = Git(owner, isolated=True)
-    if not (owner / '.git').exists():
-        git.call('init', '--quiet', '--object-format=sha1', '--template=')
-    exchange = Exchange(git, worker.transport_factory)
-    exchange.publisher_worker_id = worker.worker_id
-    from .local_config import load
-    settings = load(git)['remotes'].get('drive')
-    if settings is None:
-        exchange.add('drive', route, expected_id=repository_id, inbox_root=worker.config['remote_url'])
-    elif settings['url'] != route or settings['repository_id'] != repository_id:
-        raise GdiError('agent publisher route changed; existing publisher state preserved')
-    return exchange
-
-
-def refresh_export(worker, repository_id, repository_path, ref):
-    exchange = publisher(worker, repository_id, repository_path)
-    transport, _ = exchange.connect('drive')
-    from .work import PREFIX, work_id
-    from .work_lifecycle import retirement
-    if ref.startswith(PREFIX) and retirement(transport, repository_id, work_id(ref[len(PREFIX):])) is not None:
-        return
-    chain = exchange.publications(transport, repository_id, ref)
-    if not chain:
-        return
-    cache = exchange.restore(transport, repository_id, chain)
-    exchange.git.import_objects(cache.path, chain[-1][1]['head'])
-    exchange.git.call('update-ref', ref, chain[-1][1]['head'])
-    publish_export(exchange, 'drive', repository_id, ref, chain[-1][1]['head'], chain[-1][0])
-
-
-def receive(worker, root, name):
+def receive(worker, root, name, *, present=True):
     match = PUSH_NAME.fullmatch(name)
-    if not match:
-        raise GdiError('invalid agent push filename')
-    repository_id, request_id, checksum, worker_id = match.groups()
-    if worker_id != worker.worker_id:
-        raise GdiError('agent push is addressed to another worker')
+    if match is None or match[4] != worker.worker_id:
+        raise GdiError('invalid packet or another worker addressee')
+    repository_id, request_id, identity, _ = match.groups()
     directory = worker.root / 'agent-pushes' / repository_id / request_id
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    packet = directory / 'package.zip'
-    if not packet.exists():
-        temporary = directory / 'incoming.zip'
-        root.download('inbox/' + name, temporary)
-        if file_digest(temporary) != checksum:
-            raise GdiError('agent upload checksum mismatch; source packet retained')
-        temporary.replace(packet)
-    if packet.is_symlink() or file_digest(packet) != checksum:
-        raise GdiError('agent request ID reused with different package bytes')
-    with read_package(packet, repository_id, 'push') as (request, quarantine):
-        if request['request_id'] != request_id or request['worker_id'] != worker_id:
-            raise GdiError('agent request ID differs from its filename')
+    path = directory / 'packet.zip'
+    if not path.exists():
+        incoming = directory / 'incoming.zip'
+        root.download('inbox/' + name, incoming)
+        if file_digest(incoming) != identity:
+            raise GdiError('uploaded packet checksum mismatch')
+        incoming.replace(path)
+    if path.is_symlink() or file_digest(path) != identity:
+        raise GdiError('request ID reused with different packet bytes')
+    with packet.read(path, repository_id) as (target, quarantine):
+        data = target['metadata']
+        if data['request_id'] != request_id or data['worker_id'] != worker.worker_id or data['repository_path'] is None:
+            raise GdiError('packet route differs from inbox name')
         journal_path = directory / 'journal.json'
         journal = decode(journal_path.read_bytes()) if journal_path.exists() else {
-            'request': request, 'package_sha256': checksum, 'phase': 'PREPARED'}
-        if journal.get('request') != request or journal.get('package_sha256') != checksum:
-            raise GdiError('durable agent publication differs from the uploaded request')
-        if journal.get('phase') not in ('PREPARED', 'PUBLISHING', 'REPLIED'):
-            raise GdiError('invalid durable agent publication phase')
-        exchange = publisher(worker, repository_id, request['repository_path'])
-        git = exchange.git
-        transport, _ = exchange.connect('drive')
-        if journal.get('receipt') is None:
-            current = exchange.publications(transport, repository_id, request['ref'])
-            tip = current[-1] if current else None
-            published = None
-            if (tip and tip[1]['head'] == request['head'] and
-                    (not request['full'] or tip[0] != request['base_publication']
-                     or tip[1]['bundle_kind'] == 'full')):
-                published = tip[0]
-            elif journal['phase'] == 'PUBLISHING':
-                # Recover the narrow crash window after commit but before durable acknowledgement.
-                from .publication_checkpoints import history_chain
-                for identity, data in history_chain(current, transport.read):
-                    if data['head'] == request['head'] and data['previous'] == request['base_publication']:
-                        published = identity
-                        break
-            base_matches = bool(tip and tip[0] == request['base_publication']
-                                and tip[1]['head'] == request['base_head'])
+            'name': name, 'pointer': target, 'phase': 'PREPARED'}
+        if journal.get('name') != name or journal.get('pointer') != target:
+            raise GdiError('durable request identity changed')
+        phase = journal.get('phase')
+        if phase not in ('PREPARED', 'MOVING', 'MOVED', 'REPLIED', 'DONE'):
+            raise GdiError('invalid packet adoption journal phase')
+        if phase == 'DONE':
+            if present:
+                root.delete_notification('inbox/' + name)
+            return journal['receipt']
+        repo_url = worker.config['remote_url'] + '/' + data['repository_path']
+        transport = worker.transport_factory(repo_url)
+        transport.repository = {'version': 4, 'repository_id': repository_id,
+                                'object_format': 'sha1', 'work_version': 1}
+        if 'receipt' not in journal:
+            current = packet.read_head(transport, repository_id, data['ref'])
+            same = current is not None and current['publication_id'] == identity
+            from .work_lifecycle import require_active
+            require_active(transport, repository_id, data['ref'])
             result = {'agent_exchange_version': VERSION, 'repository_id': repository_id,
-                      'request_id': request_id, 'package_sha256': checksum,
-                      'ref': request['ref'], 'head': request['head'], 'worker_id': worker.worker_id}
-            if published is None and not base_matches:
-                result.update(state='CONFLICT', current_head=tip[1]['head'] if tip else None,
-                              current_publication=tip[0] if tip else None,
-                              error='remote advanced or was replaced; pull its export and reconcile history')
+                      'request_id': request_id, 'package_sha256': identity, 'worker_id': worker.worker_id,
+                      'ref': data['ref'], 'head': data['head']}
+            base = current['publication_id'] if current is not None else None
+            base_head = current['metadata']['head'] if current is not None else None
+            if not same and (data['previous'], data['previous_head']) != (base, base_head):
+                result.update(state='CONFLICT', current_publication=base, current_head=base_head,
+                              error='remote advanced; pull and reconcile history')
             else:
-                if published is None:
-                    journal['phase'] = 'PUBLISHING'
-                    atomic_write(journal_path, encode(journal))
-                    git.import_objects(quarantine, request['head'])
-                    git.call('update-ref', request['ref'], request['head'])
-                    _, published, _ = exchange.push('drive', request['ref'][11:], full=request['full'])
-                else:
-                    # Keep the downloadable export available even after recovery or a lost acknowledgement.
-                    cache = exchange.restore(transport, repository_id, current)
-                    git.import_objects(cache.path, current[-1][1]['head'])
-                    git.call('update-ref', request['ref'], current[-1][1]['head'])
-                    # An unchanged native push also finishes a checkpoint whose manifest
-                    # committed before a crash. Export alone would skip that recovery.
-                    same_head = current[-1][1]['head'] == request['head']
-                    _, recovered, _ = exchange.push('drive', request['ref'][11:],
-                                                     full=request['full'] and same_head)
-                    if same_head:
-                        published = recovered
-                result.update(state='PUBLISHED', publication_id=published, worker_id=worker.worker_id)
+                if current is None:
+                    from .publication import validate_repository
+                    repository = validate_repository(decode(transport.read('repository.json')))
+                    if repository['version'] != 4 or repository['repository_id'] != repository_id:
+                        raise GdiError('remote identity changed; upgrade required')
+                if not same:
+                    phase = journal['phase']
+                    if phase == 'MOVING' and transport.packet_exists(packet.packet_path(identity)):
+                        journal['phase'] = 'MOVED'
+                        journal['adopted'] = True
+                    if journal['phase'] != 'MOVED':
+                        journal['phase'] = 'MOVING'
+                        atomic_write(journal_path, encode(journal))
+                        transport.move_packet(worker.config['remote_url'], 'inbox/' + name, packet.packet_path(identity))
+                        journal['phase'] = 'MOVED'
+                        journal['adopted'] = True
+                        atomic_write(journal_path, encode(journal))
+                    packet.write_head(transport, target)
+                result.update(state='PUBLISHED', publication_id=identity, pointer=target)
             journal.update(phase='REPLIED', receipt=result)
             atomic_write(journal_path, encode(journal))
         result = journal['receipt']
@@ -124,7 +83,24 @@ def receive(worker, root, name):
         atomic_write(receipt, encode(result))
         if not getattr(transport, 'creates_parents', False):
             transport.mkdir('agent')
-        # Retry always sends the same receipt bytes. No read-back is needed on the agent side.
         transport.upload(receipt, receipt_path(repository_id, request_id))
-        root.delete_notification('inbox/' + name)
+        if not journal.get('adopted') and present:
+            root.delete_notification('inbox/' + name)
+        journal['phase'] = 'DONE'
+        atomic_write(journal_path, encode(journal))
         return result
+
+
+def recover(worker, root):
+    """Moved packets no longer occur in inbox; recover them from local journals."""
+    recovered = set()
+    for path in sorted((worker.root / 'agent-pushes').glob('*/*/journal.json')):
+        journal = decode(path.read_bytes())
+        if journal.get('phase') != 'DONE':
+            try:
+                receive(worker, root, journal['name'], present=False)
+                recovered.add(journal['name'])
+            except (GdiError, OSError) as exc:
+                import logging
+                logging.getLogger('gdi.worker').error('agent recovery=%s: %s', path, exc)
+    return recovered

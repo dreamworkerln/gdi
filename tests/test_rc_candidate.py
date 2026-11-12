@@ -16,7 +16,7 @@ from unittest.mock import patch
 import uuid
 
 from gdi.branches import branch_directory
-from gdi.exchange import Exchange, decode, digest, encode
+from gdi.exchange import LegacyExchange as Exchange, decode, digest, encode
 from gdi.git import GdiError, Git
 from gdi.diagnostics import command_session
 from gdi.rc_transport import TransportSession

@@ -1,107 +1,96 @@
-# Agent exchange v1 — GDI 0.7
+# Единый Git packet protocol v4 (GDI 0.8)
 
-Это новый несовместимый агентский интерфейс поверх native Git protocol v3.
-CLI, worker и runtime обновляются вместе. Repository ID, коммиты, SHA и native
-история сохраняются. Старые планы snapshot prepare/check/accept не становятся
-новыми пакетами; специальные CI/work интерфейсы сохранены отдельно.
+Клиенты CLI, worker и agent runtime обновляются вместе. Обратная совместимость
+обычного push/pull с v3 не поддерживается; v3 reader используется только для
+явного upgrade и исторических regression tests. Repository ID и Git SHA сохраняются.
 
-## Транспорт и стоимость
+## Хранилище
 
-Агентский GDI работает offline. Коннектор переносит один ZIP export при pull,
-один ZIP request при push и одну JSON-квитанцию после обработки worker.
-Неизвестные Drive ID требуют дополнительного точного поиска; известные ID
-используются повторно. Нет обратного скачивания upload, перечитывания manifests,
-сборки capture и проверочных snapshots на стороне агента. Подготовка неизменившегося
-HEAD возвращает ALREADY_PUBLISHED без обращения к Drive.
+- repository.json: version=4, repository_id, object_format=sha1, work_version=1.
+- heads/<encoded-branch>.json — изменяемый указатель ветки.
+- packets/<sha256>.zip — единственная immutable форма публикации для всех клиентов.
+- work/imports и work/retired — явный work workflow.
+- ci/ и общая inbox/ — отдельные CI и агентские запросы.
 
-Это минимизация **агентских** вызовов коннектора, а не обещание нулевого host I/O.
-Worker использует обычный rclone/native protocol, локальные проверки Git и
-checkpoint/архивирование. Каждый пакет содержит полный bundle: в обмен на
-постоянное число файлов передаётся больше байт, чем у incremental native push.
+ZIP содержит ровно metadata.json и source.bundle (ZIP_STORED). Metadata:
+packet_version=1, repository_id, repository_path, ref, head, previous,
+previous_head, worker_id, request_id, bundle_sha256, bundle_bytes.
+Bundle всегда полный. previous/previous_head — ожидаемая база или обе null.
+Request ID входит в пакет до вычисления его digest. Publication ID — SHA256 ZIP.
+Указатель: head_version=1, repository_id, ref, publication_id, packet_bytes,
+metadata (точная копия metadata.json). Дополнительный manifest не загружается.
 
-## Export
+## Успешный путь и стоимость
 
-Путь: `<repository>/agent/export-<repository_id>-<sha256(ref UTF-8)>.zip`.
-Файл изменяемый; copyto/copyfile обновляет тот же путь. Агент сохраняет Drive ID.
-Native push готовит export из своих объектов; worker при обработке уведомления
-также обновляет export и закрепляет свой worker_id. Уже подготовленный export
-кешируется локально по repo/ref/head/publication/worker; `push --full` обновляет его
-принудительно. Если host config worker.json v2 соответствует inbox_root, native
-push может закрепить worker_id сразу. Без маршрута pull разрешён, fast push
-требует обновлённого export от оператора/worker.
+Операторский push: read head → upload packet → update head. Ноль read-back,
+повторных repository/chain checks, export, checkpoint, archive, notification или
+очистки. При отсутствии head один раз читается repository.json для проверки первого
+push. Неизменившийся HEAD, включая -f, требует только чтения указателя.
+-f совместим как spelling: каждый v4 пакет уже полный, отдельного checkpoint нет.
 
-ZIP содержит ровно два несжатых файла: `metadata.json`, `source.bundle`.
-Metadata export имеет поля:
+Fetch выбранной ветки: read head → download packet (если нет локального кеша).
+Clone дополнительно один раз читает repository.json при подключении; --branch
+избавляет от обхода остальных веток. Без --branch нужен один listing heads/.
+Status/log читают только указатель текущей ветки. log показывает текущую публикацию;
+история Git-коммитов доступна обычным git log, без обхода manifests на Drive.
 
-```text
-agent_exchange_version=1, kind="export", repository_id, repository_path,
-ref, head, bundle_sha256, bundle_bytes, publication_id, worker_id
-```
+Агент pull получает тот же head и ZIP. Agent push сохраняет локальный план и
+загружает один ZIP в общую inbox. Имя:
+agent-push-<repoID32>-<requestID32>-<publicationID64>-<workerID>.zip.
+Маршрут worker встроен в пакет; при отсутствии — выбирается из registry один раз.
+Worker скачивает входной пакет для локальной проверки Git, читает текущий head,
+перемещает исходный файл в packets/ на том же backend, обновляет head и отправляет
+небольшую квитанцию. Он не собирает и не загружает Git-данные второй раз.
+При первом head дополнительно читается repository.json. Переименование/перемещение
+rclone использует возможности backend; конкретное число HTTP-вызовов и возможность
+server-side move необходимо проверить отдельно на реальном Drive.
 
-Repository path задаётся относительно общего корня GDI; ref — полный refs/heads/…;
-publication_id — SHA256 native manifest; worker_id — допустимый ID или null.
-Bundle полный, без prerequisites. ZIP names, размер, SHA256, Git payload и
-заявленный ref/head проверяются локально GDI. Локальное имя `.zip.bin` допустимо.
-Repository ID проверяется по независимо заданному ожиданию, не по имени файла.
+Это бюджеты логических файловых операций GDI, не HTTP-трассировка rclone. Поиск
+неизвестных Drive ID коннектором добавляет вызовы. Не обещается ровно три Google API
+запроса на push. Полный bundle увеличивает байты с ростом Git-истории, но не число
+скачиваемых manifests. Старые packets остаются до отдельного явного GC.
 
-`agent pull` создаёт checkout атомарно в новом каталоге либо требует чистой
-текущей ветки. Применяет только FF; сохраняет local-ahead и отказывает при divergence.
-В `.gdi/agent-base.json` сохраняются repoID/path/ref/head/publication/worker.
-Это состояние инструмента, не коммитируемый проектный файл.
+## Проверки и параллельность
 
-## Request
+ZIP/SHA/Git/ref/head/FF проверяются локально при получении. Успешный ответ транспорта
+считается подтверждением записи; файл обратно не скачивается. Это не обещание,
+что тип удалённого объекта заранее проверяется отдельным stat: CLI читает metadata
+через один cat, затем GDI разбирает полученное содержимое локально. Это также не обещание,
+что Git выявит потерю обновления: файлы Drive не имеют здесь CAS-транзакции.
+Независимые писатели одной ветки должны работать последовательно. Worker
+сериализует адресованные ему запросы; ожидаемая база при приёме сравнивается один раз.
+Гонка независимых CLI может изменить последний head; immutable пакеты и локальные
+планы сохраняют данные для восстановления. Многократные старые проверки тоже не
+обеспечивали атомарность. Отсутствие read-back — явно согласованный контракт.
 
-В общей папке inbox:
+## Повторы и сбои
 
-```text
-agent-push-<repository_id32>-<request_id32>-<package_sha25664>-<worker_id>.zip
-```
+Native plan: PREPARED → UPLOADING → UPLOADED → PUBLISHED. После неудачи head upload
+повтор использует тот же ZIP. Неоднозначный upload допускает один адресный stat
+пакета только при recovery. Нормальный успешный путь не делает этого stat.
+Worker journal: PREPARED → MOVING → MOVED → REPLIED → DONE. После server-side move
+inbox может исчезнуть: незавершённые запросы восстанавливаются из локальных journal.
+При неоднозначном move проверяется наличие целевого packet; после MOVED повторный
+upload/перемещение не нужен. При потере ответа после head update совпадение packet ID
+в head подтверждает тот же запрос. Квитанция сохраняется до upload и повторяется
+тем же содержимым. При CONFLICT исходный пакет не публикуется вместо чужой ветки.
+Агент не опрашивает Drive в цикле и сообщает SUBMITTED до получения PUBLISHED.
 
-Тот же ZIP с двумя файлами; metadata push вместо publication_id имеет:
-`request_id`, `base_head`, `base_publication`, `full` (bool).
-`worker_id` обязателен и совпадает с адресатом в имени. Head должен быть потомком
-base_head. План и точные байты ZIP сохраняются локально в --output; повтор команды
-не меняет request ID/байты. Изменение HEAD требует нового каталога плана.
-Worker ID берётся из export, не спрашивается у пользователя и не является Work-ID.
+## Переход и GC
 
-Worker игнорирует пакеты другого адресата. Конфликтующие имена с одинаковыми
-repoID/requestID блокируются. Полученный ZIP сохраняется в worker state_dir;
-checksum имени, metadata и полный bundle проверяются до публикации.
-Ожидаемая base publication/head сравнивается с текущей native вершиной.
-Если вершина продвинулась, возвращается CONFLICT; автоматического force/merge нет.
-Если head уже опубликован, повтор подтверждается без нового Git-коммита.
+`gdi remote upgrade NAME --quiescent --all-clients-updated` читает старые v3 refs,
+формирует по одному полному пакету для активной ветки и создаёт pointers, затем
+последним обновляет repository.json до version=4. IDs/коммиты сохраняются, old files
+не удаляются, текущая ветка/checkout оператора не меняются. Локальные планы дают
+возможность повторить прерванный переход. Изменения Drive этим документом не разрешены.
 
-Публикация идёт из отдельного object store worker `agent-publishers/<repoID>`.
-Checkout и выбранная ветка оператора не меняются. Worker импортирует исходные
-коммиты, вызывает native Exchange.push, затем обновляет export. Full/checkpoint
-выбирает host GDI по обычным правилам, либо явно по флагу full. CI не запускается.
+GC — только отдельная команда, --apply требует остановленных писателей/worker.
+Защищаются текущие/сохраняемые пакеты, CI и work references. Никакой автоматической
+очистки runtime, старого v3 namespace или пользовательских данных при push нет.
+Новое retirement work metadata имеет work_version=2 и список packets; исходные
+import receipts сохраняются. Retired ID не воскрешается.
 
-## Квитанции и восстановление
-
-Путь: `<repository>/agent/receipt-<repoID>-<requestID>.json`, immutable.
-Поля: agent_exchange_version, repository_id, request_id, package_sha256, worker_id,
-ref, head, state. PUBLISHED дополнительно имеет publication_id; CONFLICT —
-current_head/current_publication/error. Клиент допускает ERROR с диагностикой.
-Только проверенная PUBLISHED обновляет локальную базу; старую квитанцию нельзя
-применить поверх другой базы или другой выбранной ветки.
-
-Worker journal проходит PREPARED → PUBLISHING → REPLIED. PUBLISHING записывается
-до native push. При сбое после commit сверяется текущая и архивная цепочка по
-head/previous; уже опубликованный head не публикуется повторно. При recovery
-export восстанавливается из актуальной вершины, затем выдаётся квитанция.
-Готовая квитанция сохраняется до upload и повторяется теми же байтами. Inbox
-удаляется только после её upload. Сбой acknowledgement оставляет пакет для
-идемпотентного повтора. Pending inbox requests защищают remote от GC.
-
-Агент не опрашивает Drive в цикле. Он ждёт локально, затем получает квитанцию;
-если её нет, сохраняет план и сообщает SUBMITTED, не PUBLISHED. Выключенный worker
-означает задержку публикации. Неоднозначный upload не требует нового request ID:
-сначала попытаться получить квитанцию, при подтверждённой недоставке повторить
-тот же пакет. Случайное создание дубликатов файлов коннектором не маскируется.
-
-## Ограничения проверки
-
-Исходники и документация реализованы локально; тестовый прогон и реальный Drive
-acceptance требуют отдельного запроса оператора. Это описание контракта, не отчёт
-о состоявшемся deploy. Перед использованием обновить CLI/worker/runtime и создать
-export обычным host push; пересоздавать native remote не требуется.
+CI v4 не скачивает свой результат обратно после upload. Consumer проверяет пакет
+при его фактическом получении. Native push сам по себе CI или worker-задачу не создаёт.
+Runtime deploy проверяет zipapp локально, загружает gdi.pyz/runtime.json/agent.md
+один раз без обратного скачивания; лишний повтор native push из deploy.sh удалён.

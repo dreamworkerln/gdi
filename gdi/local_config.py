@@ -29,8 +29,10 @@ def load(git):
         data = {"config_version": 2, "default_remote": None, "remotes": {}}
     for name, value in data["remotes"].items():
         remote_name(name)
-        if not isinstance(value, dict) or set(value) != {"url", "repository_id", "inbox_root"} or not hex_value(value["repository_id"], 32):
+        if not isinstance(value, dict) or set(value) not in ({"url", "repository_id", "inbox_root"}, {"url", "repository_id", "inbox_root", "protocol_version"}) or not hex_value(value["repository_id"], 32):
             raise GdiError("invalid gdi remote settings")
+        if "protocol_version" in value and (type(value["protocol_version"]) is not int or value["protocol_version"] != 4):
+            raise GdiError("unsupported configured GDI protocol")
         validate_url(value["url"])
         if value["inbox_root"] is not None:
             repository_path(value["inbox_root"], value["url"])

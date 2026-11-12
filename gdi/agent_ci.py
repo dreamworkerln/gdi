@@ -158,7 +158,7 @@ def dispatch(git, snapshot_path, expected_id, output, publication_id, profile_id
     return value
 
 
-def supervise(git, snapshot_path, expected_id, output, jid, workers_path, policy_path, *, inbox_proof=None):
+def supervise(git, snapshot_path, expected_id, output, jid, workers_path, policy_path, *, inbox_proof=None, uploaded=False):
     from .scheduling import Supervisor, load_policy, worker_snapshot
     snapshot = Snapshot(snapshot_path, expected_id)
     registry = worker_snapshot(workers_path)
@@ -216,8 +216,9 @@ def supervise(git, snapshot_path, expected_id, output, jid, workers_path, policy
             raise GdiError('automatic retry binding changed after preparation')
         atomic_write(binding_path, encode(binding))
         caps = registry.get(req['worker_id'], {}).get('capabilities_path')
-        if inbox_proof is not None:
-            value = accept(git, retry_dir, snapshot_path, expected_id, capabilities_path=caps, inbox_proof=inbox_proof)
+        if inbox_proof is not None or uploaded:
+            value = accept(git, retry_dir, snapshot_path, expected_id, capabilities_path=caps,
+                           inbox_proof=inbox_proof, uploaded=uploaded)
             supervisor.activate(req)
             return supervisor.response('REASSIGNED', worker_id=req['worker_id'], retry_of=active, plan=value)
         return {**decision, 'state': 'RETRY_PREPARED', 'plan': value,
@@ -250,11 +251,15 @@ def check_request(git, directory, snapshot_path, expected_id, capabilities_path)
     return value, req, snapshot
 
 
-def accept(git, output, snapshot_path, expected_id, *, capabilities_path, inbox_proof):
+def accept(git, output, snapshot_path, expected_id, *, capabilities_path, inbox_proof=None, uploaded=False):
     with plan_lock(output) as directory:
         value, _, snapshot = check_request(git, directory, snapshot_path, expected_id, capabilities_path)
         item = value['files']['inbox']
-        download_proof(inbox_proof, item['target_name'], item['sha256'], item['bytes'])
+        if snapshot.repository['version'] == 4:
+            if not uploaded:
+                raise GdiError('use --uploaded after a successful connector upload; no read-back proof required')
+        else:
+            download_proof(inbox_proof, item['target_name'], item['sha256'], item['bytes'])
         value.update(state='accepted', checked_snapshot=snapshot.fingerprint)
         save_plan(directory, value)
         return verdict(directory, value)

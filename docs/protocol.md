@@ -1,9 +1,8 @@
-# Протокол gdi v3 (gdi 0.4, pre-alpha)
+# Исторический протокол v3 и переход на v4
 
-В GDI 0.7 поверх этого хранилища добавлен [agent exchange v1](agent-exchange.md):
-один готовый export для pull и один inbox-пакет для push через host worker.
-Контейнерный агент не обходит manifests и не публикует checkpoints самостоятельно.
-Native protocol v3 и идентичность существующего репозитория остаются прежними.
+Текущий протокол GDI 0.8 — [единый packet v4](agent-exchange.md).
+Ниже сохранено описание v3 для явного upgrade и разбора старых данных.
+Обычный новый push/pull использует только v4, без manifests/checkpoints/export.
 
 ## Совместимость и идентичность
 

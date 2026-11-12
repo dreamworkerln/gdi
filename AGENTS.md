@@ -48,6 +48,13 @@ v3, Repository ID и SHA сохраняются; checkpoint выполняет h
 
 ## Инженерные TODO
 
+2026-11-12 оператор отдельно разрешил несовместимый переход всего Git обмена
+оператора/агента/worker на protocol v4: один общий пакет и указатель ветки,
+без повторных сетевых проверок, read-back и дублирующего export. Старые клиенты
+обновляются вместе с runtime/agent.md. Repository ID и Git-коммиты сохраняются.
+Переход существующих remote отдельный и явный; реализации недостаточно для
+разрешения тестов, commit, deploy, миграции Drive или перезапуска службы.
+
 Перед работой над TODO читать `TODO_MANAGEMENT_POLICY.md`, текущий реестр
 `TODO_INVENTORY.md` и соответствующий `todos/TODO_NNN_*.md`. При изменении контракта
 или состояния обновлять тематический документ и реестр вместе. `TODO.md` — только
@@ -89,11 +96,12 @@ bundles и Git checkout для обычного обновления инстр�
 rclone RC; ограничения обычной песочницы вызывают ложные падения
 `Operation not permitted`. Это правило не даёт самостоятельного разрешения на тесты.
 
-Корневой `deploy.sh` проверяет чистоту рабочего дерева, выполняет `git push`,
-`python3 -m gdi push drive --full` и запускает `scripts/deploy.py`.
+Корневой `deploy.sh` проверяет чистоту рабочего дерева, выполняет `git push`
+и запускает `scripts/deploy.py` (без второго дублирующего GDI push).
 Внешний `scripts/deploy.py` сначала собирает из текущего commit и проверяет
 `gdi.pyz`, затем выполняет `python3 -m gdi push drive --full` и загружает runtime
 и копию `docs/agent.md` как `agent.md` через rclone в `gdrive:gdi/gdi/runtime/`.
+Runtime загружается без read-back; SHA256/размер zipapp передаются в runtime.json.
 Исходники должны быть закоммичены,
 рабочее дерево чистым. Команды `gdi deploy` внутри CLI нет.
 

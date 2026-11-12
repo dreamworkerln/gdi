@@ -84,12 +84,21 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue((self.root / 'docker-owner.json').exists())
 
     @unittest.skipUnless(shutil.which('rclone'), 'requires rclone')
-    def test_optional_rclone_read_distinguishes_absence_empty_file_and_directory(self):
+    def test_optional_rclone_read_has_no_stat_and_metadata_is_validated_locally(self):
         with patch.dict(os.environ, {'RCLONE_CONFIG': os.devnull, 'RCLONE_CONFIG_GDIOPTIONAL_TYPE': 'local'}):
             transport = Rclone('gdioptional:' + str(self.root))
             self.assertIsNone(transport.read_optional('missing.json'))
             (self.root / 'empty.json').touch()
             self.assertEqual(transport.read_optional('empty.json'), b'')
+            (self.root / 'value.json').write_text('{"ok":true}\n')
+            with patch.object(transport, 'call', wraps=transport.call) as call:
+                content = transport.read_optional('value.json')
+            call.assert_called_once_with('cat', transport.path('value.json'), allowed=(0, 3, 4))
+            from gdi.publication import decode
+            self.assertEqual(decode(content), {'ok': True})
             (self.root / 'directory.json').mkdir()
-            with self.assertRaisesRegex(GdiError, 'regular remote metadata'):
-                transport.read_optional('directory.json')
+            # cat does not preflight the remote object type. An empty directory
+            # yields empty content, which the metadata consumer must reject.
+            content = transport.read_optional('directory.json')
+            with self.assertRaisesRegex(GdiError, 'invalid metadata JSON'):
+                decode(content)

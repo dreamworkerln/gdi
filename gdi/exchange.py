@@ -38,7 +38,7 @@ class GdiMergeConflict(GdiError):
         super().__init__("\n".join(lines))
 
 
-class Exchange:
+class LegacyExchange:
     def __init__(self, git, transport_factory=Rclone):
         self.git = git
         self.transport_factory = transport_factory
@@ -313,7 +313,7 @@ class Exchange:
                         checkpoints.activate(self, transport, repository_id, old, prepared, marker, archives, target)
                 self.verify_identity(transport, repository_id)
                 self.last_publication = tip[1]
-                from .agent_sync import publish_export
+                from .legacy_agent_sync import publish_export
                 publish_export(self, name, repository_id, ref, head, tip[0], force=full)
                 self.notify_publication(name, tip[0])
                 return head, tip[0], False
@@ -356,7 +356,7 @@ class Exchange:
                     checkpoints.activate(self, transport, repository_id, chain, prepared, *rotation)
                 cache.accept(publication_id, head, quarantine)
         self.last_publication = data
-        from .agent_sync import publish_export
+        from .legacy_agent_sync import publish_export
         publish_export(self, name, repository_id, ref, head, publication_id, force=full)
         self.notify_publication(name, publication_id)
         return head, publication_id, True
@@ -456,3 +456,182 @@ class Exchange:
         self.last_pull_info = {"remote_head": remote_head, "head": result_head,
                                "auto_merged": auto_merged, "files": files}
         return result_head, publication_id, tracking
+
+
+class Exchange(LegacyExchange):
+    """Protocol v4. Ordinary push is one head read and two writes, no read-back.
+
+    The v3 implementation above is an explicit upgrade/historical reader, never
+    a fallback for ordinary publication through this class.
+    """
+
+    def _configure(self, name, url, *, create=False, expected_id=None, inbox_root=None):
+        from .local_config import load, save, inferred_root, repository_path
+        remote_name(name)
+        validate_url(url)
+        root = inbox_root if inbox_root is not None else inferred_root(url)
+        if root is not None:
+            repository_path(root, url)
+        settings = load(self.git)
+        if name in settings['remotes'] or self.git.config('remote.' + name + '.url') is not None:
+            raise GdiError('connection name is already in use')
+        if expected_id is not None and not hex_value(expected_id, 32):
+            raise GdiError('invalid expected repository identity')
+        transport = self.transport_factory(url)
+        if create:
+            transport.mkdir('')
+            if transport.list(''):
+                raise GdiError('remote create requires an empty dedicated folder')
+            repository = {'version': 4, 'repository_id': uuid.uuid4().hex,
+                          'object_format': 'sha1', 'work_version': 1}
+            with tempfile.TemporaryDirectory(prefix='gdi-create-') as temporary:
+                path = Path(temporary) / 'repository.json'
+                path.write_bytes(encode(repository))
+                transport.upload(path, 'repository.json')
+            # Empty discovery namespaces; no upload read-back.
+            for directory in ('heads', 'packets', 'work/imports', 'work/retired'):
+                transport.mkdir(directory)
+        else:
+            repository = validate_repository(decode(transport.read('repository.json')))
+            if repository['version'] != 4:
+                raise GdiError('protocol v3 remote requires explicit remote upgrade; old clients must be stopped')
+        identity = repository['repository_id']
+        if expected_id is not None and identity != expected_id:
+            raise GdiError('repository ID mismatch')
+        settings['remotes'][name] = {'url': url, 'repository_id': identity,
+                                    'inbox_root': root, 'protocol_version': 4}
+        if settings['default_remote'] is None:
+            settings['default_remote'] = name
+        save(self.git, settings)
+        return identity
+
+    def connect(self, name):
+        settings = self.remote(name)
+        if settings.get('protocol_version') != 4:
+            raise GdiError('connection requires protocol v4: gdi remote upgrade ' + name +
+                           ' --quiescent --all-clients-updated')
+        if self.git.config('remote.' + remote_name(name) + '.url') is not None:
+            raise GdiError('Git remote conflicts with the GDI connection name')
+        transport = self.transport_factory(settings['url'])
+        # The branch pointer carries the pinned identity. Re-reading repository.json
+        # before/after every step only adds round trips and is not a transaction.
+        transport.repository = {'version': 4, 'repository_id': settings['repository_id'],
+                                'object_format': 'sha1', 'work_version': 1}
+        return transport, settings['repository_id']
+
+    def branches(self, transport, repository_id):
+        from .branches import directory_ref
+        return sorted(directory_ref(row['Path'][:-5]) for row in transport.list('heads')
+                      if not row['IsDir'] and row['Path'].endswith('.json'))
+
+    def publications(self, transport, repository_id, ref, **unused):
+        from .packet import read_head, publication
+        from .work_lifecycle import require_active
+        require_active(transport, repository_id, ref)
+        value = read_head(transport, repository_id, ref)
+        return [(value['publication_id'], publication(value))] if value is not None else []
+
+    def restore(self, transport, repository_id, chain):
+        from .packet import load_publication
+        if not chain:
+            raise GdiError('no packet to restore')
+        cache = VerifiedCache(self.git, repository_id)
+        identity, data = chain[-1]
+        if cache.contains(identity, data['head']):
+            return cache
+        value, cache = load_publication(self, transport, repository_id, identity)
+        if value != data['packet_pointer']:
+            raise GdiError('restored packet differs from branch/CI metadata')
+        return cache
+
+    @timed('push packet')
+    def push(self, name, branch=None, *, full=False, checkpoint_every=CHECKPOINT_EVERY):
+        from . import packet
+        from .agent import persist_directory
+        from .ci_protocol import atomic_write
+        from .local_config import repository_path
+        ref = self.git.ref(branch if branch is not None else self.git.branch())
+        head = self.git.oid(ref)
+        if head is None:
+            raise GdiError('branch has no committed HEAD')
+        transport, identity = self.connect(name)
+        from .work_lifecycle import require_active
+        require_active(transport, identity, ref)
+        before = packet.read_head(transport, identity, ref)
+        if before is None:
+            # First publication of this branch: establish identity once. Existing
+            # pointers already carry it and need no additional repository read.
+            self.verify_identity(transport, identity)
+            if transport.repository['version'] != 4:
+                raise GdiError('remote requires protocol v4 upgrade')
+        elif before['metadata']['head'] == head:
+            self.last_publication = packet.publication(before)
+            return head, before['publication_id'], False
+        elif not self.git.has_commit(before['metadata']['head']) or not self.git.ancestor(before['metadata']['head'], head):
+            raise GdiError('push is not a fast-forward; fetch/pull and reconcile history first')
+        settings = self.remote(name)
+        key = digest(encode({'url': settings['url'], 'ref': ref, 'head': head,
+                            'previous': before['publication_id'] if before else None}))
+        directory = self.git.gdi_dir() / 'packet-push' / key
+        if not directory.exists():
+            def prepare(temporary):
+                path, value = packet.build(self.git, identity, ref, temporary, previous=before,
+                    repository_path=repository_path(settings['inbox_root'], settings['url'])
+                        if settings['inbox_root'] else None,
+                    worker_id=packet.publisher_id(settings['inbox_root'], before,
+                        getattr(self, 'publisher_worker_id', None)))
+                atomic_write(temporary / 'plan.json', encode({'pointer': value, 'phase': 'PREPARED'}))
+            directory.parent.mkdir(parents=True, exist_ok=True)
+            persist_directory(directory, prepare)
+        plan_path = directory / 'plan.json'
+        plan = decode(plan_path.read_bytes())
+        value = packet.pointer(plan['pointer'], identity, ref)
+        if value['metadata']['head'] != head or value['metadata']['previous'] != (before['publication_id'] if before else None):
+            raise GdiError('saved publication differs from the current base')
+        path = directory / 'packet.zip'
+        if file_digest(path) != value['publication_id']:
+            raise GdiError('saved publication packet changed')
+        if plan['phase'] == 'UPLOADING':
+            # Only an ambiguous earlier failure needs an existence probe. No
+            # reverse download or probe is performed on a successful first try.
+            if transport.packet_exists(packet.packet_path(value['publication_id'])):
+                plan['phase'] = 'UPLOADED'
+        if plan['phase'] in ('PREPARED', 'UPLOADING'):
+            plan['phase'] = 'UPLOADING'
+            atomic_write(plan_path, encode(plan))
+            transport.upload(path, packet.packet_path(value['publication_id']))
+            plan['phase'] = 'UPLOADED'
+            atomic_write(plan_path, encode(plan))
+        packet.write_head(transport, value)
+        plan['phase'] = 'PUBLISHED'
+        atomic_write(plan_path, encode(plan))
+        self.last_publication = packet.publication(value)
+        # Git objects remain local. A future fetch need not re-download our packet.
+        packet.remember(self.git, value)
+        return head, value['publication_id'], True
+
+    def notify_publication(self, name, publication_id):
+        # v4 native push does not create background work or CI implicitly.
+        return None
+
+    def log(self, name, branch=None, *, limit=20):
+        if type(limit) is not int or limit < 1:
+            raise GdiError('log count must be positive')
+        branch = branch if branch is not None else self.git.branch()
+        transport, identity = self.connect(name)
+        chain = self.publications(transport, identity, self.git.ref(branch))
+        rows = []
+        for publication_id, data in chain:
+            rows.append({'publication_id': publication_id, 'head': data['head'], 'bundle_kind': 'full',
+                'bundle_bytes': data['bundle_bytes'], 'subject': self.git.text('show', '--no-patch', '--format=%s', data['head'])
+                    if self.git.has_commit(data['head']) else None})
+        return {'remote': name, 'url': self.remote(name)['url'], 'repository_id': identity,
+                'branch': branch, 'total': len(rows), 'publications': rows}
+
+    def gc(self, name, **options):
+        from .packet_gc import collect
+        return collect(self, name, **options)
+
+    def upgrade(self, name, *, quiescent=False, all_clients_updated=False):
+        from .packet_upgrade import upgrade
+        return upgrade(self, name, quiescent=quiescent, all_clients_updated=all_clients_updated)

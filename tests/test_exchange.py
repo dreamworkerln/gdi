@@ -14,7 +14,7 @@ from unittest.mock import patch
 from gdi.cli import main
 from gdi.cache import VerifiedCache
 from gdi.config import CHECKPOINT_EVERY
-from gdi.exchange import Exchange, GdiMergeConflict, bundle_prerequisites, decode, digest, encode
+from gdi.exchange import LegacyExchange as Exchange, GdiMergeConflict, bundle_prerequisites, decode, digest, encode
 from gdi.git import GdiError, Git
 from gdi.transport import Rclone, validate_url
 
@@ -117,6 +117,12 @@ class MemoryTransport:
 
 class ExchangeTestCase(unittest.TestCase):
     def setUp(self):
+        # This fixture intentionally describes the archived v3 protocol. Modern
+        # defaults and integration are covered independently in test_packet_v4.
+        for module in ('gdi.cli', 'gdi.repository', 'gdi.worker'):
+            replacement = patch(module + '.Exchange', Exchange)
+            replacement.start()
+            self.addCleanup(replacement.stop)
         self.tmp = tempfile.TemporaryDirectory(prefix="gdi-test-")
         self.root = Path(self.tmp.name)
         self.store = MemoryTransport()
@@ -1053,13 +1059,19 @@ class LocalTransportTests(unittest.TestCase):
                 (source / "hello.txt").write_text(f"local backend update {number}\n")
                 a.call("add", "hello.txt")
                 a.call("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", f"update {number}")
-                self.assertIn("Bundle: incremental", cli(source, "push", "drive"))
-            manifests = [decode(path.read_bytes()) for path in (root / "transport/branches").rglob("*.json")
-                         if path.name != 'checkpoint.json']
-            self.assertEqual(sorted(value["bundle_kind"] for value in manifests), ["full", "incremental", "incremental"])
-            checkpoint = decode((root / 'transport/branches/main/checkpoint.json').read_bytes())
-            self.assertEqual(checkpoint['root'], digest(encode(next(value for value in manifests if value['bundle_kind'] == 'full'))))
+                self.assertIn("Bundle: full", cli(source, "push", "drive"))
             identity = Exchange(a).remote("drive")["repository_id"]
+            from gdi import packet
+            packets = list((root / 'transport/packets').glob('*.zip'))
+            self.assertEqual(len(packets), 3)
+            pointer = packet.pointer(decode((root / 'transport/heads/main.json').read_bytes()), identity)
+            self.assertEqual(pointer['metadata']['head'], a.oid('HEAD'))
+            self.assertEqual(pointer['metadata']['ref'], 'refs/heads/main')
+            for path in packets:
+                with packet.read(path, identity) as (value, _):
+                    self.assertEqual(value['publication_id'], path.stem)
+            self.assertFalse((root / 'transport/branches').exists())
+            self.assertFalse((root / 'transport/bundles').exists())
             cli(target, "remote", "add", "drive", url, "--repository-id", identity)
             cli(target, "fetch", "drive")
             self.assertIsNone(b.oid("HEAD"))
@@ -1067,6 +1079,7 @@ class LocalTransportTests(unittest.TestCase):
             self.assertEqual(b.oid("HEAD"), a.oid("HEAD"))
             self.assertEqual((target / "hello.txt").read_text(), "local backend update 1\n")
             cli(source, "push", "drive", "--full")
+            self.assertEqual(len(list((root / 'transport/packets').glob('*.zip'))), 3)
             cli(target, "cache", "clear", "drive")
             cli(target, "pull", "drive")
             self.assertEqual(b.oid("HEAD"), a.oid("HEAD"))

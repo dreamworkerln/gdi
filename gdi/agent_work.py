@@ -16,7 +16,12 @@ def start(git, snapshot_path, repository_id, ident):
     from .work_lifecycle import require_active
     require_active(snapshot, repository_id, ref)
     directory = branch_directory(ref)
-    if any(item['Path'] == directory for item in snapshot.list('branches')):
+    if snapshot.repository['version'] == 4:
+        from .packet import head_path
+        exists = snapshot.read_optional(head_path(ref)) is not None
+    else:
+        exists = any(item['Path'] == directory for item in snapshot.list('branches'))
+    if exists:
         raise GdiError('work ID already exists on Drive; restore that work or obtain a new operator-assigned ID')
     return work.start(git, ident, repository_id)
 

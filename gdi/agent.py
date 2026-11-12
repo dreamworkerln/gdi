@@ -386,9 +386,11 @@ def verify_archives(directory, value, snapshot):
 
 
 def clone(snapshot_path, expected_id, destination):
-    """Restore a new worktree using only downloaded checkpoint/prerequisite bundles."""
-    from .exchange import Exchange
+    """Explicit historical v3 snapshot reader; v4 agents use agent pull."""
+    from .exchange import LegacyExchange
     snapshot = Snapshot(snapshot_path, expected_id)
+    if snapshot.repository['version'] != 3:
+        raise GdiError('snapshot clone reads historical v3 data; use agent pull --head --package for v4')
     require_active(snapshot, expected_id, snapshot.ref)
     if not snapshot.chain:
         raise GdiError('snapshot has no completed publication')
@@ -399,7 +401,7 @@ def clone(snapshot_path, expected_id, destination):
             git = Git(temporary, isolated=True)
             git.call('init', '-q', '--object-format=sha1', '--template=')
             git.ref(snapshot.ref[11:])
-            cache = Exchange(git).restore(snapshot, expected_id, snapshot.chain)
+            cache = LegacyExchange(git).restore(snapshot, expected_id, snapshot.chain)
             head = snapshot.chain[-1][1]['head']
             git.import_objects(cache.path, head)
             git.call('checkout', '-q', '-b', snapshot.ref[11:], head)

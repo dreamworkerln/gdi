@@ -16,7 +16,7 @@ import tarfile
 import zipfile
 
 
-RUNTIME_FILES = ('gdi.pyz', 'runtime.json', 'gdi.pyz.sha256', 'agent.md')
+RUNTIME_FILES = ('gdi.pyz', 'runtime.json', 'agent.md')
 
 
 def git(repository, *args):
@@ -59,7 +59,7 @@ def build(repository, output):
     files['GDI_RUNTIME.json'] = (json.dumps(metadata, sort_keys=True, indent=2) + '\n').encode()
     output = Path(output).resolve()
     if output.is_relative_to(repository):
-        for name in RUNTIME_FILES:
+        for name in (*RUNTIME_FILES, 'gdi.pyz.sha256'):
             relative = (output / name).relative_to(repository).as_posix()
             if git(repository, 'ls-files', '--', relative):
                 raise ValueError('output would overwrite a tracked file: ' + relative)
@@ -140,13 +140,7 @@ def main(argv=None):
             for filename in RUNTIME_FILES:
                 subprocess.run(['rclone', 'copyto', str(output / filename), args.runtime_dir.rstrip('/') + '/' + filename],
                                cwd=repository, env=process_environment, check=True)
-            stage = 'runtime download verification'
-            for filename in RUNTIME_FILES:
-                subprocess.run(['rclone', 'copyto', args.runtime_dir.rstrip('/') + '/' + filename,
-                                str(verification / filename)], cwd=repository, env=process_environment, check=True)
-                if (output / filename).read_bytes() != (verification / filename).read_bytes():
-                    raise ValueError('uploaded file differs: ' + filename)
-            print(f'deploy: complete; uploaded files verified at {args.runtime_dir}')
+            print(f'deploy: complete; runtime uploaded to {args.runtime_dir} (no read-back)')
     except subprocess.CalledProcessError as error:
         print(f'deploy: failed during {stage}; runtime files remain in {output}', file=sys.stderr)
         return error.returncode if error.returncode > 0 else 128 - error.returncode

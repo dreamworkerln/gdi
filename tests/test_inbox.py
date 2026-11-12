@@ -11,7 +11,7 @@ from unittest.mock import patch
 import zipfile
 
 from gdi.ci import CiClient
-from gdi.exchange import Exchange, decode, encode
+from gdi.exchange import LegacyExchange as Exchange, decode, encode
 from gdi.git import GdiError
 from gdi.inbox import filename, notification, publish, relative_repository
 from gdi.worker_config import load_config

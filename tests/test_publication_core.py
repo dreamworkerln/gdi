@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from gdi.cache import VerifiedCache
-from gdi.exchange import Exchange
+from gdi.exchange import LegacyExchange as Exchange
 from gdi.git import GdiError, Git
 from gdi.publication import encode, prepare_publication, verify_bundle
 from tests.test_exchange import MemoryTransport

@@ -61,6 +61,7 @@ class Worker:
         self.stop = threading.Event()
         self.queue_length = 0
         self.ci_proxy = None
+        self.verified_repositories = {}
 
     def network_environment(self):
         if self.transport_session is None:
@@ -82,9 +83,16 @@ class Worker:
 
     def transport(self, repo):
         transport = self.transport_factory(repo['remote_url'])
+        key = repo['remote_url'], repo['repository_id']
+        if key in self.verified_repositories:
+            transport.repository = self.verified_repositories[key]
+            return transport
         remote = validate_repository(decode(transport.read('repository.json')))
         if remote['repository_id'] != repo['repository_id']:
             raise GdiError("worker repository identity mismatch")
+        if remote['version'] == 4:
+            self.verified_repositories[key] = remote
+        transport.repository = remote
         return transport
 
     @transport_operation
@@ -95,9 +103,9 @@ class Worker:
             for path in ('inbox', f'ci/workers/{self.worker_id}'):
                 transport.mkdir(path)
             capabilities = {'ci_version': 1, 'inbox_version': 1, 'ci_submission_version': 1,
-                            'agent_exchange_version': 1,
+                            'agent_exchange_version': 2, 'git_packet_version': 1,
                             'cancel_version': 1, 'result_delivery_version': 1,
-                            'publication_checkpoint_version': 1,
+                            'git_protocol_version': 4,
                             'worker_id': self.worker_id,
                             'profiles': {'full': self.config['execution_profile']['revision']},
                             'labels': self.config.get('labels', []), 'platforms': sorted(self.config['platforms'])}
@@ -179,6 +187,8 @@ class Worker:
         from .inbox import NAME, read
         from .agent_sync import PUSH_NAME
         root = self.transport_factory(self.config['remote_url'])
+        from .agent_receiver import recover
+        recover(self, root)
         entries = root.list('inbox')
         from collections import Counter
         identities = Counter(match[1] for item in entries if not item['IsDir']
@@ -214,17 +224,21 @@ class Worker:
                 git = Git(scratch, isolated=True)
                 git.ref(event['ref'][11:])
                 if event['type'] == 'repository_updated':
-                    receipt = self.root / 'notifications' / name
-                    if not receipt.exists():
-                        pub, _ = publication(Exchange(git, self.transport_factory), transport,
-                                             event['repository_id'], event['publication_id'])
-                        if (pub['head'], pub['ref']) != (event['head'], event['ref']):
-                            raise GdiError('inbox publication identity mismatch')
-                        from .agent_receiver import refresh_export
-                        refresh_export(self, event['repository_id'], event['repository_path'], event['ref'])
-                        atomic_write(receipt, encode(event))
-                    elif receipt.read_bytes() != encode(event):
-                        raise GdiError('durable inbox receipt differs')
+                    # v4 has no native-push notifications or exports. Old queued
+                    # notifications do not require a source download/re-publication.
+                    if transport.repository['version'] == 3:
+                        # Historical v3 regression/upgrade reader only.
+                        receipt = self.root / 'notifications' / name
+                        if not receipt.exists():
+                            pub, _ = publication(Exchange(git, self.transport_factory), transport,
+                                                 event['repository_id'], event['publication_id'])
+                            if (pub['head'], pub['ref']) != (event['head'], event['ref']):
+                                raise GdiError('inbox publication identity mismatch')
+                            from .legacy_agent_receiver import refresh_export
+                            refresh_export(self, event['repository_id'], event['repository_path'], event['ref'])
+                            atomic_write(receipt, encode(event))
+                        elif receipt.read_bytes() != encode(event):
+                            raise GdiError('durable inbox receipt differs')
                     root.delete_notification('inbox/' + name)
                     continue
                 from .inbox import submission
@@ -264,6 +278,10 @@ class Worker:
         prefix = 'ci/jobs/' + req['job_id']
         transport.mkdir(prefix)
         destination = prefix + '/submission.json'
+        if getattr(transport, 'repository', {}).get('version') == 4:
+            transport.upload(source, destination)
+            atomic_write(receipt, content)
+            return
         previous = optional_read(transport, destination)
         if previous is not None and previous != content:
             raise GdiError('archived CI submission conflicts with this job')
@@ -425,6 +443,11 @@ class Worker:
         self.ledger.update(req['job_id'], 'RESULT_READY')
 
     def verify_remote(self, transport, req, row, *, spool=None, prefix=None):
+        if getattr(transport, 'repository', {}).get('version') == 4:
+            # Transport completion is the delivery acknowledgement. Consumers
+            # verify the single result packet when they actually read it.
+            local = spool or self.spool(req['job_id'])
+            return validate_result(decode((local / 'result.json').read_bytes()), req, digest(row['raw']))
         spool = self.spool(req['job_id']) if spool is None else spool
         prefix = f"ci/jobs/{req['job_id']}" if prefix is None else prefix
         names = files(transport, prefix)

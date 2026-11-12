@@ -78,6 +78,11 @@ def listing_pages(pages, ids=None):
 
 
 class Snapshot:
+    def __new__(cls, path, expected_id, *, ref=None):
+        if decode(metadata_file(path)).get('snapshot_version') == 2:
+            return PacketSnapshot(path, expected_id, ref=ref)
+        return super().__new__(cls)
+
     def __init__(self, path, expected_id, *, ref=None):
         if not hex_value(expected_id, 32):
             raise GdiError('expected repository ID must be supplied independently')
@@ -293,6 +298,105 @@ class Snapshot:
         if path.stat().st_size != size or file_digest(path) != checksum:
             raise GdiError('uploaded file checksum/size mismatch: ' + relative)
         return path
+
+
+class PacketSnapshot:
+    """Small offline inputs for v4 CI/work; no connector capture or manifests."""
+
+    def __init__(self, path, expected_id, *, ref=None):
+        from . import packet
+        self.path = Path(path).absolute()
+        self.document = value = decode(metadata_file(path))
+        if (set(value) != {'snapshot_version', 'repository_id', 'repository_path', 'ref', 'head', 'files', 'listings'}
+                or type(value['snapshot_version']) is not int or value['snapshot_version'] != 2
+                or value['repository_id'] != expected_id or not isinstance(value['files'], dict)
+                or not isinstance(value['listings'], dict)):
+            raise GdiError('invalid v4 offline snapshot')
+        self.repository_path = relative_repository(value['repository_path'])
+        self.ref = value['ref']
+        branch_directory(self.ref)
+        if ref is not None and ref != self.ref:
+            raise GdiError('snapshot belongs to another branch')
+        head = packet.pointer(decode(metadata_file(local_file(self.path.parent, value['head']))), expected_id, self.ref)
+        self.chain = [(head['publication_id'], packet.publication(head))]
+        self.repository_id = expected_id
+        self.repository = {'version': 4, 'repository_id': expected_id, 'object_format': 'sha1', 'work_version': 1}
+        self.downloads, self.entries = {}, {}
+        from .rc_transport import relative_path
+        for relative, local in value['files'].items():
+            relative_path(relative)
+            source = local_file(self.path.parent, local)
+            self.downloads[relative] = source
+            self.entries[relative] = {'bytes': source.stat().st_size, 'is_dir': False}
+        self.folders = value['listings']
+        for relative, rows in self.folders.items():
+            relative_path(relative, empty=True)
+            if not isinstance(rows, list):
+                raise GdiError('offline listing must be a list')
+            names = set()
+            for row in rows:
+                if (not isinstance(row, dict) or not isinstance(row.get('Path'), str)
+                        or '/' in row['Path'] or row['Path'] in names or type(row.get('IsDir')) is not bool):
+                    raise GdiError('invalid or duplicate offline listing entry')
+                relative_path(row['Path'])
+                names.add(row['Path'])
+        self.fingerprint = digest(encode(value))
+
+    def history_chain(self):
+        from . import packet
+        values = dict(self.chain)
+        for relative, path in self.downloads.items():
+            if relative.startswith('packets/') and relative.endswith('.zip'):
+                with packet.read(path, self.repository_id) as (value, _):
+                    if packet.packet_path(value['publication_id']) != relative:
+                        raise GdiError('downloaded historical packet has another identity')
+                    values[value['publication_id']] = packet.publication(value)
+        return list(values.items())
+
+    def required_bundles(self):
+        value = self.chain[-1][1]['packet_pointer']
+        from .packet import packet_path
+        return [{'relative_path': packet_path(value['publication_id']), 'sha256': value['publication_id'],
+                 'bytes': value['packet_bytes'], 'publication_id': value['publication_id'], 'bundle_kind': 'full'}]
+
+    def list(self, relative, *, recursive=False):
+        if relative not in self.folders:
+            parent, _, name = relative.rpartition('/')
+            if parent in self.folders and not any(row['Path'] == name for row in self.folders[parent]):
+                return []
+            raise GdiError('offline inputs require listing: ' + relative)
+        rows = list(self.folders[relative])
+        if recursive:
+            for row in self.folders[relative]:
+                if row['IsDir']:
+                    rows.extend({**child, 'Path': row['Path'] + '/' + child['Path']}
+                                for child in self.list(relative + '/' + row['Path'], recursive=True))
+        return rows
+
+    def downloaded_file(self, relative):
+        if relative not in self.downloads:
+            raise GdiError('offline download missing: ' + relative)
+        return local_file(self.path.parent, self.downloads[relative].relative_to(self.path.parent).as_posix())
+
+    def read(self, relative):
+        return metadata_file(self.downloaded_file(relative))
+
+    def read_optional(self, relative):
+        if relative in self.downloads:
+            return self.read(relative)
+        parent, _, name = relative.rpartition('/')
+        if not any(row['Path'] == name for row in self.list(parent)):
+            return None
+        raise GdiError('listed offline file has not been downloaded: ' + relative)
+
+    def download(self, relative, target):
+        shutil.copyfile(self.downloaded_file(relative), target)
+
+    def require_file(self, relative, checksum, size):
+        source = self.downloaded_file(relative)
+        if source.stat().st_size != size or file_digest(source) != checksum:
+            raise GdiError('downloaded file differs from declared content: ' + relative)
+        return source
 
 
 def download_proof(path, expected_name, checksum, size):

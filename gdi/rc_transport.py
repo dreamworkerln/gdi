@@ -353,13 +353,56 @@ class RcTransport(Rclone):
 
     def read_optional(self, relative):
         relative_path(relative)
-        value = self.api('operations/stat', fs=self.url, remote=relative,
-                         opt={'filesOnly': True}).get('item')
-        if value is None:
-            return None
-        if not isinstance(value, dict) or value.get('IsDir') is not False:
-            raise GdiError('expected a regular remote metadata file')
-        return self.read(relative)
+        try:
+            return self.read(relative)
+        except RcError as exc:
+            if exc.status == 404:
+                return None
+            raise
+
+    def update_head(self, source, relative):
+        from .transport import validate_head_path
+        validate_head_path(relative)
+        source = Path(source).resolve(strict=True)
+        self.transfer_api('operations/copyfile', label='publish branch pointer',
+            srcFs=str(source.parent), srcRemote=source.name, dstFs=self.url, dstRemote=relative,
+            _config={'IgnoreTimes': True})
+
+    def packet_exists(self, relative):
+        from .transport import validate_packet_path
+        validate_packet_path(relative)
+        return self.api('operations/stat', fs=self.url, remote=relative,
+                        opt={'filesOnly': True}).get('item') is not None
+
+    def move_packet(self, source_url, source_relative, target_relative):
+        from .transport import validate_packet_path, validate_url
+        from .agent_sync import PUSH_NAME
+        validate_url(source_url)
+        validate_packet_path(target_relative)
+        if (not source_relative.startswith('inbox/') or not PUSH_NAME.fullmatch(source_relative[6:])
+                or source_url.split(':', 1)[0] != self.url.split(':', 1)[0]):
+            raise GdiError('packet adoption requires an inbox packet on the same backend')
+        self.transfer_api('operations/movefile', label='adopt uploaded Git packet',
+            srcFs=source_url, srcRemote=source_relative, dstFs=self.url, dstRemote=target_relative,
+            _config={'IgnoreTimes': True})
+
+    def update_repository(self, source):
+        from .publication import decode, validate_repository
+        source = Path(source).resolve(strict=True)
+        if validate_repository(decode(source.read_bytes()))['version'] != 4:
+            raise GdiError('upgrade requires protocol v4 metadata')
+        self.transfer_api('operations/copyfile', label='activate protocol v4', srcFs=str(source.parent),
+            srcRemote=source.name, dstFs=self.url, dstRemote='repository.json', _config={'IgnoreTimes': True})
+
+    def delete_packet(self, relative):
+        from .transport import validate_packet_path
+        validate_packet_path(relative)
+        self.api('operations/deletefile', fs=self.url, remote=relative)
+
+    def delete_head(self, relative):
+        from .transport import validate_head_path
+        validate_head_path(relative)
+        self.api('operations/deletefile', fs=self.url, remote=relative)
 
     def read_many(self, relatives):
         paths = list(relatives)

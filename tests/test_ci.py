@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 from gdi.ci import CiClient
 from gdi.ci_protocol import atomic_write, now, upload_json
-from gdi.exchange import Exchange, decode, digest, encode
+from gdi.exchange import LegacyExchange as Exchange, decode, digest, encode
 from gdi.git import GdiError, Git
 from gdi.worker import Worker
 from gdi.worker_config import load_config

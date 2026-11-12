@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from gdi.branches import branch_directory, directory_ref
 from gdi.cli import main
-from gdi.exchange import Exchange, encode
+from gdi.exchange import LegacyExchange as Exchange, encode
 from gdi.git import GdiError
 from gdi.local_config import load, save, select
 from gdi.status import inspect

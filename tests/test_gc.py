@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from gdi.cache import VerifiedCache
-from gdi.exchange import Exchange, bundle_prerequisites, decode, digest, encode
+from gdi.exchange import LegacyExchange as Exchange, bundle_prerequisites, decode, digest, encode
 from gdi.git import GdiError
 from gdi.transport import Rclone
 from tests.test_exchange import ExchangeTestCase
@@ -299,7 +299,7 @@ class LocalGcTests(ExchangeTestCase):
         env = {**os.environ, "RCLONE_CONFIG_GDITEST_TYPE": "local", "RCLONE_CONFIG": "/dev/null",
                "PYTHONPATH": str(Path(__file__).resolve().parents[1]), "PYTHONDONTWRITEBYTECODE": "1"}
         def cli(path, *args, exit_code=0):
-            # Bundle-only acceptance remains independent of work-retention output.
+            # Packet-only acceptance remains independent of work-retention output.
             if args[0] == "gc":
                 args = (*args, "--bundle-only")
             result = subprocess.run([sys.executable, "-m", "gdi", *args], cwd=path, env=env,
@@ -311,20 +311,20 @@ class LocalGcTests(ExchangeTestCase):
         for number in range(1, 6):
             self.commit(self.a, f"real update {number}")
             cli(self.a.path, "push", "localdrive", "--checkpoint-every", "2")
-        manifests = {str(path.relative_to(remote)): path.read_bytes() for path in (remote / "branches").rglob("*.json")}
-        before = list((remote / "bundles").glob("*.bundle"))
+        heads = {str(path.relative_to(remote)): path.read_bytes() for path in (remote / 'heads').glob('*.json')}
+        before = list((remote / 'packets').glob('*.zip'))
         self.assertEqual(len(before), 6)
-        self.assertIn("Candidates: 2 bundles", cli(self.a.path, "gc", "localdrive"))
-        self.assertEqual(len(list((remote / "bundles").glob("*.bundle"))), 6)
+        self.assertEqual(cli(self.a.path, 'gc', 'localdrive').count('Would remove packets/'), 4)
+        self.assertEqual(len(list((remote / 'packets').glob('*.zip'))), 6)
         self.assertIn("requires --quiescent", cli(self.a.path, "gc", "localdrive", "--apply", exit_code=1))
         result = cli(self.a.path, "gc", "localdrive", "--apply", "--quiescent")
-        self.assertIn("Verified refs/heads/main:", result)
-        self.assertIn("GC complete: deleted 2 bundles", result)
-        self.assertEqual(len(list((remote / "bundles").glob("*.bundle"))), 4)
-        self.assertEqual(manifests, {str(path.relative_to(remote)): path.read_bytes()
-                                    for path in (remote / "branches").rglob("*.json")})
+        self.assertEqual(result.count('Remove packets/'), 4)
+        self.assertEqual(len(list((remote / 'packets').glob('*.zip'))), 2)
+        self.assertEqual(heads, {str(path.relative_to(remote)): path.read_bytes()
+                                for path in (remote / 'heads').glob('*.json')})
         identity = Exchange(self.a).remote("localdrive")["repository_id"]
         cli(self.b.path, "remote", "add", "localdrive", "gditest:" + str(remote), "--repository-id", identity)
         cli(self.b.path, "pull", "localdrive")
         self.assertEqual(self.b.oid("HEAD"), self.a.oid("HEAD"))
-        self.assertIn("Nothing to delete", cli(self.a.path, "gc", "localdrive", "--apply", "--quiescent"))
+        self.assertNotIn('Remove packets/', cli(self.a.path, 'gc', 'localdrive', '--apply', '--quiescent'))
+        self.assertEqual(len(list((remote / 'packets').glob('*.zip'))), 2)

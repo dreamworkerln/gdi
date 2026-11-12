@@ -70,6 +70,12 @@ def hex_value(value, length):
 
 
 def validate_repository(data):
+    if type(data.get('version')) is int and data['version'] == 4:
+        if (set(data) != {'version', 'repository_id', 'object_format', 'work_version'}
+                or not hex_value(data.get('repository_id'), 32) or data.get('object_format') != 'sha1'
+                or type(data.get('work_version')) is not int or data['work_version'] != 1):
+            raise GdiError('invalid protocol v4 repository metadata')
+        return data
     if (not {'version', 'repository_id', 'object_format'}.issubset(data) or
             set(data) - {'version', 'repository_id', 'object_format', 'work_version', 'publication_checkpoint_version'} or
             ('publication_checkpoint_version' in data and

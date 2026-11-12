@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 from gdi.aliases import expand, validate_name
 from gdi.cli import main, parser
-from gdi.exchange import Exchange, decode, encode
+from gdi.exchange import LegacyExchange as Exchange, decode, encode
 from gdi.git import GdiError, Git
 from gdi.local_config import load
 from gdi.repository import clone, initialize

@@ -180,22 +180,19 @@ class DeployTests(unittest.TestCase):
         self.deploy('--runtime-dir', self.runtime_url)
         runtime = self.store / 'runtime'
         first_data = (runtime / 'gdi.pyz').read_bytes()
-        self.assertEqual((runtime / 'agent.md').read_bytes(), (self.repo / 'docs/agent.md').read_bytes())
-        manifests = [path for path in (self.store / 'branches/main').glob('*.json')
-                     if path.name != 'checkpoint.json']
-        self.assertEqual(len(manifests), 1)
-        checkpoint_path = self.store / 'branches/main/checkpoint.json'
-        checkpoint = checkpoint_path.read_bytes()
-        self.assertEqual(json.loads(checkpoint)['root'], manifests[0].stem)
+        pointer_path = self.store / 'heads/main.json'
+        pointer = pointer_path.read_bytes()
+        first = json.loads(pointer)
+        self.assertTrue((self.store / 'packets' / (first['publication_id'] + '.zip')).exists())
+        self.assertFalse((self.store / 'agent').exists())
         self.deploy('--runtime-dir', self.runtime_url)
-        self.assertEqual(set((self.store / 'branches/main').glob('*.json')), set(manifests) | {checkpoint_path})
-        self.assertEqual(checkpoint_path.read_bytes(), checkpoint)
+        self.assertEqual(pointer_path.read_bytes(), pointer)
         self.assertEqual((runtime / 'gdi.pyz').read_bytes(), first_data)
         (self.repo / 'example.txt').write_text('new committed contents\n')
         with (self.repo / 'docs/agent.md').open('a') as handle:
             handle.write('\nUpdated deployment instructions.\n')
         self.commit()
-        self.cli('push', 'drive')  # A delta first; deploy must still publish a full checkpoint.
+        self.cli('push', 'drive')
         self.deploy('--runtime-dir', self.runtime_url)
         metadata = json.loads((runtime / 'runtime.json').read_text())
         self.assertEqual(metadata['head'], self.head)
@@ -204,15 +201,15 @@ class DeployTests(unittest.TestCase):
         before = {path.name: path.read_bytes() for path in runtime.iterdir()}
         self.cli('gc', 'drive', '--apply', '--quiescent', '--keep-checkpoints', '1')
         self.assertEqual({path.name: path.read_bytes() for path in runtime.iterdir()}, before)
-        snapshot = self.snapshot()  # Includes runtime in root listing; no runtime listing/downloads needed.
+        head_file = self.root / 'downloaded-head.json'
+        head_file.write_bytes(pointer_path.read_bytes())
+        selected = json.loads(head_file.read_text())
+        packet_file = self.store / 'packets' / (selected['publication_id'] + '.zip')
         shutil.rmtree(self.repo)
-        executable = [sys.executable, '-I', str(self.output / 'gdi.pyz'), 'agent']
-        result = self.run_command([*executable, 'snapshot', '--snapshot', str(snapshot),
-                                   '--repository-id', self.identity], cwd=self.root)
-        self.assertEqual(json.loads(result.stdout)['head'], self.head)
         destination = self.root / 'restored'
-        result = self.run_command([*executable, 'clone', '--snapshot', str(snapshot), '--repository-id', self.identity,
-                                   '--destination', str(destination)], cwd=self.root)
+        result = self.run_command([sys.executable, '-I', str(self.output / 'gdi.pyz'), 'agent', 'pull',
+            '--head', str(head_file), '--package', str(packet_file), '--repository-id', self.identity,
+            '--destination', str(destination)], cwd=self.root)
         self.assertEqual(json.loads(result.stdout)['head'], self.head)
         self.assertEqual((destination / 'example.txt').read_text(), 'new committed contents\n')
         self.assertEqual(self.run_command(['git', 'rev-parse', 'HEAD'], cwd=destination).stdout.strip(), self.head)
@@ -229,45 +226,34 @@ class DeployTests(unittest.TestCase):
         self.assertFalse((self.store / 'runtime').exists())
 
     @unittest.skipUnless(shutil.which('rclone'), 'requires rclone with local backend')
-    def test_upload_failure_and_corrupt_download_are_reported_and_retry_keeps_publication(self):
+    def test_upload_failure_retries_without_duplicate_publication_or_runtime_readback(self):
         self.initialize_remote()
         real_rclone = shutil.which('rclone')
         original_path = self.env['PATH']
         tools = self.root / 'tools'
         tools.mkdir()
         wrapper = tools / 'rclone'
-        wrapper.write_text(f'''#!{sys.executable}
-import pathlib, subprocess, sys
+        wrapper.write_text(f"""#!{sys.executable}
+import subprocess, sys
 args = sys.argv[1:]
 if args[0] == 'copyto' and args[1].endswith('/gdi.pyz') and not args[1].startswith('gdideploytest:'):
     raise SystemExit(23)
 raise SystemExit(subprocess.call([{real_rclone!r}, *args]))
-''')
+""")
         wrapper.chmod(0o755)
         self.env['PATH'] = str(tools) + os.pathsep + original_path
         result = self.deploy('--runtime-dir', self.runtime_url, expected=23)
         self.assertIn('failed during runtime upload', result.stderr)
-        publications = [path for path in (self.store / 'branches/main').glob('*.json')
-                        if path.name != 'checkpoint.json']
-        self.assertEqual(len(publications), 1)
-        checkpoint_path = self.store / 'branches/main/checkpoint.json'
-        checkpoint = checkpoint_path.read_bytes()
-        self.assertEqual(json.loads(checkpoint)['root'], publications[0].stem)
-        self.assertFalse((self.store / 'runtime/runtime.json').exists())
-        wrapper.write_text(f'''#!{sys.executable}
-import pathlib, subprocess, sys
+        pointer = (self.store / 'heads/main.json').read_bytes()
+        packets = {path.name for path in (self.store / 'packets').iterdir()}
+        wrapper.write_text(f"""#!{sys.executable}
+import subprocess, sys
 args = sys.argv[1:]
-code = subprocess.call([{real_rclone!r}, *args])
-if code == 0 and args[0] == 'copyto' and args[1].startswith('gdideploytest:') and args[1].endswith('/gdi.pyz'):
-    with pathlib.Path(args[2]).open('ab') as handle:
-        handle.write(b'corrupted download')
-raise SystemExit(code)
-''')
-        result = self.deploy('--runtime-dir', self.runtime_url, expected=1)
-        self.assertIn('failed during runtime download verification', result.stderr)
-        self.assertNotIn('deploy: complete', result.stdout)
-        self.env['PATH'] = original_path
+if args[0] == 'copyto' and args[1].startswith('gdideploytest:') and '/runtime/' in args[1]:
+    raise SystemExit(91)
+raise SystemExit(subprocess.call([{real_rclone!r}, *args]))
+""")
         self.deploy('--runtime-dir', self.runtime_url)
-        self.assertEqual(set((self.store / 'branches/main').glob('*.json')), set(publications) | {checkpoint_path})
-        self.assertEqual(checkpoint_path.read_bytes(), checkpoint)
+        self.assertEqual((self.store / 'heads/main.json').read_bytes(), pointer)
+        self.assertEqual({path.name for path in (self.store / 'packets').iterdir()}, packets)
         self.assertEqual((self.store / 'runtime/gdi.pyz').read_bytes(), (self.output / 'gdi.pyz').read_bytes())

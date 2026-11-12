@@ -1,4 +1,13 @@
-# Ручная очистка remote bundles
+# Явный GC пакетов v4 и исторический bundle GC
+
+В GDI 0.8 обычный GC работает с packets/ и heads/: [контракт v4](agent-exchange.md).
+`--keep-checkpoints N` сохраняет N последних пакетов ветки; CI и work references
+также защищают свои пакеты. Импортированные work refs могут быть явно retired
+через --keep-imported. --apply требует --quiescent. Push/worker не вызывают GC.
+Ни старый v3 namespace, ни runtime не удаляются автоматически.
+
+Ниже сохранено историческое описание bundle GC v3 для разбора старых данных;
+оно не описывает обычный push/GC нового протокола.
 
 Базовый bundle GC в gdi 0.4 удаляет устаревшие упаковки Git-истории из папки remote. Commits,
 manifests, настройки remote, рабочие файлы и локальный кеш остаются. Protocol v3
