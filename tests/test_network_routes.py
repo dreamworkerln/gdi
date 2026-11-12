@@ -1,6 +1,7 @@
 """Automatic routes remember success and do not retry protocol/auth failures."""
 
 import os
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -70,6 +71,83 @@ class NetworkRoutesTests(unittest.TestCase):
         self.assertEqual(calls, [PROXY])
         self.assertNotIn('password', self.state.read_text())
         self.assertNotIn('127.0.0.1', self.state.read_text())
+
+    def test_response_header_timeout_switches_cached_direct_to_env_proxy(self):
+        message = ('RC HTTP 500: Post https://www.googleapis.com/upload/drive/v3/files: '
+                   'net/http: timeout awaiting response headers')
+        for key in ('HTTPS_PROXY', 'https_proxy', 'ALL_PROXY', 'all_proxy'):
+            with self.subTest(variable=key), patch.dict(os.environ, {
+                    key: PROXY['https_proxy'], 'NO_PROXY': 'internal.example'}, clear=True), \
+                    patch('gdi.network.discover_proxies', return_value=[]):
+                self.state.write_text(json.dumps({'route_sha256': NetworkRoutes.identity({})}))
+                calls = []
+                network = self.routes()
+                def connect(route):
+                    calls.append(route)
+                    if 'https_proxy' not in route:
+                        raise RcError(500, message)
+                    return 'connected'
+                with self.assertLogs('gdi.network', level='WARNING') as output:
+                    self.assertEqual(network.run(connect), 'connected')
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(calls[0], {'no_proxy': 'internal.example'})
+                self.assertEqual(calls[1]['https_proxy'], PROXY['https_proxy'])
+                self.assertEqual(calls[1]['no_proxy'], 'internal.example')
+                self.assertNotIn('password', '\n'.join(output.output))
+                self.assertNotIn('password', self.state.read_text())
+                self.assertNotIn('127.0.0.1', self.state.read_text())
+                calls.clear()
+                self.routes().run(lambda route: calls.append(route))
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0]['https_proxy'], PROXY['https_proxy'])
+
+    def test_cli_header_timeout_retries_with_proxy_from_environment(self):
+        self.state.write_text(json.dumps({'route_sha256': NetworkRoutes.identity({})}))
+        with patch.dict(os.environ, {'HTTPS_PROXY': PROXY['https_proxy']}, clear=True), \
+                patch('gdi.network.discover_proxies', return_value=[]):
+            network = self.routes()
+            result = subprocess.CompletedProcess(['rclone'], 0, '[]', '')
+            error = GdiError('Post upload: net/http: timeout awaiting response headers')
+            with patch('gdi.transport.run', side_effect=[error, result]) as run:
+                self.assertEqual(Rclone('drive:project', network=network).list(''), [])
+        self.assertEqual(run.call_count, 2)
+        self.assertNotIn('HTTPS_PROXY', run.call_args_list[0].kwargs['environment'])
+        self.assertEqual(run.call_args_list[1].kwargs['environment']['HTTPS_PROXY'], PROXY['https_proxy'])
+
+    def test_async_upload_header_timeout_restarts_rc_with_env_proxy(self):
+        self.state.write_text(json.dumps({'route_sha256': NetworkRoutes.identity({})}))
+        with patch.dict(os.environ, {'HTTPS_PROXY': PROXY['https_proxy']}, clear=True), \
+                patch('gdi.network.discover_proxies', return_value=[]):
+            network = self.routes()
+            server = RcServer(network=network)
+            server.network_route = {}
+            server.process = Mock()
+            error = RcError(500, 'Post upload: net/http: timeout awaiting response headers')
+            with patch.object(server, 'close') as close, patch.object(server, '__enter__') as start, \
+                    patch.object(server, '_transfer', side_effect=[error, {}]) as transfer:
+                self.assertEqual(server.transfer('/sync/copy', {'srcFs': '/tmp/data', 'dstFs': 'drive:project',
+                    '_config': {'Immutable': True, 'CheckSum': True}}, 'upload'), {})
+            self.assertEqual(transfer.call_count, 2)
+            close.assert_called_once()
+            start.assert_called_once()
+            self.assertEqual(server.network_route['https_proxy'], PROXY['https_proxy'])
+            environment = network.environment(server.network_route)
+            self.assertEqual(environment['HTTPS_PROXY'], PROXY['https_proxy'])
+            self.assertTrue(transfer.call_args.args[1]['_config']['Immutable'])
+
+    def test_header_timeout_exhausts_each_route_once(self):
+        self.state.write_text(json.dumps({'route_sha256': NetworkRoutes.identity({})}))
+        with patch.dict(os.environ, {'HTTPS_PROXY': PROXY['https_proxy']}, clear=True), \
+                patch('gdi.network.discover_proxies', return_value=[]):
+            calls = []
+            def fail(route):
+                calls.append(route)
+                raise GdiError('net/http: timeout awaiting response headers')
+            with self.assertRaisesRegex(GdiError, 'timeout awaiting response headers'):
+                self.routes().run(fail)
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0], {})
+            self.assertEqual(calls[1]['https_proxy'], PROXY['https_proxy'])
 
     def test_unavailable_local_proxy_is_skipped_without_remote_attempt(self):
         calls = []

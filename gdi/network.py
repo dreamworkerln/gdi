@@ -123,6 +123,7 @@ def network_error(error):
         'no such host', 'server misbehaving', 'network is unreachable',
         'connection refused', 'connection reset by peer', 'i/o timeout',
         'tls handshake timeout', 'context deadline exceeded',
+        'timeout awaiting response headers',
         'client.timeout exceeded while awaiting headers', 'temporary failure in name resolution'))
 
 
