@@ -20,8 +20,14 @@
 | [TODO_007](todos/TODO_007_CI_SINGLE_SUBMISSION.md) | Один самодостаточный запрос CI в inbox | CLOSED; 3b5e7af, один inbox-файл; test.sh: 455 PASS / 5 opt-in SKIP; GitHub/GDI/runtime опубликованы, user-dream обновлён и объявляет submission v1 |
 | [TODO_008](todos/TODO_008_AGENT_SNAPSHOT_BUILDER.md) | Сборщик агентского snapshot и точный отчёт проверок | IMPLEMENTED; 0.5.0 локально; software validation: 32 targeted, test.sh до version bump 473 PASS / 3 opt-in service SKIP; version parity PASS; публикация отложена оператором |
 | [TODO_009](todos/TODO_009_PUBLICATION_CHECKPOINTS.md) | Ограниченная активная цепочка, checkpoints и архив manifests | IMPLEMENTED; implementation DONE локально; test.sh: 490 tests, 485 PASS / 5 opt-in SKIP, 325.931 s; Docker/service и реальный connector acceptance открыты; deploy/активация/рестарт не выполнялись |
+| [TODO_010](todos/TODO_010_AGENT_SINGLE_EXCHANGE.md) | Один export для pull, один inbox ZIP для push и квитанция worker | IMPLEMENTED; ZIP handler исправлен; test.sh 507: 502 PASS / 5 opt-in SKIP, 378.432 s, exit 0; service/реальный Drive acceptance открыты, deploy не выполнялся |
 
 ## Следующие действия
+
+Текущий приоритет оператора — TODO_010: минимум агентских вызовов Drive-коннектора
+и новая инструкция. Разрешённый повторный полный прогон после исправления ZIP
+handler завершился успешно; осталось 5 opt-in SKIP. Публикация требует отдельного
+запроса.
 
 1. TODO_004: runtime/agent.md 435df3c были опубликованы отдельно; default capability
    новых remote включена в опубликованный b5886b0, теперь создание выполняет
@@ -31,6 +37,6 @@
 2. Остальные открытые темы TODO_001–003 сохранены; их исполнительный приоритет
    оператор пока не назначил. После выбора обновить порядок здесь.
 
-Следующий новый тематический ID: **TODO_010**. Work-ID и CI job ID имеют отдельные
+Следующий новый тематический ID: **TODO_011**. Work-ID и CI job ID имеют отдельные
 пространства имён. Исторические сведения о миграции и прежних публикациях сохранены
 в тематических задачах; они не означают проверки или активации текущих remote.

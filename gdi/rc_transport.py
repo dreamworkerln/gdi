@@ -429,7 +429,9 @@ class RcTransport(Rclone):
         self.api('operations/deletefile', fs=self.url, remote=relative)
 
     def delete_notification(self, relative):
-        if not re.fullmatch(r'inbox/[0-9a-f]{32}-[0-9a-f]{64}\.json', relative):
+        from .agent_sync import PUSH_NAME
+        if not (re.fullmatch(r'inbox/[0-9a-f]{32}-[0-9a-f]{64}\.json', relative)
+                or relative.startswith('inbox/') and PUSH_NAME.fullmatch(relative[len('inbox/'):])):
             raise GdiError('only a single immutable inbox notification may be removed')
         self.api('operations/deletefile', fs=self.url, remote=relative)
 
@@ -465,6 +467,14 @@ class RcTransport(Rclone):
         validate_checkpoint_path(relative)
         source = Path(source).resolve(strict=True)
         self.transfer_api('operations/copyfile', label='publish metadata checkpoint',
+                          srcFs=str(source.parent), srcRemote=source.name,
+                          dstFs=self.url, dstRemote=relative, _config={'IgnoreTimes': True})
+
+    def update_agent_export(self, source, relative):
+        from .transport import validate_agent_export_path
+        validate_agent_export_path(relative)
+        source = Path(source).resolve(strict=True)
+        self.transfer_api('operations/copyfile', label='publish agent export', total=source.stat().st_size,
                           srcFs=str(source.parent), srcRemote=source.name,
                           dstFs=self.url, dstRemote=relative, _config={'IgnoreTimes': True})
 

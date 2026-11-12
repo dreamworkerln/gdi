@@ -38,6 +38,12 @@ def pending_notifications(exchange, name, repository_id, retiring):
     for item in shared.list('inbox'):
         if item['IsDir']:
             continue
+        from .agent_sync import PUSH_NAME
+        pushed = PUSH_NAME.fullmatch(item['Path'])
+        if pushed:
+            if pushed[1] == repository_id:
+                selected.append(item['Path'])
+            continue
         event = read(shared, item['Path'])
         if event['repository_id'] == repository_id and event['ref'] in refs:
             selected.append(item['Path'])

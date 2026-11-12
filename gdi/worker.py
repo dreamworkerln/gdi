@@ -95,6 +95,7 @@ class Worker:
             for path in ('inbox', f'ci/workers/{self.worker_id}'):
                 transport.mkdir(path)
             capabilities = {'ci_version': 1, 'inbox_version': 1, 'ci_submission_version': 1,
+                            'agent_exchange_version': 1,
                             'cancel_version': 1, 'result_delivery_version': 1,
                             'publication_checkpoint_version': 1,
                             'worker_id': self.worker_id,
@@ -176,16 +177,29 @@ class Worker:
 
     def discover_inbox(self):
         from .inbox import NAME, read
+        from .agent_sync import PUSH_NAME
         root = self.transport_factory(self.config['remote_url'])
         entries = root.list('inbox')
         from collections import Counter
         identities = Counter(match[1] for item in entries if not item['IsDir']
                              for match in [NAME.fullmatch(item['Path'])] if match)
+        push_ids = Counter(match.groups()[:2] for item in entries if not item['IsDir']
+                           for match in [PUSH_NAME.fullmatch(item['Path'])] if match)
         for entry in sorted(entries, key=lambda item: item['Path']):
             if self.stop.is_set():
                 return
             name = entry['Path']
             try:
+                pushed = PUSH_NAME.fullmatch(name)
+                if pushed and not entry['IsDir']:
+                    if pushed[4] != self.worker_id:
+                        continue
+                    if push_ids[pushed.groups()[:2]] != 1:
+                        raise GdiError('conflicting packages for the same agent request ID')
+                    from .agent_receiver import receive
+                    result = receive(self, root, name)
+                    LOG.info('agent push=%s state=%s', pushed[2], result['state'])
+                    continue
                 if entry['IsDir'] or not NAME.fullmatch(name):
                     raise GdiError('invalid inbox entry')
                 event = read(root, name)
@@ -206,6 +220,8 @@ class Worker:
                                              event['repository_id'], event['publication_id'])
                         if (pub['head'], pub['ref']) != (event['head'], event['ref']):
                             raise GdiError('inbox publication identity mismatch')
+                        from .agent_receiver import refresh_export
+                        refresh_export(self, event['repository_id'], event['repository_path'], event['ref'])
                         atomic_write(receipt, encode(event))
                     elif receipt.read_bytes() != encode(event):
                         raise GdiError('durable inbox receipt differs')

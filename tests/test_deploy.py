@@ -27,6 +27,7 @@ class DeployTests(unittest.TestCase):
         shutil.copytree(source / 'scripts', self.repo / 'scripts', ignore=shutil.ignore_patterns('__pycache__'))
         (self.repo / 'docs').mkdir()
         shutil.copyfile(source / 'docs/agent.md', self.repo / 'docs/agent.md')
+        shutil.copyfile(source / 'docs/agent-reference.md', self.repo / 'docs/agent-reference.md')
         for name in ('LICENSE', '.gitignore'):
             shutil.copyfile(source / name, self.repo / name)
         self.output = self.root / 'runtime with spaces'
@@ -90,6 +91,7 @@ class DeployTests(unittest.TestCase):
         self.assertEqual((self.output / 'agent.md').read_bytes(), (self.repo / 'docs/agent.md').read_bytes())
         with zipfile.ZipFile(self.output / 'gdi.pyz') as archive:
             self.assertIn('LICENSE', archive.namelist())
+            self.assertEqual(archive.read('agent-reference.md'), (self.repo / 'docs/agent-reference.md').read_bytes())
             self.assertEqual(json.loads(archive.read('GDI_RUNTIME.json'))['head'], self.head)
             self.assertFalse(any('__pycache__' in name or name.startswith(('.git/', 'tests/', 'scripts/'))
                                  for name in archive.namelist()))
@@ -106,7 +108,8 @@ class DeployTests(unittest.TestCase):
         capture = capture_snapshot(self.root / 'connector-capture', transport)
         shutil.rmtree(self.repo)
         self.env['PYTHONPATH'] = '/no/such/source'
-        for args in (('--help',), ('--version',), ('agent', 'snapshot-build', '--help'),
+        for args in (('--help',), ('--version',), ('agent', 'pull', '--help'), ('agent', 'push', '--help'),
+                     ('agent', 'snapshot-build', '--help'),
                      ('agent', 'snapshot', '--help'), ('agent', 'clone', '--help')):
             self.run_command([sys.executable, '-I', str(self.output / 'gdi.pyz'), *args], cwd=self.root)
 

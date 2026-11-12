@@ -44,6 +44,9 @@ class PrefixTransport:
     def update_advisory(self, source, path):
         return self.store.update_advisory(source, self.path(path))
 
+    def update_agent_export(self, source, path):
+        return self.store.update_agent_export(source, self.path(path))
+
     def delete_notification(self, path):
         if self.store.fail == 'delete-notification':
             raise GdiError('lost notification acknowledgement')

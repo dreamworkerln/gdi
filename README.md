@@ -85,7 +85,10 @@ gdi clone gdrive:gdi/my-project my-project-copy --branch main
 ```
 
 Агенту с коннектором нужна [инструкция для агента](docs/agent.md): она описывает
-получение runtime, восстановление проекта, checkpoints, обмен и проверку CI.
+получение runtime и однофайловые `agent pull/push` в GDI 0.7. Pull скачивает один
+готовый export, push загружает один пакет в inbox; публикацию и checkpoints
+выполняет host worker. Подтверждение приходит отдельной квитанцией. Поиск Drive ID
+при первом подключении требует дополнительных вызовов. [Контракт обмена](docs/agent-exchange.md).
 
 После CI в той же ветке можно получить выбранный PASS в чистую рабочую копию:
 

@@ -72,6 +72,9 @@ class MemoryTransport:
             raise GdiError("network unavailable during advisory upload")
         self.data[path] = Path(source).read_bytes()
 
+    def update_agent_export(self, source, path):
+        return self.update_advisory(source, path)
+
     def delete_queue(self, path):
         if self.fail in ("delete", path):
             raise GdiError("network unavailable during queue cleanup")

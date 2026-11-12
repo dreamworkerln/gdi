@@ -217,6 +217,12 @@ def ci_guard(exchange, transport, repository_id, *, inbox_root=None):
             for entry in shared.list('inbox'):
                 if entry['IsDir']:
                     continue
+                from .agent_sync import PUSH_NAME
+                pushed = PUSH_NAME.fullmatch(entry['Path'])
+                if pushed:
+                    if pushed[1] == repository_id:
+                        raise GdiError('GC blocked by a pending agent push; finish publication first')
+                    continue
                 event = read(shared, entry['Path'])
                 if event['type'] == 'ci_requested' and event['repository_id'] == repository_id:
                     pending[event['job_id']] = event

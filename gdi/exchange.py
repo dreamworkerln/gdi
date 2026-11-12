@@ -313,6 +313,8 @@ class Exchange:
                         checkpoints.activate(self, transport, repository_id, old, prepared, marker, archives, target)
                 self.verify_identity(transport, repository_id)
                 self.last_publication = tip[1]
+                from .agent_sync import publish_export
+                publish_export(self, name, repository_id, ref, head, tip[0], force=full)
                 self.notify_publication(name, tip[0])
                 return head, tip[0], False
             if not self.git.ancestor(tip[1]["head"], head):
@@ -354,6 +356,8 @@ class Exchange:
                     checkpoints.activate(self, transport, repository_id, chain, prepared, *rotation)
                 cache.accept(publication_id, head, quarantine)
         self.last_publication = data
+        from .agent_sync import publish_export
+        publish_export(self, name, repository_id, ref, head, publication_id, force=full)
         self.notify_publication(name, publication_id)
         return head, publication_id, True
 

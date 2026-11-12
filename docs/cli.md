@@ -208,7 +208,7 @@ marker, проверенный CANCELLED — остановку собствен
 отмена сама замену не создаёт. Поздний PASS отменённой попытки блокируется,
 подтверждение поздней отмены хранится отдельно в `ci/jobs/JOB_ID/cancelled/`.
 Агент с коннектором использует `gdi agent ci cancel/cancel-check` и
-`prepare --retry-of`, по [docs/agent.md](agent.md).
+`prepare --retry-of`, по [справочнику CI/work](agent-reference.md).
 
 Пользователь получает выбранный PASS в свой чистый clone:
 
@@ -360,7 +360,9 @@ python3 scripts/deploy.py --build-only
 `--runtime-dir RCLONE_PATH` меняет место загрузки runtime, например для проверки
 на local backend. Не направляйте output в tracked каталог. Zipapp содержит код
 GDI и стандартную точку входа, без Python-интерпретатора и Git. Агент запускает
-его как `python3 /путь/gdi.pyz agent ...`: [быстрое восстановление](agent.md#готовый-runtime-gdipyz).
+его как `python3 /путь/gdi.pyz agent ...`: [однофайловый обмен](agent.md).
+Специальный справочник `agent-reference.md` включён внутрь zipapp и извлекается
+локально, без дополнительного скачивания с Drive.
 
 Новые tests используют реальные временные Git repositories и fake transport; при наличии
 rclone также проверяется настоящий CLI с local backend, без Google credentials.
@@ -387,11 +389,35 @@ worker образы из `platforms` должны быть загружены ч
 Лицензия: [GPLv3](../LICENSE).
 
 
-## Агентский сборщик snapshot
+## Однофайловый агентский обмен (0.7)
+
+`gdi agent pull --package ZIP --repository-id ID --destination DIR` создаёт checkout
+из одного готового export. Вместо `--destination` используйте `--repo DIR` для
+fast-forward текущей ветки. Команда offline и не требует snapshot/capture.
+
+`gdi agent push --repo DIR --repository-id ID --output PLAN` готовит один полный
+ZIP для общей папки inbox. Агент загружает файл по `files.package` ровно один раз.
+Worker публикует коммиты без squash, создаёт checkpoint по обычным правилам и
+обновляет export. `--full` запрашивает full checkpoint. Подготовка и upload ещё
+не означают публикацию; только квитанция `PUBLISHED` подтверждает результат.
+
+`gdi agent push --repo DIR --repository-id ID --output PLAN --receipt JSON`
+применяет одну скачанную квитанцию. `CONFLICT`/`ERROR` возвращают код 1; GDI не
+переписывает разошедшуюся историю. Сохраняйте исходный план при повторе доставки.
+Не запускайте цикл опроса Drive. При отсутствии подтверждения сообщайте состояние
+«отправлено», затем запрашивайте квитанцию позже.
+
+Обычный host `gdi push` при настроенном inbox_root создаёт `agent/export-*.zip`.
+Worker обрабатывает уведомление и закрепляет свой маршрут в export. До обновления
+всех компонентов новый поток не активировать. Native Git protocol v3 и IDs не
+меняются. Подробнее: [инструкция](agent.md), [формат и recovery](agent-exchange.md).
+
+## Специальный агентский сборщик snapshot
 
 `gdi agent snapshot-build --capture CAPTURE --repository-id ID --output SNAPSHOT`
 создаёт новый snapshot v1 из сохранённых ответов коннектора. Команда offline,
 не меняет Drive и не перезаписывает output. Она возвращает проверенную metadata
 сводку либо структурированный `SNAPSHOT_BUILD_ERROR`. Capture schema, ограничения
 поддерживаемого адаптера и действия агента при отказе описаны в
-[snapshot-builder.md](snapshot-builder.md). Операторским командам сборщик не нужен.
+[snapshot-builder.md](snapshot-builder.md). Для обычных `agent pull/push` этот
+сборщик не нужен; его наличие не предписывает скачивать manifests.

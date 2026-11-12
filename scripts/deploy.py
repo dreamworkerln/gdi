@@ -31,6 +31,7 @@ def build(repository, output):
     head = git(repository, 'rev-parse', 'HEAD').decode().strip()
     ref = git(repository, 'symbolic-ref', 'HEAD').decode().strip()
     agent_document = git(repository, 'show', head + ':docs/agent.md')
+    agent_reference = git(repository, 'show', head + ':docs/agent-reference.md')
     archive = git(repository, 'archive', '--format=tar', head, 'gdi', 'LICENSE')
     files = {}
     with tarfile.open(fileobj=io.BytesIO(archive)) as source:
@@ -54,6 +55,7 @@ def build(repository, output):
     metadata = {'runtime_version': 1, 'version': version, 'head': head, 'ref': ref,
                 'python_requires': '>=3.10', 'entrypoint': 'gdi.cli:main'}
     files['__main__.py'] = b'from gdi.cli import main\n\nraise SystemExit(main())\n'
+    files['agent-reference.md'] = agent_reference
     files['GDI_RUNTIME.json'] = (json.dumps(metadata, sort_keys=True, indent=2) + '\n').encode()
     output = Path(output).resolve()
     if output.is_relative_to(repository):
@@ -109,7 +111,8 @@ def main(argv=None):
             verification = Path(temporary)
             stage = 'runtime smoke checks'
             smoke_environment = {**process_environment, 'XDG_CONFIG_HOME': str(verification / 'config')}
-            for arguments in (('--help',), ('--version',), ('agent', 'snapshot-build', '--help'),
+            for arguments in (('--help',), ('--version',), ('agent', 'pull', '--help'),
+                              ('agent', 'push', '--help'), ('agent', 'snapshot-build', '--help'),
                               ('agent', 'snapshot', '--help'), ('agent', 'clone', '--help')):
                 subprocess.run([sys.executable, '-I', str(output / 'gdi.pyz'), *arguments],
                                cwd=verification, env=smoke_environment, stdout=subprocess.DEVNULL, check=True)

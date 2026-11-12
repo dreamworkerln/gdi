@@ -291,6 +291,22 @@ Use gdi COMMAND --help for command options; gdi -v/--version shows version and e
             sub.add_argument("--json", action="store_true")
     agent = commands.add_parser('agent', help='offline connector exchange (Python and git only)')
     agent_ops = agent.add_subparsers(dest='operation', required=True)
+    pulling = agent_ops.add_parser('pull', help='restore or fast-forward from one downloaded agent export; no snapshots')
+    diagnostics_arguments(pulling)
+    pulling.set_defaults(json=True)
+    pulling.add_argument('--package', required=True)
+    pulling.add_argument('--repository-id', required=True)
+    target = pulling.add_mutually_exclusive_group(required=True)
+    target.add_argument('--destination', help='new checkout directory')
+    target.add_argument('--repo', help='existing checkout; stays on its selected branch')
+    pushing = agent_ops.add_parser('push', help='prepare one upload package, or apply one downloaded publication receipt')
+    diagnostics_arguments(pushing)
+    pushing.set_defaults(json=True)
+    pushing.add_argument('--repo', default='.')
+    pushing.add_argument('--repository-id', required=True)
+    pushing.add_argument('--output', required=True, help='durable plan directory outside tracked project files')
+    pushing.add_argument('--full', action='store_true', help='ask host GDI for an explicit full checkpoint')
+    pushing.add_argument('--receipt', help='one downloaded receipt; no connector read-back or snapshot required')
     builder = agent_ops.add_parser('snapshot-build', help='assemble snapshot v1 from saved connector captures')
     diagnostics_arguments(builder)
     builder.set_defaults(json=True)
@@ -483,7 +499,16 @@ def execute(args, *, transport_factory=None):
             return execute_alias(args)
         if args.command == 'agent':
             from . import agent
-            if args.operation == 'work':
+            if args.operation == 'pull':
+                from .agent_sync import pull
+                value = pull(args.package, args.repository_id, destination=args.destination, repo=args.repo)
+            elif args.operation == 'push':
+                from .agent_sync import push
+                value = push(Git.discover(args.repo), args.repository_id, args.output,
+                             full=args.full, receipt=args.receipt)
+                emit(value, True)
+                return 1 if value.get('state') in ('CONFLICT', 'ERROR') else 0
+            elif args.operation == 'work':
                 from . import agent_work
                 git = Git.discover(args.repo)
                 with git.lock():

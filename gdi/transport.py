@@ -154,7 +154,9 @@ class Rclone:
         self.call("deletefile", self.path(relative))
 
     def delete_notification(self, relative):
-        if not re.fullmatch(r"inbox/[0-9a-f]{32}-[0-9a-f]{64}\.json", relative):
+        from .agent_sync import PUSH_NAME
+        if not (re.fullmatch(r"inbox/[0-9a-f]{32}-[0-9a-f]{64}\.json", relative)
+                or relative.startswith('inbox/') and PUSH_NAME.fullmatch(relative[len('inbox/'):])):
             raise GdiError("only a single immutable inbox notification may be removed")
         self.call("deletefile", self.path(relative))
 
@@ -187,6 +189,10 @@ class Rclone:
 
     def update_checkpoint(self, source, relative):
         validate_checkpoint_path(relative)
+        self.call('copyto', str(source), self.path(relative), '--ignore-times')
+
+    def update_agent_export(self, source, relative):
+        validate_agent_export_path(relative)
         self.call('copyto', str(source), self.path(relative), '--ignore-times')
 
     def delete_publication(self, relative):
@@ -227,6 +233,11 @@ def validate_checkpoint_path(relative):
     if not match:
         raise GdiError('expected an exact branch checkpoint path')
     directory_ref(match[1])
+
+
+def validate_agent_export_path(relative):
+    if not re.fullmatch(r'agent/export-[0-9a-f]{32}-[0-9a-f]{64}\.zip', relative):
+        raise GdiError('only an exact agent export may be replaced')
 
 
 def validate_work_manifest_path(relative):
