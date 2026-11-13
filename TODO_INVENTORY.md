@@ -25,12 +25,13 @@
 | [TODO_012](todos/TODO_012_PROXY_HEADER_TIMEOUT.md) | Header timeout и автоматический fallback на env proxy | IMPLEMENTED; test.sh 532: 527 PASS / 5 opt-in SKIP, 372.544 s, exit 0; commit разрешён оператором, real Drive acceptance открыт |
 | [TODO_013](todos/TODO_013_RCLONE_PACING_LOGS.md) | Лимиты rclone, постоянные логи, inbox backoff | IMPLEMENTED; полный повтор 539 tests: 534 PASS / 5 opt-in SKIP, 346.441 s; commit и запуск worker разрешены, публикация оператором отдельно |
 
-| [TODO_014](todos/TODO_014_LOCAL_FETCH_BARRIER.md) | Локальный синхронный barrier worker перед fetch/pull | IMPLEMENTED локально; общий inbox mutex; полный прогон 563 tests: 558 PASS / 5 opt-in SKIP, 380.054 s; commit разрешён, активация требует restart |
+| [TODO_014](todos/TODO_014_LOCAL_FETCH_BARRIER.md) | Локальный barrier перед fetch/pull/status | IMPLEMENTED; status/s включены; полный прогон 572 tests: 567 PASS / 5 opt-in SKIP, 410.380 s; commit разрешён, требуется restart |
 
 ## Следующие действия
 
-Текущий запрос — TODO_014: синхронное ожидание обработки Git inbox перед fetch/pull.
-Полный прогон: 563 tests, 558 PASS / 5 opt-in SKIP, 380.054 s.
+Текущий запрос — TODO_014: расширение ожидания Git inbox на status / s.
+Добавлены 9 тестов. Полный прогон с расширением: 572 tests,
+567 PASS / 5 opt-in SKIP, 410.380 s.
 Оператор разрешил commit; restart и публикация в новой задаче не выполнялись.
 
 Предыдущий запрос — TODO_013: ограничение нагрузки и локальная диагностика rclone.

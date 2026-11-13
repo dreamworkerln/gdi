@@ -675,6 +675,17 @@ def execute(args, *, transport_factory=None):
             from .worker_control import synchronize
             args.remote = select(git, args.remote)
             synchronize(exchange.remote(args.remote))
+        elif args.command == 'status':
+            from .local_config import load
+            from .worker_control import synchronize
+            names = [args.remote] if args.remote is not None else sorted(load(git)['remotes'])
+            connections = [exchange.remote(name) for name in names]
+            synchronized = set()
+            for settings in connections:
+                key = (settings.get('inbox_root'), settings['url'], settings['repository_id'])
+                if key not in synchronized:
+                    synchronize(settings)
+                    synchronized.add(key)
         with git.lock():
             if args.command in ('push', 'fetch', 'pull', 'log'):
                 from .local_config import select

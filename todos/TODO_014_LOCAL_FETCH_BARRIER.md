@@ -73,3 +73,26 @@ python3 -m unittest -v tests.test_worker_control tests.test_worker_control_packe
 Проверенный checkpoint: база 47b64aa плюс source/test changes текущего commit.
 Status IMPLEMENTED сохраняется до real service/Drive acceptance.
 Публикация и restart этим commit не выполняются. git diff --check PASS.
+
+## Расширение: status / s (2026-11-13)
+
+Оператор отдельно поручил добавить тот же barrier перед status и тесты.
+Реализовано до git.lock и до любых remote status reads: выбранный remote либо
+все подключения без аргумента. Дедупликация по inbox_root/URL/Repository ID.
+Ошибка любого barrier прерывает status целиком; локальные refs не меняются.
+Стандартный alias s разворачивается в status существующим механизмом.
+
+Добавлены 9 тестов tests/test_status_worker_control.py: реальный Git packet и
+новый published head до ответа без изменения checkout/refs; alias через main;
+выбранный remote; все barrier до чтений; одинаковые подключения; error/backoff/
+timeout; ошибка второго подключения без частичного успеха; неизвестный remote;
+пустой список подключений. Все девять включены в успешный полный прогон.
+ast.parse и git diff --check PASS. Validation PASS полного локального набора:
+572 tests за 410.380 s, 567 PASS / 5 opt-in SKIP, exit 0.
+Команда ./test.sh с require_escalated по запросу оператора.
+Лог: /tmp/gdi-full-status-20261113-SDxe8u/output.log;
+код: /tmp/gdi-full-status-20261113-SDxe8u/exit-code.
+Checkpoint: база f8e5480d4133eabc0c84f83a24e56d5baabe0b1f плюс source/test patch
+текущего commit. Исходники и тесты после старта прогона не менялись.
+Оператор подтвердил результат и поручил commit всех изменений.
+Restart/deploy для расширения не выполнялись; real service/Drive acceptance открыт.
