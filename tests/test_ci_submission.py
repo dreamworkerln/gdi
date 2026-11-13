@@ -67,6 +67,10 @@ class SingleSubmissionTests(InboxTestCase):
         self.assertFalse(self.counter.exists())
         self.store.data[path] = encode(original)
         worker.tick()
+        self.assertFalse(self.counter.exists(), 'corrected packet must still respect retry delay')
+        retry_at = worker.inbox_retries[path.removeprefix('inbox/')][1]
+        with patch('gdi.worker.time.monotonic', return_value=retry_at):
+            worker.tick()
         self.assertEqual(self.counter.read_text(), 'x')
 
     def test_lost_submission_upload_ack_reuses_same_job_and_bytes(self):
@@ -116,6 +120,10 @@ class SingleSubmissionTests(InboxTestCase):
         self.assertIsNone(worker.ledger.get(req['job_id']))
         del self.store.data['inbox/' + filename(packet)]
         worker.tick()
+        self.assertFalse(self.counter.exists(), 'conflict resolution does not bypass backoff')
+        retry_at = max(deadline for _, deadline in worker.inbox_retries.values())
+        with patch('gdi.worker.time.monotonic', return_value=retry_at):
+            worker.tick()
         self.assertEqual(self.counter.read_text(), 'x')
 
     def test_conflicting_archived_submission_is_preserved_without_execution(self):

@@ -587,7 +587,10 @@ with RcServer() as server:
         source = ThreadingHTTPServer(('127.0.0.1', 0), SlowFile)
         thread = threading.Thread(target=source.serve_forever, daemon=True)
         thread.start()
-        server = RcServer(timeout=0.5, trace_path=self.root / 'timeout.jsonl')
+        # This test isolates the response timeout during GET; request pacing is
+        # covered separately and must not consume the 0.5-second deadline.
+        server = RcServer(timeout=0.5, trace_path=self.root / 'timeout.jsonl',
+                          options={'tpslimit': 0})
         try:
             with patch.dict(os.environ, RCLONE_CONFIG_GDIRCSLOW_TYPE='http',
                             RCLONE_CONFIG_GDIRCSLOW_URL=f'http://127.0.0.1:{source.server_port}/'):

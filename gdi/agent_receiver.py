@@ -96,11 +96,13 @@ def recover(worker, root):
     recovered = set()
     for path in sorted((worker.root / 'agent-pushes').glob('*/*/journal.json')):
         journal = decode(path.read_bytes())
-        if journal.get('phase') != 'DONE':
+        if journal.get('phase') != 'DONE' and worker.inbox_retry_ready(journal['name']):
+            recovered.add(journal['name'])
             try:
                 receive(worker, root, journal['name'], present=False)
-                recovered.add(journal['name'])
+                worker.inbox_retries.pop(journal['name'], None)
             except (GdiError, OSError) as exc:
+                worker.inbox_retry_failed(journal['name'])
                 import logging
                 logging.getLogger('gdi.worker').error('agent recovery=%s: %s', path, exc)
     return recovered

@@ -23,10 +23,16 @@
 | [TODO_010](todos/TODO_010_AGENT_SINGLE_EXCHANGE.md) | Один export для pull, один inbox ZIP для push и квитанция worker | IMPLEMENTED; ZIP handler исправлен; test.sh 507: 502 PASS / 5 opt-in SKIP, 378.432 s, exit 0; service/реальный Drive acceptance открыты, deploy не выполнялся |
 | [TODO_011](todos/TODO_011_UNIFIED_PACKET_PROTOCOL.md) | Общий packet protocol v4 для CLI/агента/worker без read-back | IMPLEMENTED локально; test.sh 528: 523 PASS / 5 opt-in SKIP, 391.008 s, exit 0; Git commit разрешён оператором; real Drive/service acceptance открыты, deploy/миграция не выполнялись |
 | [TODO_012](todos/TODO_012_PROXY_HEADER_TIMEOUT.md) | Header timeout и автоматический fallback на env proxy | IMPLEMENTED; test.sh 532: 527 PASS / 5 opt-in SKIP, 372.544 s, exit 0; commit разрешён оператором, real Drive acceptance открыт |
+| [TODO_013](todos/TODO_013_RCLONE_PACING_LOGS.md) | Лимиты rclone, постоянные логи, inbox backoff | IMPLEMENTED; полный повтор 539 tests: 534 PASS / 5 opt-in SKIP, 346.441 s; commit и запуск worker разрешены, публикация оператором отдельно |
 
 ## Следующие действия
 
-Текущий запрос — TODO_012: восстановить переключение на env proxy при точной
+Текущий запрос — TODO_013: ограничение нагрузки и локальная диагностика rclone.
+После исправления тестов полный повтор: 539 tests, 534 PASS / 5 opt-in SKIP.
+Оператор разрешил commit всех изменений и запуск worker; публикацию выполняет сам.
+CLI использует editable checkout и уже видит изменения; runtime не публиковался.
+
+Предыдущий запрос — TODO_012: восстановить переключение на env proxy при точной
 ошибке response-header timeout из показанного оператором push. Полный прогон
 прошёл, оператор запросил Git commit; публикация не выполнялась.
 
@@ -45,6 +51,6 @@ handler завершился успешно; осталось 5 opt-in SKIP. П�
 2. Остальные открытые темы TODO_001–003 сохранены; их исполнительный приоритет
    оператор пока не назначил. После выбора обновить порядок здесь.
 
-Следующий новый тематический ID: **TODO_013**. Work-ID и CI job ID имеют отдельные
+Следующий новый тематический ID: **TODO_014**. Work-ID и CI job ID имеют отдельные
 пространства имён. Исторические сведения о миграции и прежних публикациях сохранены
 в тематических задачах; они не означают проверки или активации текущих remote.

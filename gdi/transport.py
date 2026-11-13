@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
+import time
 
 from .git import GdiError, run
 
@@ -36,18 +37,29 @@ class Rclone:
         if args[0] in ('copy', 'copyto') and transfer_progress_enabled():
             progress = TransferProgress('transfer')
             args = (*args, '--stats', '1s', '--stats-log-level', 'NOTICE', '--use-json-log')
+        from .rclone_policy import diagnostic_log, flags
+        log_path, log_line = diagnostic_log(getattr(self.network, 'log_kind', 'cli'))
+        def stderr_line(line):
+            log_line(line)
+            if progress is not None:
+                progress.line(line)
+        started = time.monotonic()
+        log_line(f'operation start: {args[0]}')
         error = None
         try:
-            return self.network.run(lambda route: run(["rclone", *args, "--contimeout", str(self.options.get("connect_timeout_seconds", 10)) + "s",
+            return self.network.run(lambda route: run(["rclone", *args, *flags(self.options), "--contimeout", str(self.options.get("connect_timeout_seconds", 10)) + "s",
                         "--timeout", str(self.options.get("timeout_seconds", 60)) + "s",
                         "--retries", str(self.options.get("retries", 1)),
                         "--low-level-retries", str(self.options.get("low_level_retries", 1))], allowed=allowed,
                        environment=self.network.environment(route),
-                       **({'stderr_line': progress.line} if progress is not None else {})))
+                       stderr_line=stderr_line))
         except BaseException as exc:
             error = type(exc).__name__
+            if isinstance(exc, GdiError):
+                raise GdiError(str(exc) + f"; rclone log: {log_path}") from exc
             raise
         finally:
+            log_line(f'operation finish: {args[0]} seconds={time.monotonic() - started:.3f} error={error}')
             if progress is not None:
                 progress.finish(error)
 

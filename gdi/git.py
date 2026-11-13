@@ -33,7 +33,8 @@ def run(args, *, cwd=None, allowed=(0,), isolated_git=False, stderr_line=None, e
                 with tempfile.TemporaryFile() as output:
                     process = subprocess.Popen(args, cwd=cwd, env=env, stdout=output,
                                                stderr=subprocess.PIPE)
-                    lines = []
+                    from collections import deque
+                    lines = deque(maxlen=200)
                     try:
                         for line in iter(process.stderr.readline, b''):
                             text = line.decode('utf-8', errors='strict')

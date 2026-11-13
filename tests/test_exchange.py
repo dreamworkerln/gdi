@@ -963,7 +963,7 @@ class ProtocolAndCliTests(unittest.TestCase):
         self.assertEqual(validate_url("gdrive:project with spaces"), "gdrive:project with spaces")
 
     def test_missing_tools_and_invalid_listings(self):
-        with patch("gdi.git.subprocess.run", side_effect=FileNotFoundError()), self.assertRaisesRegex(GdiError, "not found"):
+        with patch("gdi.git.subprocess.Popen", side_effect=FileNotFoundError()), self.assertRaisesRegex(GdiError, "not found"):
             Rclone("remote:path").mkdir("")
         for output in ('{}', '[{"Path":"x","IsDir":false},{"Path":"x","IsDir":false}]', 'broken'):
             with self.subTest(output=output), patch.object(Rclone, "call", return_value=subprocess.CompletedProcess([], 0, output, "")), self.assertRaises(GdiError):

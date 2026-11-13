@@ -45,6 +45,9 @@ class Worker:
         self.config = config
         from .rc_transport import TransportSession
         self.transport_session = TransportSession(options=config.get('transport')) if transport_factory is Rclone else None
+        if self.transport_session is not None:
+            self.transport_session.network.log_kind = 'worker'
+        self.inbox_retries = {}
         self.worker_id = config['worker_id']
         self.root = Path(config['state_dir']) / self.worker_id
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -183,12 +186,21 @@ class Worker:
                 except (GdiError, OSError) as exc:
                     LOG.error('queue=%s: %s', entry['Path'], exc)
 
+    def inbox_retry_ready(self, name):
+        return time.monotonic() >= self.inbox_retries.get(name, (0, 0))[1]
+
+    def inbox_retry_failed(self, name):
+        previous = self.inbox_retries.get(name, (60, 0))[0]
+        delay = min(previous * 2, 900)
+        self.inbox_retries[name] = (delay, time.monotonic() + delay)
+        LOG.warning('inbox=%s retry deferred for %ss', name, delay)
+
     def discover_inbox(self):
         from .inbox import NAME, read
         from .agent_sync import PUSH_NAME
         root = self.transport_factory(self.config['remote_url'])
         from .agent_receiver import recover
-        recover(self, root)
+        attempted = recover(self, root)
         entries = root.list('inbox')
         from collections import Counter
         identities = Counter(match[1] for item in entries if not item['IsDir']
@@ -199,6 +211,8 @@ class Worker:
             if self.stop.is_set():
                 return
             name = entry['Path']
+            if name in attempted or not self.inbox_retry_ready(name):
+                continue
             try:
                 pushed = PUSH_NAME.fullmatch(name)
                 if pushed and not entry['IsDir']:
@@ -208,6 +222,7 @@ class Worker:
                         raise GdiError('conflicting packages for the same agent request ID')
                     from .agent_receiver import receive
                     result = receive(self, root, name)
+                    self.inbox_retries.pop(name, None)
                     LOG.info('agent push=%s state=%s', pushed[2], result['state'])
                     continue
                 if entry['IsDir'] or not NAME.fullmatch(name):
@@ -252,6 +267,7 @@ class Worker:
                         self.verify_remote(transport, req, row)
                         self.acknowledge(row)
             except (GdiError, OSError) as exc:
+                self.inbox_retry_failed(name)
                 LOG.error('inbox=%s: %s; notification retained', name, exc)
 
     def archive_submission(self, transport, row, req):
@@ -718,7 +734,7 @@ class Worker:
                 except (GdiError, OSError) as exc:
                     LOG.error('worker transport/config error: %s', exc)
                     self.recover_delivery()
-                    delay = min(delay * 2, self.config['poll_idle_max_seconds'])
+                    delay = min(max(delay * 2, 120), max(900, self.config['poll_idle_max_seconds']))
                 if once:
                     return
                 self.stop.wait(delay)

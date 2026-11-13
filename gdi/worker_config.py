@@ -199,10 +199,11 @@ def global_config(config):
     profile["revision"] = digest(encode(profile))
     config["execution_profile"] = profile
     options = config.setdefault("transport", {})
-    if not isinstance(options, dict) or set(options) - {"connect_timeout_seconds", "timeout_seconds", "retries", "low_level_retries"}:
+    if not isinstance(options, dict) or set(options) - {"connect_timeout_seconds", "timeout_seconds", "retries", "low_level_retries", "tpslimit"}:
         raise GdiError("invalid rclone transport options")
     for key, default in (("connect_timeout_seconds", 10), ("timeout_seconds", 60)):
         options[key] = seconds(options.get(key, default))
+    options["tpslimit"] = seconds(options.get("tpslimit", 1))
     for key in ("retries", "low_level_retries"):
         value = options.setdefault(key, 1)
         if type(value) is not int or value < 1:

@@ -75,15 +75,18 @@ class RcServer:
             self.trace_path.parent.mkdir(parents=True, exist_ok=True)
             descriptor = os.open(self.trace_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
             self.trace = os.fdopen(descriptor, 'a', encoding='utf-8')
+        from .rclone_policy import diagnostic_log, flags
+        self.log_path, self.log_line = diagnostic_log(getattr(self.network, 'log_kind', 'cli'))
         self.temporary = tempfile.TemporaryDirectory(prefix='gdi-rc-')
         self.directory = Path(self.temporary.name)
         self.path = self.directory / 'rc.sock'
         self.errors = (self.directory / 'stderr').open('w+')
+        self.error_lock = threading.Lock()
         # Do not inherit RC listeners, auth, files or browser settings.
         environment = {key: value for key, value in self.network.environment(self.network_route).items()
                        if not key.startswith('RCLONE_RC_')}
         environment.update(RCLONE_RC_USER='gdi', RCLONE_RC_PASS=self.password)
-        args = [self.executable, 'rcd', '--rc-addr', str(self.path), '--rc-serve',
+        args = [self.executable, 'rcd', *flags(self.options), '--rc-addr', str(self.path), '--rc-serve',
                 '--contimeout', str(self.options.get('connect_timeout_seconds', 10)) + 's',
                 '--timeout', str(self.options.get('timeout_seconds', 60)) + 's',
                 '--retries', str(self.options.get('retries', 1)),
@@ -99,13 +102,25 @@ class RcServer:
             child = str(Path(__file__).with_name('rc_child.py'))
             self.process = subprocess.Popen([sys.executable, child, str(os.getpid()), *args],
                                             env=environment, stdout=subprocess.DEVNULL,
-                                            stderr=self.errors)
+                                            stderr=subprocess.PIPE)
+            def consume_errors():
+                for raw in iter(self.process.stderr.readline, b''):
+                    line = raw.decode('utf-8', errors='replace').replace(self.password, '[redacted]')
+                    self.log_line(line)
+                    # Startup diagnostics are bounded independently of persistent logs.
+                    with self.error_lock:
+                        if self.errors.tell() < 16000:
+                            self.errors.write(line[:16000])
+                            self.errors.flush()
+            self.error_thread = threading.Thread(target=consume_errors, daemon=True)
+            self.error_thread.start()
             deadline = time.monotonic() + 10
             while not self.path.exists():
                 if self.process.poll() is not None or time.monotonic() > deadline:
-                    self.errors.seek(0)
-                    detail = self.errors.read(2000).replace(self.password, '[redacted]')
-                    raise GdiError('RC startup failed: ' + detail)
+                    with self.error_lock:
+                        self.errors.seek(0)
+                        detail = self.errors.read(2000).replace(self.password, '[redacted]')
+                    raise GdiError('RC startup failed: ' + detail + f"; rclone log: {self.log_path}")
                 time.sleep(0.02)
             self.record({'event': 'process_ready', 'seconds': time.monotonic() - started})
             return self
@@ -118,6 +133,8 @@ class RcServer:
     def record(self, value):
         value = {'time': datetime.now(timezone.utc).isoformat(), **value}
         self.events.append(value)
+        if hasattr(self, 'log_line') and value['event'] in ('rc_start', 'rc_finish'):
+            self.log_line(json.dumps({key: item for key, item in value.items() if key != 'parameters'}))
         if self.trace is not None:
             self.trace.write(json.dumps(value, ensure_ascii=False) + '\n')
             self.trace.flush()
@@ -137,6 +154,9 @@ class RcServer:
                 except subprocess.TimeoutExpired:
                     self.process.kill()
                     self.process.wait(timeout=5)
+            if hasattr(self, 'error_thread'):
+                self.error_thread.join()
+                self.process.stderr.close()
             self.record({'event': 'process_finish', 'returncode': self.process.returncode})
             self.profile_result['result'] = subprocess.CompletedProcess(
                 [self.executable, 'rcd'], self.process.returncode, '', '')
@@ -258,7 +278,7 @@ class RcServer:
             raw = response.read(1024 * 1024 + 1) if get else response.read()
             if status != 200:
                 detail = raw.decode('utf-8', errors='replace').replace(self.password, '[redacted]')
-                raise RcError(status, detail)
+                raise RcError(status, detail + f"; rclone log: {self.log_path}")
             if get:
                 if len(raw) > 1024 * 1024:
                     raise GdiError('metadata exceeds 1 MiB')

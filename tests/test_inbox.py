@@ -207,6 +207,10 @@ class InboxTests(InboxTestCase):
         del self.store.data[incomplete_path]
         self.store.data[path] = raw
         worker.tick()
+        self.assertEqual(client.status(req['job_id'])['state'], 'QUEUED')
+        retry_at = worker.inbox_retries[path.removeprefix('inbox/')][1]
+        with patch('gdi.worker.time.monotonic', return_value=retry_at):
+            worker.tick()
         self.assertEqual(client.status(req['job_id'])['state'], 'PASS')
 
     def test_failed_notification_upload_reuses_durable_job(self):
