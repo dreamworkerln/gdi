@@ -48,6 +48,7 @@ class Worker:
         if self.transport_session is not None:
             self.transport_session.network.log_kind = 'worker'
         self.inbox_retries = {}
+        self.inbox_lock = threading.RLock()
         self.worker_id = config['worker_id']
         self.root = Path(config['state_dir']) / self.worker_id
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -196,6 +197,10 @@ class Worker:
         LOG.warning('inbox=%s retry deferred for %ss', name, delay)
 
     def discover_inbox(self):
+        with self.inbox_lock:
+            return self._discover_inbox()
+
+    def _discover_inbox(self):
         from .inbox import NAME, read
         from .agent_sync import PUSH_NAME
         root = self.transport_factory(self.config['remote_url'])
@@ -720,6 +725,10 @@ class Worker:
     def run(self, *, once=False):
         delay = self.config['poll_active_seconds']
         advertised = False
+        control = None
+        if self.shared and not once:
+            from .worker_control import start
+            control = start(self)
         previous = {}
         if threading.current_thread() is threading.main_thread():
             for sig in (signal.SIGTERM, signal.SIGINT):
@@ -739,5 +748,8 @@ class Worker:
                     return
                 self.stop.wait(delay)
         finally:
+            if control is not None:
+                from .worker_control import close
+                close(control)
             for sig, handler in previous.items():
                 signal.signal(sig, handler)

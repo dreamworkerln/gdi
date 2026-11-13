@@ -670,6 +670,11 @@ def execute(args, *, transport_factory=None):
                 return 0
             emit(value, args.json)
             return 0
+        if args.command in ('fetch', 'pull'):
+            from .local_config import select
+            from .worker_control import synchronize
+            args.remote = select(git, args.remote)
+            synchronize(exchange.remote(args.remote))
         with git.lock():
             if args.command in ('push', 'fetch', 'pull', 'log'):
                 from .local_config import select

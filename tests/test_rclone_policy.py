@@ -112,6 +112,7 @@ class RclonePolicyTests(unittest.TestCase):
         worker.worker_id = 'worker'
         worker.stop = threading.Event()
         worker.inbox_retries = {}
+        worker.inbox_lock = threading.RLock()
         root = Mock()
         root.list.return_value = [{'Path': name, 'IsDir': False}]
         worker.transport_factory = Mock(return_value=root)
@@ -135,6 +136,7 @@ class RclonePolicyTests(unittest.TestCase):
         worker.config = {'poll_active_seconds': 60, 'poll_idle_max_seconds': 60}
         worker.stop = Mock()
         worker.stop.is_set.side_effect = [False] * 5 + [True]
+        worker.shared = False
         worker.advertise = Mock()
         worker.tick = Mock(side_effect=GdiError('connection timeout'))
         worker.recover_delivery = Mock()

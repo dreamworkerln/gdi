@@ -7,7 +7,7 @@ from .git import GdiError
 from .publication import decode, encode, file_digest
 
 
-def receive(worker, root, name, *, present=True):
+def receive(worker, root, name, *, present=True, expected_repository_path=None):
     match = PUSH_NAME.fullmatch(name)
     if match is None or match[4] != worker.worker_id:
         raise GdiError('invalid packet or another worker addressee')
@@ -25,6 +25,8 @@ def receive(worker, root, name, *, present=True):
         raise GdiError('request ID reused with different packet bytes')
     with packet.read(path, repository_id) as (target, quarantine):
         data = target['metadata']
+        if expected_repository_path is not None and data['repository_path'] != expected_repository_path:
+            raise GdiError('incoming Git packet route differs from selected remote')
         if data['request_id'] != request_id or data['worker_id'] != worker.worker_id or data['repository_path'] is None:
             raise GdiError('packet route differs from inbox name')
         journal_path = directory / 'journal.json'
